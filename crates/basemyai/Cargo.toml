@@ -1,0 +1,38 @@
+[package]
+name = "basemyai"
+description = "Local memory engine for AI agents: 4 memory layers, temporal RAG, per-agent isolation, mandatory encryption. Built on basemyai-core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+# SQLite est non-optionnel dans le core. `embed` active l'inférence Candle.
+default = []
+embed = ["basemyai-core/embed"]
+
+[dependencies]
+basemyai-core = { path = "../basemyai-core" }
+thiserror.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+uuid = { version = "1", features = ["v4"] }
+# Détection matérielle (toujours compilé : le module `setup` n'est pas optionnel).
+sysinfo = { workspace = true }
+# Résolution du dossier cache des modèles.
+dirs = { workspace = true }
+# Parsing de la sortie d'extraction (consolidation) — JSON.
+serde_json = { workspace = true }
+# Client HTTP async — détection des serveurs LLM locaux (Ollama, llama.cpp).
+reqwest = { workspace = true }
+
+[dev-dependencies]
+# Accès direct aux types du core dans les tests d'intégration (fakes pour la DI).
+basemyai-core = { path = "../basemyai-core" }
+
+[lints]
+workspace = true
