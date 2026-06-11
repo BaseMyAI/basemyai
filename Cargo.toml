@@ -1,0 +1,52 @@
+# BaseMyAI — workspace racine.
+# Deux crates publiables indépendamment : le socle agnostique (basemyai-core)
+# et la sémantique mémoire (basemyai). Voir ECOSYSTEM_ARCHITECTURE.md et ADR.md.
+
+[workspace]
+resolver = "3"
+members = ["crates/basemyai-core", "crates/basemyai"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+authors = ["BaseMyAI contributors"]
+repository = "https://github.com/basemyai/basemyai"
+
+# Dépendances centralisées : chaque crate les active via `dep.workspace = true`.
+[workspace.dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
+# libSQL : SQLite-compatible, vecteur natif + chiffrement intégrés, async-natif.
+# (déclaré directement dans basemyai-core pour gérer ses features.)
+async-trait = "0.1"
+# ML (Candle) — lourd, activé par la feature `embed` seulement.
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+# Tokenizer BERT — on désactive les features réseau (http) : le core ne télécharge jamais.
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+serde_json = "1"
+# Détection matérielle (RAM, cœurs, GPU best-effort) pour le setup hardware-aware.
+sysinfo = "0.32"
+# Résolution du cache modèle (~/.basemyai/models) cross-plateforme.
+dirs = "5"
+# Client HTTP async (provisioning LLM : détection Ollama/llama.cpp). rustls évite
+# OpenSSL sur Windows (pas de dep système supplémentaire).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Lints partagés par tout le workspace (Rust 2026).
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
