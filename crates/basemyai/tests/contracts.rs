@@ -35,7 +35,10 @@ fn validity_without_expiry_is_always_valid_from_start() {
 
 #[test]
 fn validity_with_expiry_is_exclusive_on_until() {
-    let v = Validity { valid_from: 100, valid_until: Some(200) };
+    let v = Validity {
+        valid_from: 100,
+        valid_until: Some(200),
+    };
     assert!(!v.is_valid_at(50));
     assert!(v.is_valid_at(150));
     assert!(!v.is_valid_at(200)); // borne haute exclusive
@@ -81,4 +84,35 @@ async fn memory_assembles_via_dependency_injection() {
     let agent = AgentId::new("assistant-42").expect("valid agent");
     let mem = Memory::new(store, Box::new(FakeEmbedder), agent.clone());
     assert_eq!(mem.agent(), &agent);
+}
+
+// ── Chiffrement obligatoire (ADR-007) ─────────────────────────────────────────
+
+#[tokio::test]
+async fn open_without_key_fails_for_file_store() {
+    // Un store sur fichier sans clé de chiffrement doit être rejeté par Memory::open.
+    // Les stores `:memory:` sont exemptés (éphémères, chiffrement sans objet).
+    let path = std::env::temp_dir().join(format!("basemyai_enc_test_{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path); // état propre
+
+    let store = Store::open(&path, None).await.expect("store opens sans clé");
+    let agent = AgentId::new("test-enc").expect("valid");
+    let result = Memory::open(store, Box::new(FakeEmbedder), agent).await;
+
+    let _ = std::fs::remove_file(&path); // nettoyage
+
+    assert!(
+        matches!(result, Err(basemyai::MemoryError::EncryptionRequired)),
+        "Memory::open doit refuser un store fichier non chiffré"
+    );
+}
+
+#[tokio::test]
+async fn open_in_memory_store_bypasses_encryption_requirement() {
+    // Les stores `:memory:` sont éphémères — Memory::open les accepte sans clé.
+    let store = Store::open_in_memory().await.expect("store opens");
+    let agent = AgentId::new("test-mem").expect("valid");
+    Memory::open(store, Box::new(FakeEmbedder), agent)
+        .await
+        .expect("Memory::open accepte un store in-memory sans clé de chiffrement");
 }

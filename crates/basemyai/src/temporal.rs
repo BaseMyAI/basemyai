@@ -1,7 +1,7 @@
 //! RAG temporel (ADR-005). Chaque mémoire porte une fenêtre de validité ; le
 //! recall ne retourne que ce qui est **pertinent ET encore valide**.
 //!
-//! Le filtre temporel s'exprime via le [`Filter`](basemyai_core::Filter)
+//! Le filtre temporel s'exprime via le [`basemyai_core::Filter`]
 //! paramétré du core — le core ne sait pas que le filtre concerne le temps.
 
 use basemyai_core::{Filter, Value};
@@ -20,7 +20,10 @@ impl Validity {
     /// Valide à partir de `from`, sans expiration.
     #[must_use]
     pub fn since(from: i64) -> Self {
-        Self { valid_from: from, valid_until: None }
+        Self {
+            valid_from: from,
+            valid_until: None,
+        }
     }
 
     /// `true` si la validité couvre l'instant `now` (Unix UTC).

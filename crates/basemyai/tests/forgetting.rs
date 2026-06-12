@@ -64,13 +64,24 @@ async fn evicts_least_important_beyond_capacity() {
     insert(&store, "m4", "a", 0.7, Some(t), t).await;
     insert(&store, "m5", "a", 0.3, Some(t), t).await;
 
-    let task = AdaptiveForgetting { capacity_per_agent: 3, recency_half_life_secs: 86_400 };
+    let task = AdaptiveForgetting {
+        capacity_per_agent: 3,
+        recency_half_life_secs: 86_400,
+    };
     task.run(&store).await.expect("run");
 
-    assert_eq!(count_for(&store, "a").await, 3, "la capacité par agent doit être respectée");
+    assert_eq!(
+        count_for(&store, "a").await,
+        3,
+        "la capacité par agent doit être respectée"
+    );
     let kept = remaining_ids(&store, "a").await;
     // Les 3 plus importants : m2 (0.9), m4 (0.7), m3 (0.5).
-    assert_eq!(kept, vec!["m2".to_string(), "m3".to_string(), "m4".to_string()], "doivent rester les plus importants");
+    assert_eq!(
+        kept,
+        vec!["m2".to_string(), "m3".to_string(), "m4".to_string()],
+        "doivent rester les plus importants"
+    );
 }
 
 #[tokio::test]
@@ -87,11 +98,18 @@ async fn capacity_is_per_agent_isolated() {
     // Agent B : 1 seul souvenir => intouché malgré l'éviction de A.
     insert(&store, "b1", "B", 0.01, Some(t), t).await;
 
-    let task = AdaptiveForgetting { capacity_per_agent: 2, recency_half_life_secs: 86_400 };
+    let task = AdaptiveForgetting {
+        capacity_per_agent: 2,
+        recency_half_life_secs: 86_400,
+    };
     task.run(&store).await.expect("run");
 
     assert_eq!(count_for(&store, "A").await, 2, "A plafonné à 2");
-    assert_eq!(count_for(&store, "B").await, 1, "B ne doit pas être touché par l'éviction de A");
+    assert_eq!(
+        count_for(&store, "B").await,
+        1,
+        "B ne doit pas être touché par l'éviction de A"
+    );
     assert_eq!(remaining_ids(&store, "B").await, vec!["b1".to_string()]);
 }
 
@@ -108,7 +126,10 @@ async fn recency_breaks_ties_at_equal_importance() {
     insert(&store, "recent", "a", 0.5, Some(recent), old).await;
 
     // `now` proche de `recent` : "recent" a une récence ~1, "old" ~0.
-    let task = AdaptiveForgetting { capacity_per_agent: 1, recency_half_life_secs: 3_600 };
+    let task = AdaptiveForgetting {
+        capacity_per_agent: 1,
+        recency_half_life_secs: 3_600,
+    };
     // On appelle run après avoir figé un now suffisamment grand via insertion :
     // la tâche utilise now_unix() (temps réel courant >> recent), donc l'écart
     // (now - recent) << (now - old) garde "recent".

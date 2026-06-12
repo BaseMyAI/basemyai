@@ -77,11 +77,7 @@ pub fn rrf_fuse(rankings: &[Ranking], k: f64) -> Vec<Fused> {
     // Tri par score décroissant ; départage déterministe par id croissant
     // (lexicographique). `total_cmp` garantit un ordre total même si un NaN
     // venait à apparaître — ici impossible, mais le tri reste sûr.
-    fused.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    fused.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
 
     fused
 }

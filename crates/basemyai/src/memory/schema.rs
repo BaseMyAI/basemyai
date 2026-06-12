@@ -68,8 +68,17 @@ ALTER TABLE memory ADD COLUMN last_access INTEGER;
 #[must_use]
 pub fn schema() -> Vec<Migration> {
     vec![
-        Migration { version: 1, up_sql: MEMORY_SCHEMA_V1 },
-        Migration { version: 2, up_sql: GRAPH_SCHEMA_V2 },
-        Migration { version: 3, up_sql: MEMORY_SCHEMA_V3 },
+        Migration {
+            version: 1,
+            up_sql: MEMORY_SCHEMA_V1,
+        },
+        Migration {
+            version: 2,
+            up_sql: GRAPH_SCHEMA_V2,
+        },
+        Migration {
+            version: 3,
+            up_sql: MEMORY_SCHEMA_V3,
+        },
     ]
 }

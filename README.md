@@ -9,7 +9,10 @@
     <a href="PRD.md">PRD</a>
   </p>
 
-  <img src="https://img.shields.io/badge/rust-1.78%2B-orange?logo=rust" alt="Rust 1.78+">
+  <a href="https://github.com/basemyai/basemyai/actions/workflows/ci.yml">
+    <img src="https://github.com/basemyai/basemyai/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  <img src="https://img.shields.io/badge/rust-1.95%2B-orange?logo=rust" alt="Rust 1.95+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License">
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey" alt="Platforms">
   <img src="https://img.shields.io/badge/python-PyO3-3776AB?logo=python" alt="Python via PyO3">

@@ -2,7 +2,8 @@
 //! isolation par agent, expiration temporelle. Embedder fake déterministe.
 
 use basemyai::temporal::Validity;
-use basemyai::{AgentId, Memory, MemoryLayer};
+use basemyai::{AgentId, AgentStats, Memory, MemoryLayer};
+use basemyai_core::libsql;
 use basemyai_core::{Embedder, Result, Store};
 
 const DIM: usize = 384;
@@ -53,12 +54,19 @@ fn now() -> i64 {
 #[tokio::test]
 async fn remember_then_recall_returns_item() {
     let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a")).await.expect("open memory");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
 
-    mem.remember("the sky is blue", MemoryLayer::Semantic).await.expect("remember");
+    mem.remember("the sky is blue", MemoryLayer::Semantic)
+        .await
+        .expect("remember");
 
     let hits = mem.recall("the sky is blue", 5).await.expect("recall");
-    assert!(hits.iter().any(|r| r.text == "the sky is blue"), "recall doit retrouver l'item mémorisé");
+    assert!(
+        hits.iter().any(|r| r.text == "the sky is blue"),
+        "recall doit retrouver l'item mémorisé"
+    );
     assert_eq!(hits[0].layer, MemoryLayer::Semantic);
 }
 
@@ -84,7 +92,10 @@ async fn isolation_hides_other_agents_items() {
 
     // Mémoire bornée à l'agent B sur la MÊME base.
     let mem_b = Memory::new(store, Box::new(FakeEmbedder), agent("B"));
-    mem_b.remember("public note of B", MemoryLayer::Semantic).await.expect("B remembers");
+    mem_b
+        .remember("public note of B", MemoryLayer::Semantic)
+        .await
+        .expect("B remembers");
 
     let hits = mem_b.recall("secret of agent A", 5).await.expect("B recalls");
     assert!(
@@ -96,20 +107,260 @@ async fn isolation_hides_other_agents_items() {
 #[tokio::test]
 async fn temporal_excludes_expired_items() {
     let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a")).await.expect("open memory");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
 
     let n = now();
     // valid_until dans le passé => expiré.
-    let expired = Validity { valid_from: n - 100, valid_until: Some(n - 10) };
-    mem.remember_with("stale fact", MemoryLayer::Semantic, expired).await.expect("remember expired");
+    let expired = Validity {
+        valid_from: n - 100,
+        valid_until: Some(n - 10),
+    };
+    mem.remember_with("stale fact", MemoryLayer::Semantic, expired)
+        .await
+        .expect("remember expired");
 
     // valide actuellement.
-    let live = Validity { valid_from: n - 100, valid_until: Some(n + 10_000) };
-    mem.remember_with("fresh fact", MemoryLayer::Semantic, live).await.expect("remember live");
+    let live = Validity {
+        valid_from: n - 100,
+        valid_until: Some(n + 10_000),
+    };
+    mem.remember_with("fresh fact", MemoryLayer::Semantic, live)
+        .await
+        .expect("remember live");
 
     let hits = mem.recall("stale fact", 5).await.expect("recall");
-    assert!(hits.iter().all(|r| r.text != "stale fact"), "un item expiré ne doit pas apparaître");
+    assert!(
+        hits.iter().all(|r| r.text != "stale fact"),
+        "un item expiré ne doit pas apparaître"
+    );
 
     let hits_live = mem.recall("fresh fact", 5).await.expect("recall live");
-    assert!(hits_live.iter().any(|r| r.text == "fresh fact"), "un item valide doit apparaître");
+    assert!(
+        hits_live.iter().any(|r| r.text == "fresh fact"),
+        "un item valide doit apparaître"
+    );
+}
+
+#[tokio::test]
+async fn recall_updates_last_access() {
+    let store = Store::open_in_memory().await.expect("open");
+    let conn = store.connect();
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    mem.remember("traceable fact", MemoryLayer::Semantic)
+        .await
+        .expect("remember");
+
+    // Avant recall : last_access doit être NULL.
+    let mut rows = conn
+        .query(
+            "SELECT last_access FROM memory WHERE content = ?1",
+            libsql::params!["traceable fact"],
+        )
+        .await
+        .expect("query before recall");
+    let row = rows.next().await.expect("next").expect("row");
+    let val: libsql::Value = row.get(0).expect("get");
+    assert!(
+        matches!(val, libsql::Value::Null),
+        "last_access doit être NULL avant recall"
+    );
+
+    let hits = mem.recall("traceable fact", 5).await.expect("recall");
+    assert!(!hits.is_empty(), "recall doit trouver l'item");
+
+    // Après recall : last_access doit être renseigné.
+    let mut rows = conn
+        .query(
+            "SELECT last_access FROM memory WHERE content = ?1",
+            libsql::params!["traceable fact"],
+        )
+        .await
+        .expect("query after recall");
+    let row = rows.next().await.expect("next").expect("row");
+    let val: libsql::Value = row.get(0).expect("get");
+    assert!(
+        matches!(val, libsql::Value::Integer(_)),
+        "last_access doit être défini après recall"
+    );
+}
+
+#[tokio::test]
+async fn recall_by_layer_filters_correctly() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    // Même texte dans deux couches différentes.
+    mem.remember("layered content", MemoryLayer::Semantic)
+        .await
+        .expect("semantic");
+    mem.remember("layered content", MemoryLayer::Episodic)
+        .await
+        .expect("episodic");
+
+    let semantic_hits = mem
+        .recall_by_layer("layered content", MemoryLayer::Semantic, 5)
+        .await
+        .expect("recall semantic");
+    assert!(
+        !semantic_hits.is_empty(),
+        "recall_by_layer Semantic doit retourner des résultats"
+    );
+    assert!(
+        semantic_hits.iter().all(|r| r.layer == MemoryLayer::Semantic),
+        "recall_by_layer Semantic ne doit retourner que des souvenirs Semantic"
+    );
+
+    let episodic_hits = mem
+        .recall_by_layer("layered content", MemoryLayer::Episodic, 5)
+        .await
+        .expect("recall episodic");
+    assert!(
+        !episodic_hits.is_empty(),
+        "recall_by_layer Episodic doit retourner des résultats"
+    );
+    assert!(
+        episodic_hits.iter().all(|r| r.layer == MemoryLayer::Episodic),
+        "recall_by_layer Episodic ne doit retourner que des souvenirs Episodic"
+    );
+}
+
+#[tokio::test]
+async fn invalidate_hides_item_from_recall() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    mem.remember("to be invalidated", MemoryLayer::Semantic)
+        .await
+        .expect("remember");
+
+    // Retrouve l'id via recall.
+    let hits = mem
+        .recall("to be invalidated", 5)
+        .await
+        .expect("recall before invalidate");
+    let id = hits
+        .iter()
+        .find(|r| r.text == "to be invalidated")
+        .expect("item must exist")
+        .id
+        .clone();
+
+    mem.invalidate(&id).await.expect("invalidate");
+
+    // Après invalidation, le recall ne doit plus le retourner.
+    let hits_after = mem
+        .recall("to be invalidated", 5)
+        .await
+        .expect("recall after invalidate");
+    assert!(
+        hits_after.iter().all(|r| r.text != "to be invalidated"),
+        "un item invalidé ne doit plus apparaître dans recall"
+    );
+}
+
+#[tokio::test]
+async fn forget_removes_item_physically() {
+    let store = Store::open_in_memory().await.expect("open");
+    let conn = store.connect();
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    mem.remember("to be forgotten", MemoryLayer::Semantic)
+        .await
+        .expect("remember");
+
+    let hits = mem.recall("to be forgotten", 5).await.expect("recall before forget");
+    let id = hits
+        .iter()
+        .find(|r| r.text == "to be forgotten")
+        .expect("item must exist")
+        .id
+        .clone();
+
+    mem.forget(&id).await.expect("forget");
+
+    // Recall ne doit plus retourner l'item.
+    let hits_after = mem.recall("to be forgotten", 5).await.expect("recall after forget");
+    assert!(
+        hits_after.iter().all(|r| r.text != "to be forgotten"),
+        "un item oublié ne doit plus apparaître dans recall"
+    );
+
+    // La ligne doit être physiquement supprimée.
+    let mut rows = conn
+        .query("SELECT COUNT(*) FROM memory WHERE id = ?1", libsql::params![id])
+        .await
+        .expect("count query");
+    let row = rows.next().await.expect("next").expect("row");
+    let count: i64 = row.get(0).expect("count");
+    assert_eq!(count, 0, "forget doit supprimer physiquement la ligne");
+}
+
+#[tokio::test]
+async fn stats_counts_per_layer() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    mem.remember("s1", MemoryLayer::Semantic).await.expect("s1");
+    mem.remember("s2", MemoryLayer::Semantic).await.expect("s2");
+    mem.remember("e1", MemoryLayer::Episodic).await.expect("e1");
+    mem.remember("p1", MemoryLayer::Procedural).await.expect("p1");
+
+    let s: AgentStats = mem.stats().await.expect("stats");
+    assert_eq!(s.semantic, 2, "2 souvenirs semantic");
+    assert_eq!(s.episodic, 1, "1 souvenir episodic");
+    assert_eq!(s.procedural, 1, "1 souvenir procedural");
+    assert_eq!(s.short_term, 0, "0 souvenir short_term");
+    assert_eq!(s.total(), 4, "total = 4");
+}
+
+#[tokio::test]
+async fn search_graph_scoped_to_entity_mentions() {
+    let store = Store::open_in_memory().await.expect("open");
+    let conn = store.connect();
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    // Souvenir mentionnant une entité du graphe ("Alice").
+    mem.remember("Alice works at Acme", MemoryLayer::Semantic)
+        .await
+        .expect("remember entity");
+    // Souvenir sans entité connue.
+    mem.remember("the sky is blue", MemoryLayer::Semantic)
+        .await
+        .expect("remember other");
+
+    // Ajoute l'entité "Alice" au graphe via SQL direct (conn partagée).
+    conn.execute(
+        "INSERT INTO entity (id, agent_id, kind, label, valid_from, valid_until, importance) \
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, 0)",
+        libsql::params!["e-alice", "a", "person", "Alice", 0_i64],
+    )
+    .await
+    .expect("insert entity");
+
+    let hits = mem.search_graph("who works where?", 5).await.expect("search_graph");
+
+    // Seul le souvenir mentionnant "Alice" doit apparaître.
+    assert!(
+        hits.iter().any(|r| r.text == "Alice works at Acme"),
+        "search_graph doit trouver les souvenirs mentionnant des entités du graphe"
+    );
+    assert!(
+        hits.iter().all(|r| r.text != "the sky is blue"),
+        "search_graph ne doit pas retourner les souvenirs sans entité"
+    );
 }

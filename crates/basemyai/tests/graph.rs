@@ -70,9 +70,17 @@ async fn excludes_expired_entities_and_edges() {
     g.add_entity("live", "thing", "Live").await.expect("live");
     g.add_edge("root", "rel", "live", 1.0).await.expect("edge live");
     // Cible expirée : ne doit pas remonter même si une arête y mène.
-    g.add_entity_with("stale", "thing", "Stale", Validity { valid_from: n - 100, valid_until: Some(n - 10) })
-        .await
-        .expect("stale");
+    g.add_entity_with(
+        "stale",
+        "thing",
+        "Stale",
+        Validity {
+            valid_from: n - 100,
+            valid_until: Some(n - 10),
+        },
+    )
+    .await
+    .expect("stale");
     g.add_edge("root", "rel", "stale", 1.0).await.expect("edge stale");
 
     let reached = g.traverse("root", 2).await.expect("traverse");

@@ -19,17 +19,16 @@
 mod embed;
 mod error;
 mod maintenance;
-mod store;
-mod vector;
+mod storage;
 
-pub use embed::{Device, Embedder};
 /// Embedder Candle réel (BERT/`all-MiniLM-L6-v2`) — gated par la feature `embed`.
 #[cfg(feature = "embed")]
 pub use embed::CandleEmbedder;
+pub use embed::{Device, Embedder};
 pub use error::{CoreError, Result};
 pub use maintenance::{MaintenanceTask, MaintenanceWorker};
-pub use store::{EncryptionKey, Migration, Store};
-pub use vector::{Filter, Neighbor, Value};
+pub use storage::{EncryptionKey, Migration, Store};
+pub use storage::{Filter, Neighbor, Value};
 
 /// Ré-export : les consommateurs déclarent leur schéma et leurs requêtes via
 /// l'API libSQL exposée par [`Store::connect`].
