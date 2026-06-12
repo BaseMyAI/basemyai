@@ -12,12 +12,12 @@
 //! graphe est idempotente (`ON CONFLICT`), et les faits déjà présents sont
 //! ignorés : relancer la consolidation ne duplique rien.
 
-use basemyai_core::libsql;
 use basemyai_core::CoreError;
+use basemyai_core::libsql;
 use serde::Deserialize;
 
-use crate::inference::LlmInference;
-use crate::{now_unix, Graph, Memory, MemoryError, MemoryLayer, Result};
+use super::inference::LlmInference;
+use crate::{Graph, Memory, MemoryError, MemoryLayer, Result, now_unix};
 
 /// Borne le nombre d'épisodes envoyés au LLM en une passe (taille de prompt).
 const MAX_EPISODES: usize = 50;

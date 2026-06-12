@@ -7,14 +7,21 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/basemyai"
+keywords = ["memory", "agent", "ai", "rag", "vector-search"]
+categories = ["database-implementations", "algorithms"]
 
 [features]
-# SQLite est non-optionnel dans le core. `embed` active l'inférence Candle.
+# SQLite est non-optionnel dans le core.
+# `embed`  : active l'inférence Candle (lourd, exige les fichiers modèle).
+# `crypto` : chiffrement libSQL au repos — obligatoire pour Memory::open sur fichier
+#            (ADR-007). Exige CMake au build time.
 default = []
 embed = ["basemyai-core/embed"]
+crypto = ["basemyai-core/crypto"]
 
 [dependencies]
-basemyai-core = { path = "../basemyai-core" }
+basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
 thiserror.workspace = true
 serde.workspace = true
 tokio.workspace = true
@@ -29,6 +36,7 @@ dirs = { workspace = true }
 serde_json = { workspace = true }
 # Client HTTP async — détection des serveurs LLM locaux (Ollama, llama.cpp).
 reqwest = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # Accès direct aux types du core dans les tests d'intégration (fakes pour la DI).

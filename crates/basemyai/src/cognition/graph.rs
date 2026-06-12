@@ -36,10 +36,13 @@ pub struct Graph {
 
 impl Graph {
     /// Construit une façade graphe sur le store d'une mémoire déjà migrée
-    /// (le schéma graphe est posé par [`schema`](crate::schema) en version 2).
+    /// (le schéma graphe est posé par `schema` en version 2).
     #[must_use]
     pub fn new(store: &Store, agent: AgentId) -> Self {
-        Self { conn: store.connect(), agent }
+        Self {
+            conn: store.connect(),
+            agent,
+        }
     }
 
     /// L'agent propriétaire de ce graphe.
@@ -136,7 +139,10 @@ impl Graph {
 
         let mut rows = self
             .conn
-            .query(sql, libsql::params![start, self.agent.as_str(), now, i64::from(max_depth)])
+            .query(
+                sql,
+                libsql::params![start, self.agent.as_str(), now, i64::from(max_depth)],
+            )
             .await
             .map_err(storage)?;
 

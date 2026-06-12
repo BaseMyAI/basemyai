@@ -7,7 +7,7 @@ resolver = "3"
 members = ["crates/basemyai-core", "crates/basemyai"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -36,7 +36,8 @@ sysinfo = "0.32"
 dirs = "5"
 # Client HTTP async (provisioning LLM : détection Ollama/llama.cpp). rustls évite
 # OpenSSL sur Windows (pas de dep système supplémentaire).
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+sha2 = "0.10"
 
 # Lints partagés par tout le workspace (Rust 2026).
 [workspace.lints.rust]

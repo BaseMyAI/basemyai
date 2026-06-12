@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+documentation = "https://docs.rs/basemyai-core"
+keywords = ["embedded", "vector-search", "libsql", "embeddings", "sqlite"]
+categories = ["database-implementations", "algorithms"]
 
 [features]
 default = []

@@ -104,4 +104,4 @@ cargo fmt --all -- --check
 
 ---
 
-*Fait par un outil d'assistance — demandez si vous voulez que j'ajoute les corrections mineures automatiquement (formatage, clippy), ou que je committe les changements en staging).*
+_Fait par un outil d'assistance — demandez si vous voulez que j'ajoute les corrections mineures automatiquement (formatage, clippy), ou que je committe les changements en staging)._

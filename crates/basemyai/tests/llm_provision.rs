@@ -5,10 +5,7 @@
 //!   serveur actif — aucun téléchargement, aucune erreur).
 //! - Test d'intégration réel (`#[ignore]`) : nécessite un serveur Ollama actif.
 
-use basemyai::llm_provision::{
-    BackendKind, LlmOption, KNOWN_MODELS, best_llm_option, detect_llm_options,
-    propose_models_to_install,
-};
+use basemyai::{BackendKind, KNOWN_MODELS, LlmOption, best_llm_option, detect_llm_options, propose_models_to_install};
 
 /// Fabrique une option factice avec un coût mémoire connu.
 fn fake_option(model_id: &str, ram_mb: u64, backend: BackendKind) -> LlmOption {
@@ -35,9 +32,9 @@ fn best_option_picks_heaviest_fitting() {
     // Options disponibles : 2 000 Mo, 4 700 Mo, 5 500 Mo.
     // → attend llama3.1:8b (4 700 Mo) : le plus lourd qui tient.
     let options = vec![
-        fake_option("gemma2:9b",    5_500, BackendKind::Ollama),
-        fake_option("llama3.1:8b",  4_700, BackendKind::Ollama),
-        fake_option("llama3.2:3b",  2_000, BackendKind::Ollama),
+        fake_option("gemma2:9b", 5_500, BackendKind::Ollama),
+        fake_option("llama3.1:8b", 4_700, BackendKind::Ollama),
+        fake_option("llama3.2:3b", 2_000, BackendKind::Ollama),
     ];
     // On ne peut pas contrôler la RAM réelle de la machine dans un test unitaire,
     // donc on vérifie le comportement de la fonction sur un sous-ensemble fictif.
@@ -49,11 +46,12 @@ fn best_option_picks_heaviest_fitting() {
         assert!(p.ram_mb.is_some(), "l'option choisie doit avoir un coût mémoire connu");
         // Elle doit être le max parmi les options filtrées.
         let budget = pick.and_then(|x| x.ram_mb);
-        let max_fitting = options.iter()
-            .filter(|o| o.ram_mb <= budget)
-            .max_by_key(|o| o.ram_mb);
+        let max_fitting = options.iter().filter(|o| o.ram_mb <= budget).max_by_key(|o| o.ram_mb);
         if let Some(expected) = max_fitting {
-            assert_eq!(p.model_id, expected.model_id, "doit choisir le modèle le plus lourd qui tient");
+            assert_eq!(
+                p.model_id, expected.model_id,
+                "doit choisir le modèle le plus lourd qui tient"
+            );
         }
     }
     // Si None : machine avec moins de 2 000 Mo libre, acceptable en test.
@@ -97,7 +95,10 @@ fn anythingllm_excluded_from_best_option() {
         backend: BackendKind::AnythingLlm,
         ram_mb: None,
     }];
-    assert!(best_llm_option(&options).is_none(), "AnythingLLM ne doit jamais être sélectionné");
+    assert!(
+        best_llm_option(&options).is_none(),
+        "AnythingLLM ne doit jamais être sélectionné"
+    );
 }
 
 #[test]
@@ -127,12 +128,20 @@ fn known_models_2026_include_key_models() {
     // Vérifier la présence des modèles importants 2026.
     let tags: Vec<&str> = KNOWN_MODELS.iter().map(|m| m.ollama_tag).collect();
     for expected in &[
-        "qwen3:14b", "qwen3:8b", "qwen3:4b",
-        "gemma3:12b", "gemma3:4b",
-        "phi4-mini", "deepseek-r1:7b",
-        "llama3.3:8b", "devstral:24b",
+        "qwen3:14b",
+        "qwen3:8b",
+        "qwen3:4b",
+        "gemma3:12b",
+        "gemma3:4b",
+        "phi4-mini",
+        "deepseek-r1:7b",
+        "llama3.3:8b",
+        "devstral:24b",
     ] {
-        assert!(tags.contains(expected), "modèle 2026 manquant dans KNOWN_MODELS : {expected}");
+        assert!(
+            tags.contains(expected),
+            "modèle 2026 manquant dans KNOWN_MODELS : {expected}"
+        );
     }
 }
 
@@ -157,7 +166,8 @@ fn propose_models_returns_compatible_subset() {
     for p in &proposals {
         assert!(
             KNOWN_MODELS.iter().any(|m| m.ollama_tag == p.ollama_tag),
-            "proposal '{}' doit être dans KNOWN_MODELS", p.ollama_tag
+            "proposal '{}' doit être dans KNOWN_MODELS",
+            p.ollama_tag
         );
     }
 }
@@ -181,7 +191,13 @@ async fn detect_returns_empty_or_list_without_panic() {
 #[ignore = "nécessite un serveur Ollama actif (ollama serve)"]
 async fn integration_full_llm_cycle() {
     use basemyai::{LlmInference, choose_llm};
-    let provision = choose_llm().await.expect("Ollama doit être actif avec au moins un modèle");
-    let response = provision.backend.complete("Réponds juste 'ok'.").await.expect("completion");
+    let provision = choose_llm()
+        .await
+        .expect("Ollama doit être actif avec au moins un modèle");
+    let response = provision
+        .backend
+        .complete("Réponds juste 'ok'.")
+        .await
+        .expect("completion");
     assert!(!response.is_empty(), "la réponse du LLM ne doit pas être vide");
 }

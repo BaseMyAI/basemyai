@@ -4,7 +4,10 @@ use libsql::Builder;
 
 #[tokio::test]
 async fn libsql_builds_and_native_vector_works() {
-    let db = Builder::new_local(":memory:").build().await.expect("build in-memory db");
+    let db = Builder::new_local(":memory:")
+        .build()
+        .await
+        .expect("build in-memory db");
     let conn = db.connect().expect("connect");
 
     conn.execute_batch(
@@ -22,10 +25,7 @@ async fn libsql_builds_and_native_vector_works() {
         .expect("insert vector 2");
 
     let mut rows = conn
-        .query(
-            "SELECT id FROM vector_top_k('item_idx', vector('[1,2,3]'), 1)",
-            (),
-        )
+        .query("SELECT id FROM vector_top_k('item_idx', vector('[1,2,3]'), 1)", ())
         .await
         .expect("vector_top_k query");
     let row = rows.next().await.expect("row result").expect("at least one row");

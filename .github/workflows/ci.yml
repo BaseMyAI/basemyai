@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Lint + tests — features par défaut ──────────────────────────────────────
+  ci:
+    name: CI — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml épingle la version (1.95) — dtolnay la respecte.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Cache `.cargo/registry` + `target/` par OS + Cargo.lock.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: clippy (default)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Compile séparément pour éviter l'OOM Windows du build workspace complet.
+      - name: test basemyai-core
+        run: cargo test -p basemyai-core
+
+      - name: test basemyai
+        run: cargo test -p basemyai
+
+  # ── Feature `embed` : Candle ML ─────────────────────────────────────────────
+  embed:
+    name: embed — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: embed
+
+      - name: clippy (embed)
+        run: cargo clippy --workspace --all-targets --features embed -- -D warnings
+
+      # Les tests embed réels sont #[ignore] (exigent BASEMYAI_MODEL_DIR) ;
+      # seul le compile-check est utile ici.
+      - name: test basemyai-core (embed)
+        run: cargo test -p basemyai-core --features embed
+
+      - name: test basemyai (embed)
+        run: cargo test -p basemyai --features embed
+
+  # ── Feature `crypto` : chiffrement libSQL — exige CMake ──────────────────────
+  crypto:
+    name: crypto — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y cmake
+
+      - name: Install CMake (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      # Workaround libsql-ffi : le build script appelle `cp` qui n'est pas sur
+      # le PATH par défaut de PowerShell ; Git Bash l'expose.
+      - name: Add Git usr/bin to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "C:/Program Files/Git/usr/bin" >> "$GITHUB_PATH"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: crypto
+
+      - name: clippy (crypto)
+        run: cargo clippy --workspace --all-targets --features crypto -- -D warnings
+
+      - name: test basemyai-core (crypto)
+        run: cargo test -p basemyai-core --features crypto
+
+      - name: test basemyai (crypto)
+        run: cargo test -p basemyai --features crypto

@@ -1,6 +1,6 @@
 //! Store libSQL réel : migrations idempotentes, roundtrip, vecteur natif.
 
-use basemyai_core::{libsql, EncryptionKey, Filter, Migration, Store, Value};
+use basemyai_core::{EncryptionKey, Filter, Migration, Store, Value, libsql};
 
 const SCHEMA: [Migration; 1] = [Migration {
     version: 1,
@@ -19,8 +19,13 @@ async fn migrate_applies_schema_and_is_idempotent() {
     store.migrate(&SCHEMA).await.expect("re-migrate is a no-op");
 
     let conn = store.connect();
-    conn.execute("INSERT INTO note (body) VALUES ('hello')", ()).await.expect("insert");
-    let mut rows = conn.query("SELECT body FROM note WHERE id = 1", ()).await.expect("select");
+    conn.execute("INSERT INTO note (body) VALUES ('hello')", ())
+        .await
+        .expect("insert");
+    let mut rows = conn
+        .query("SELECT body FROM note WHERE id = 1", ())
+        .await
+        .expect("select");
     let row = rows.next().await.expect("row").expect("one row");
     let body: String = row.get(0).expect("get body");
     assert_eq!(body, "hello");
@@ -30,8 +35,14 @@ async fn migrate_applies_schema_and_is_idempotent() {
 async fn native_vector_knn_returns_nearest() {
     let store = Store::open_in_memory().await.expect("open");
     store.ensure_vector_table("emb", 3).await.expect("vector table");
-    store.vector_upsert("emb", "a", &[1.0, 2.0, 3.0]).await.expect("upsert a");
-    store.vector_upsert("emb", "b", &[9.0, 9.0, 9.0]).await.expect("upsert b");
+    store
+        .vector_upsert("emb", "a", &[1.0, 2.0, 3.0])
+        .await
+        .expect("upsert a");
+    store
+        .vector_upsert("emb", "b", &[9.0, 9.0, 9.0])
+        .await
+        .expect("upsert b");
 
     let hits = store.vector_knn("emb", &[1.0, 2.0, 3.0], 1, None).await.expect("knn");
     assert_eq!(hits.len(), 1);
@@ -42,15 +53,29 @@ async fn native_vector_knn_returns_nearest() {
 async fn knn_reports_real_cosine_distance() {
     let store = Store::open_in_memory().await.expect("open");
     store.ensure_vector_table("emb", 3).await.expect("vector table");
-    store.vector_upsert("emb", "same", &[1.0, 0.0, 0.0]).await.expect("upsert same");
-    store.vector_upsert("emb", "orth", &[0.0, 1.0, 0.0]).await.expect("upsert orth");
+    store
+        .vector_upsert("emb", "same", &[1.0, 0.0, 0.0])
+        .await
+        .expect("upsert same");
+    store
+        .vector_upsert("emb", "orth", &[0.0, 1.0, 0.0])
+        .await
+        .expect("upsert orth");
 
     let hits = store.vector_knn("emb", &[1.0, 0.0, 0.0], 2, None).await.expect("knn");
     assert_eq!(hits.len(), 2);
     // Trié par distance croissante : le vecteur identique d'abord (~0), l'orthogonal ensuite (~1).
     assert_eq!(hits[0].id, "same");
-    assert!(hits[0].distance < 0.001, "distance au vecteur identique ~0, vu {}", hits[0].distance);
-    assert!(hits[1].distance > 0.9, "distance à l'orthogonal ~1, vu {}", hits[1].distance);
+    assert!(
+        hits[0].distance < 0.001,
+        "distance au vecteur identique ~0, vu {}",
+        hits[0].distance
+    );
+    assert!(
+        hits[1].distance > 0.9,
+        "distance à l'orthogonal ~1, vu {}",
+        hits[1].distance
+    );
 }
 
 #[tokio::test]
@@ -65,11 +90,17 @@ async fn knn_filter_oversamples_to_return_k() {
     for i in 0..20i64 {
         let id = format!("v{i}");
         let drift = (i as f32) * 0.01;
-        store.vector_upsert("emb", &id, &[1.0 - drift, drift, 0.0]).await.expect("upsert");
+        store
+            .vector_upsert("emb", &id, &[1.0 - drift, drift, 0.0])
+            .await
+            .expect("upsert");
         let keep = i64::from(i >= 10);
         store
             .connect()
-            .execute("INSERT INTO keep_flag (id, keep) VALUES (?1, ?2)", libsql::params![id, keep])
+            .execute(
+                "INSERT INTO keep_flag (id, keep) VALUES (?1, ?2)",
+                libsql::params![id, keep],
+            )
             .await
             .expect("flag");
     }
@@ -78,8 +109,15 @@ async fn knn_filter_oversamples_to_return_k() {
         "t.id IN (SELECT id FROM keep_flag WHERE keep = ?)",
         vec![Value::Integer(1)],
     );
-    let hits = store.vector_knn("emb", &[1.0, 0.0, 0.0], 5, Some(&filter)).await.expect("knn");
-    assert_eq!(hits.len(), 5, "le sur-échantillonnage doit garantir k=5 malgré le filtre");
+    let hits = store
+        .vector_knn("emb", &[1.0, 0.0, 0.0], 5, Some(&filter))
+        .await
+        .expect("knn");
+    assert_eq!(
+        hits.len(),
+        5,
+        "le sur-échantillonnage doit garantir k=5 malgré le filtre"
+    );
     for h in &hits {
         let n: i64 = h.id.trim_start_matches('v').parse().expect("id");
         assert!(n >= 10, "seuls les keep=1 (v10..v19) doivent passer, vu {}", h.id);
@@ -111,14 +149,18 @@ async fn encrypted_roundtrip_and_wrong_key_fails() {
 
     // Écrit un vecteur sous la clé correcte, puis ferme.
     {
-        let store = Store::open(&path, Some(EncryptionKey::new("correct-horse"))).await.expect("open encrypted");
+        let store = Store::open(&path, Some(EncryptionKey::new("correct-horse")))
+            .await
+            .expect("open encrypted");
         store.ensure_vector_table("emb", 3).await.expect("table");
         store.vector_upsert("emb", "a", &[1.0, 2.0, 3.0]).await.expect("upsert");
     }
 
     // Rouvre avec la bonne clé : la donnée est relisible.
     {
-        let store = Store::open(&path, Some(EncryptionKey::new("correct-horse"))).await.expect("reopen ok");
+        let store = Store::open(&path, Some(EncryptionKey::new("correct-horse")))
+            .await
+            .expect("reopen ok");
         let hits = store.vector_knn("emb", &[1.0, 2.0, 3.0], 1, None).await.expect("knn");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "a");
@@ -131,7 +173,10 @@ async fn encrypted_roundtrip_and_wrong_key_fails() {
             Ok(store) => store.vector_knn("emb", &[1.0, 2.0, 3.0], 1, None).await.is_ok(),
             Err(_) => false,
         };
-        assert!(!usable, "une mauvaise clé ne doit jamais permettre de lire la base chiffrée");
+        assert!(
+            !usable,
+            "une mauvaise clé ne doit jamais permettre de lire la base chiffrée"
+        );
     }
 
     let _ = std::fs::remove_file(&path);

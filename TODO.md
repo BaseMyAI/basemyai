@@ -16,54 +16,63 @@
 Les surfaces de binding n'ont aucune valeur si le cœur a des trous. Ces items
 doivent être clos avant d'attaquer M1.
 
-### M0.1 — Méthodes `Memory` incomplètes
+### M0.0 — Restructuration architecture ✅ (12 juin 2026)
+
+Reorganisation des modules par domaine sémantique (au lieu de par artefact).
+
+- [x] Organiser `basemyai-core/src/` : `storage/` (store + vector), `embed/` (Embedder + Candle)
+- [x] Organiser `basemyai/src/` : `memory/`, `cognition/`, `provision/`, `maintenance/` + 3 utilitaires (retrieval, temporal, error)
+- [x] Mettre à jour tous les `lib.rs` avec les nouveaux chemins d'import
+- [x] Vérifier compilation : `cargo check --workspace` ✅ 6.66s, zéro avertissement
+- [x] Documenter l'architecture (ARCHITECTURE.md) : flux d'exécution, interfaces, invariants critiques
+- [x] Mettre à jour CLAUDE.md : layout + organisation par domaine sémantique
+
+### M0.1 — Méthodes `Memory` incomplètes ✅ (12 juin 2026)
 
 | # | Méthode | Priorité | Notes |
 |---|---------|----------|-------|
-| [ ] | `Memory::invalidate(id)` | P0 | Met `valid_until = now()` sur une ligne. Sans ça, les faits ne peuvent jamais être corrigés. |
-| [ ] | `Memory::recall_by_layer(query, layer, k)` | P0 | Recall filtré sur une seule couche (episodic only, semantic only…). |
-| [ ] | `Memory::recall` → met à jour `last_access` | P0 | Actuellement `last_access` n'est jamais mis à jour. L'oubli adaptatif est aveugle sans ça. |
-| [ ] | `Memory::forget(id)` | P1 | Suppression physique d'une ligne (GDPR, right to erasure). |
-| [ ] | `Memory::stats() -> AgentStats` | P1 | Nombre de souvenirs par couche, utilisation vectorielle. Utile pour le debug. |
-| [ ] | `Memory::search_graph(query, k)` | P2 | Recall vectoriel limité aux entités du graphe. |
+| [x] | `Memory::invalidate(id)` | P0 | `valid_until = now()` — fait ne peut plus être rappelé mais reste en base. |
+| [x] | `Memory::recall_by_layer(query, layer, k)` | P0 | Filtre SQL `layer = ?` + met à jour `last_access`. |
+| [x] | `Memory::recall` → met à jour `last_access` | P0 | UPDATE post-KNN sur chaque souvenir retourné. |
+| [x] | `Memory::forget(id)` | P1 | Suppression physique (RGPD). |
+| [x] | `Memory::stats() -> AgentStats` | P1 | GROUP BY layer, souvenirs valides uniquement. |
+| [x] | `Memory::search_graph(query, k)` | P2 | KNN + EXISTS sur `entity.label` via `instr`. |
 
-### M0.2 — Wiring `MaintenanceWorker`
-
-| # | Tâche | Notes |
-|---|-------|-------|
-| [ ] | Câbler `AdaptiveForgetting` dans `MaintenanceWorker` | `MaintenanceTask::run` reçoit `&Store`, mais `AdaptiveForgetting` a besoin du `agent_id`. Solution : soit `run` reçoit un contexte enrichi, soit `AdaptiveForgetting` est initialisée avec l'`agent_id`. |
-| [ ] | Câbler `consolidate()` en tâche de fond | Idem : la tâche a besoin de `Arc<Memory>` + `Arc<dyn LlmInference>`. Créer un `ConsolidationTask` wrapper. |
-| [ ] | `MaintenanceWorker::start()` nécessite `Arc<Store>` — refactorer en `Arc<Memory>` | Ou garder `Store` + passer les providers en paramètre. Décision d'archi à trancher. |
-
-### M0.3 — Setup réel du modèle
-
-`setup.rs::provision(consent_to_fetch=true)` retourne une `Err` avec
-_"non encore implémenté"_. À implémenter :
+### M0.2 — Wiring `MaintenanceWorker` ✅ (12 juin 2026)
 
 | # | Tâche | Notes |
 |---|-------|-------|
-| [ ] | Fetch HTTP du modèle `all-MiniLM-L6-v2` depuis HuggingFace | `reqwest` déjà en dépendance. URL : `https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/{fichier}`. Fichiers : `config.json`, `tokenizer.json`, `model.safetensors`. |
-| [ ] | Vérification checksum SHA-256 après download | Valeurs SHA officielles à ancrer dans le code. Jamais de fichier non vérifié. |
-| [ ] | Persistance de la config `{ model_id, dim, device }` | Dans `~/.basemyai/config.json`. Rechargée au démarrage sans re-détecter. |
-| [ ] | Détection VRAM GPU réelle | `sysinfo` ne l'expose pas. Essayer NVML (Linux/Windows, feature `cuda`), `system_profiler` (macOS). `gpu_vram_mb` est `None` dans le code actuel — le budget LLM est sous-estimé sur GPU. |
-| [ ] | Barre de progression lors du fetch | UX : les fichiers font ~90 Mo total, le silence est suspect. |
+| [x] | Câbler `AdaptiveForgetting` dans `MaintenanceWorker` | `PARTITION BY agent_id` dans le SQL — pas besoin d'`agent_id` injecté. S'enregistre directement dans `MaintenanceWorker`. |
+| [x] | Câbler `consolidate()` en tâche de fond | `ConsolidationTask { Arc<Memory>, Arc<dyn LlmInference> }` implémente `MaintenanceTask`, ignore `_store`. |
+| [x] | `MaintenanceWorker::start()` — décision d'archi | Gardé `Arc<Store>`. `ConsolidationTask` est auto-suffisant (porte son propre store via `Arc<Memory>`). |
 
-### M0.4 — Chiffrement obligatoire dans `Memory`
+### M0.3 — Setup réel du modèle ✅ (12 juin 2026)
+
+| # | Tâche | Notes |
+| --- | ----- | ----- |
+| [x] | Fetch HTTP du modèle `all-MiniLM-L6-v2` depuis HuggingFace | `provision(true)` → `fetch_model_files` → `download_and_verify` par fichier. `reqwest` + `sha2`. |
+| [x] | Vérification SHA-256 après download | Hard-check si hash ancré dans `EXPECTED_SHA256` ; sinon companion `.sha256` (confiance HTTPS 1ᵉʳ DL, vérif dès le 2ᵉ). |
+| [x] | Anchrage des SHA-256 officiels | `EXPECTED_SHA256` avec les 3 hashes vérifiés (config/tokenizer/model.safetensors, révision main 12 juin 2026). |
+| [x] | Persistance de la config `{ model_id, dim, device }` | `PersistedProvision` → `~/<data_dir>/basemyai/provision.json`. Rechargée au démarrage via `load_persisted_provision()`. |
+| [x] | Détection VRAM GPU réelle | NVIDIA via `nvidia-smi --query-gpu=memory.total` (subprocess, cross-plateforme). macOS via `system_profiler SPDisplaysDataType -json`. Zéro dep supplémentaire. |
+| [x] | Barre de progression lors du fetch | `provision_with_progress(consent, cb)` — streaming par chunks `response.chunk()`, callback `cb(bytes_reçus, total_opt)` par fichier. |
+
+### M0.4 — Chiffrement obligatoire dans `Memory` ✅ (12 juin 2026)
 
 | # | Tâche | Notes |
 |---|-------|-------|
-| [ ] | `Memory::open` doit échouer si `Store` est ouvert sans clé | Actuellement aucune vérification. ADR-007 : le chiffrement est **obligatoire** dans `basemyai`. Ajouter un `Store::is_encrypted() -> bool` dans le core ou passer une `EncryptionKey` obligatoire à `Memory::open`. |
-| [ ] | Test `open_without_key_fails` | Compléter le test crypto existant. |
+| [x] | `Memory::open` doit échouer si `Store` est ouvert sans clé | `store.path().is_some() && !store.is_encrypted()` → `EncryptionRequired`. Stores `:memory:` exemptés (éphémères). `Store::is_encrypted()` existait déjà dans le core. |
+| [x] | Test `open_without_key_fails` | `open_without_key_fails_for_file_store` + `open_in_memory_store_bypasses_encryption_requirement` dans `contracts.rs`. |
 
-### M0.5 — CI GitHub Actions
+### M0.5 — CI GitHub Actions ✅ (12 juin 2026)
 
 | # | Tâche | Notes |
 |---|-------|-------|
-| [ ] | Workflow `ci.yml` : `cargo test --workspace` + `cargo clippy -- -D warnings` | Sur push + PR. |
-| [ ] | Matrice OS : Ubuntu, Windows, macOS | Obligatoire avant publish (ADR-009). |
-| [ ] | Feature flags dans la matrice : `default`, `embed`, `crypto` | `crypto` exige CMake en CI — à installer dans l'action. |
-| [ ] | Cache des artefacts Rust (`.cargo` + `target`) | Build libSQL/Candle = ~8 min sans cache. |
-| [ ] | Badge CI dans le README | |
+| [x] | Workflow `ci.yml` : `cargo test` + `cargo clippy -- -D warnings` | `.github/workflows/ci.yml` — push + PR. Tests par crate (évite OOM Windows du build workspace). |
+| [x] | Matrice OS : Ubuntu, Windows, macOS | 3 jobs × 3 OS : `ci`, `embed`, `crypto`. |
+| [x] | Feature flags dans la matrice : `default`, `embed`, `crypto` | Job `crypto` installe CMake (apt/brew) + workaround `cp` Git sur PATH Windows (bug libsql-ffi). |
+| [x] | Cache des artefacts Rust (`.cargo` + `target`) | `Swatinem/rust-cache@v2` avec `key:` distinct par feature. |
+| [x] | Badge CI dans le README | Lien vers `https://github.com/basemyai/basemyai/actions/workflows/ci.yml`. |
 
 ---
 
@@ -74,11 +83,12 @@ de le rendre **publiable et utilisable** comme dépendance.
 
 | # | Tâche | Notes |
 |---|-------|-------|
-| [ ] | Compléter `Cargo.toml` des deux crates : `keywords`, `categories`, `documentation` | Requis par crates.io. |
-| [ ] | `cargo doc --no-deps --all-features` sans warning | Ajouter les `//!` et `///` manquants. En particulier `Memory`, `Graph`, `LlmInference`. |
-| [ ] | `examples/rust/memory_basic.rs` | Open, remember, recall, invalidate. Doit compiler et tourner en 10 lignes. |
-| [ ] | `examples/rust/llm_consolidation.rs` | Avec un `FakeLlm` ou Ollama. |
-| [ ] | Fixer la version semver à `0.1.0` et définir la stabilité API | Documenter les types `#[non_exhaustive]` à risque de breaking change. |
+| [x] | Compléter `Cargo.toml` des deux crates : `keywords`, `categories`, `documentation` | Requis par crates.io. Fait le 12 juin 2026. |
+| [x] | Fixer la version semver à `0.1.0` et définir la stabilité API | `version = "0.1.0"` dans le workspace. `#[non_exhaustive]` sur `Device`, `MemoryLayer`, `Value`, `BackendKind`. Documenté dans `CHANGELOG.md`. |
+| [x] | `cargo doc --no-deps --all-features` sans warning | `///` ajoutés sur `EncryptionKey::new`, `MaintenanceWorker::new`, champs `Filter`/`Neighbor`/`Value`. |
+| [x] | `examples/rust/memory_basic.rs` | `crates/basemyai/examples/memory_basic.rs` — FakeEmbedder + in-memory store. Compile sans feature flag. |
+| [x] | `examples/rust/llm_consolidation.rs` | `crates/basemyai/examples/llm_consolidation.rs` — FakeLlm + consolidation. |
+| [ ] | `cargo publish --dry-run` sur les deux crates | Vérifier qu'aucun bloqueur subsiste avant la vraie publication. |
 | [ ] | Publier `basemyai-core` sur crates.io | `cargo publish -p basemyai-core` |
 | [ ] | Publier `basemyai` sur crates.io | `cargo publish -p basemyai` |
 | [ ] | Workflow CI `publish.yml` déclenché sur tag `v*` | |

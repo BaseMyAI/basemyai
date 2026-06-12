@@ -3,7 +3,7 @@
 //! Vérifie la sémantique RRF : score `Σ 1/(k+rang)`, traçabilité des signaux
 //! contributeurs, tri décroissant à départage déterministe, et cas limites.
 
-use basemyai::{Fused, Ranking, RRF_K, rrf_fuse};
+use basemyai::{Fused, RRF_K, Ranking, rrf_fuse};
 
 /// Petit utilitaire : construit un `Ranking` à partir de littéraux.
 fn ranking(signal: &str, ids: &[&str]) -> Ranking {
@@ -30,10 +30,7 @@ fn rrf_favorise_les_ids_presents_dans_plusieurs_signaux() {
     // plusieurs signaux, même sans jamais être n°1) bat un id n°1 d'un seul
     // signal. "x" est n°1 de `vector` mais absent de `graph` ; "y" est 2e des
     // deux signaux. Le cumul de "y" doit dépasser le pic isolé de "x".
-    let rankings = [
-        ranking("vector", &["x", "y"]),
-        ranking("graph", &["z", "y"]),
-    ];
+    let rankings = [ranking("vector", &["x", "y"]), ranking("graph", &["z", "y"])];
 
     let fused = rrf_fuse(&rankings, RRF_K);
 
@@ -58,29 +55,19 @@ fn contributions_liste_les_signaux_sans_doublon_dans_l_ordre_de_premiere_apparit
     // Ordre de première apparition du signal : vector, recency, graph.
     assert_eq!(
         m.contributions,
-        vec![
-            "vector".to_string(),
-            "recency".to_string(),
-            "graph".to_string()
-        ],
+        vec!["vector".to_string(), "recency".to_string(), "graph".to_string()],
         "contributions ordonnées par première apparition, sans doublon"
     );
 
     let n = find(&fused, "n");
-    assert_eq!(
-        n.contributions,
-        vec!["vector".to_string(), "graph".to_string()],
-    );
+    assert_eq!(n.contributions, vec!["vector".to_string(), "graph".to_string()],);
 }
 
 #[test]
 fn score_exact_sur_un_petit_cas_connu() {
     // id "a" en rang 0 de deux signaux avec k=60 → score = 2/60.
     let k = 60.0;
-    let rankings = [
-        ranking("s1", &["a", "b"]),
-        ranking("s2", &["a", "c"]),
-    ];
+    let rankings = [ranking("s1", &["a", "b"]), ranking("s2", &["a", "c"])];
 
     let fused = rrf_fuse(&rankings, k);
 
@@ -135,11 +122,7 @@ fn cas_limite_rankings_globalement_vide() {
 #[test]
 fn cas_limite_ranking_aux_ids_vides_est_ignore() {
     // Un classement vide ne doit ni planter ni introduire d'entrée parasite.
-    let rankings = [
-        ranking("vide", &[]),
-        ranking("plein", &["a"]),
-        ranking("vide2", &[]),
-    ];
+    let rankings = [ranking("vide", &[]), ranking("plein", &["a"]), ranking("vide2", &[])];
 
     let fused = rrf_fuse(&rankings, RRF_K);
 

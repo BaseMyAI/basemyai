@@ -31,17 +31,60 @@ Le **vecteur est natif libSQL** (compile sans CMake). Seule la feature `crypto` 
 - Getters sans préfixe `get_`. `&str` en paramètre plutôt que `String`.
 - Tout doit passer le gate clippy ci-dessus avant commit.
 
-## Layout
+## Layout (restructuré 12 juin 2026)
 
-`crates/basemyai-core/src/` : `store` · `embed` · `maintenance` · `error` · `lib`.
+### `basemyai-core/src/`
 
-`crates/basemyai/src/` :
+```text
+storage/          ← Recherche vectorielle + store libSQL
+  ├─ mod.rs       ← re-exports
+  ├─ store.rs     ← Store async, migrations, chiffrement
+  └─ vector.rs    ← Filter, Value, Neighbor (types paramétrables)
 
-- **Mémoire** : `memory` · `temporal` · `isolation` · `schema` · `error`
-- **Phase 2 Cognition** : `graph` · `retrieval` · `forgetting` · `consolidation` · `inference`
-- **Provisioning** : `setup` (embeddings) · `llm_provision` (LLM hardware-aware)
+embed/            ← Embeddings in-process
+  ├─ mod.rs       ← Device enum, trait Embedder (object-safe)
+  └─ candle.rs    ← CandleEmbedder BERT (feature "embed")
 
-`crates/basemyai/tests/` : `graph` · `retrieval` · `forgetting` · `consolidation` · `llm_provision` · `provisioning`.
+error.rs          ← CoreError (thiserror, #[non_exhaustive])
+maintenance.rs    ← MaintenanceTask, MaintenanceWorker (injection)
+lib.rs            ← re-exports + libsql
+```
+
+### `basemyai/src/`
+
+```text
+memory/           ← Domaine mémoire (4 couches, isolation, validité)
+  ├─ mod.rs       ← façade Memory (remember, recall, recall_by_layer, invalidate, forget, stats, search_graph)
+  ├─ layer.rs     ← MemoryLayer enum, Record, AgentStats
+  ├─ schema.rs    ← Migrations SQL V1/V2/V3 (memory + graph), EMBEDDING_DIM
+  └─ isolation.rs ← AgentId newtype (isolation SQL ADR-006)
+
+cognition/        ← Pipeline Phase 2 (graphe + consolidation + inférence)
+  ├─ mod.rs
+  ├─ inference.rs ← trait LlmInference (object-safe, injecté)
+  ├─ consolidation.rs ← consolidate(memory, llm) → faits + graphe
+  └─ graph.rs     ← Graph {entity, edge}, traverse (CTE récursive)
+
+provision/        ← Provisioning hardware-aware
+  ├─ mod.rs       ← re-exports
+  ├─ embedder.rs  ← detect_hardware(), provision(), SHA256 verification
+  └─ llm.rs       ← KNOWN_MODELS, detect_llm_options(), choose_llm(), OllamaBackend
+
+maintenance/      ← Tâches de fond
+  ├─ mod.rs       ← ConsolidationTask (Arc<Memory> + Arc<dyn LlmInference>)
+  ├─ gc.rs        ← ExpiredMemoryGc (ADR-005)
+  └─ forgetting.rs ← AdaptiveForgetting (importance × récence hyperbolique)
+
+retrieval.rs      ← Racine : Ranking, Fused, rrf_fuse (pur méchanisme)
+temporal.rs       ← Racine : Validity (valid_from/until), temporal_filter()
+error.rs          ← Racine : MemoryError (thiserror)
+lib.rs            ← re-exports
+```
+
+**Organisation par domaine sémantique, pas par artefact.** Chaque dossier
+regroupe un concept métier et expose un API cohérent via `mod.rs`.
+
+`crates/basemyai/tests/` : TBD (sera restructuré en accord avec src/).
 
 ## Statut (juin 2026)
 

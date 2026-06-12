@@ -34,8 +34,8 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::inference::LlmInference;
-use crate::setup::detect_hardware;
+use super::embedder::detect_hardware;
+use crate::LlmInference;
 use crate::{MemoryError, Result};
 
 // ─── Table des modèles connus (Juin 2026) ────────────────────────────────────
@@ -57,38 +57,121 @@ pub struct KnownModel {
 /// (parcours dans cet ordre = « le meilleur possible »). Mise à jour juin 2026.
 pub const KNOWN_MODELS: &[KnownModel] = &[
     // ── Workstation / GPU haut de gamme (≥ 40 Go) ─────────────────────────
-    KnownModel { ollama_tag: "llama3.3:70b",    ram_mb: 45_600, description: "Llama 3.3 70B — haut de gamme, qualité supérieure à 3.1:70b, GPU requis" },
+    KnownModel {
+        ollama_tag: "llama3.3:70b",
+        ram_mb: 45_600,
+        description: "Llama 3.3 70B — haut de gamme, qualité supérieure à 3.1:70b, GPU requis",
+    },
     // ── GPU haute gamme (≥ 20 Go) ──────────────────────────────────────────
-    KnownModel { ollama_tag: "gemma3:27b",       ram_mb: 22_500, description: "Gemma 3 27B — top open-source multimodal Google 2026" },
-    KnownModel { ollama_tag: "qwen3:32b",        ram_mb: 22_200, description: "Qwen 3 32B — raisonnement avancé, top open-source 2026" },
+    KnownModel {
+        ollama_tag: "gemma3:27b",
+        ram_mb: 22_500,
+        description: "Gemma 3 27B — top open-source multimodal Google 2026",
+    },
+    KnownModel {
+        ollama_tag: "qwen3:32b",
+        ram_mb: 22_200,
+        description: "Qwen 3 32B — raisonnement avancé, top open-source 2026",
+    },
     // ── GPU milieu de gamme (12–16 Go) ─────────────────────────────────────
-    KnownModel { ollama_tag: "devstral:24b",     ram_mb: 14_400, description: "Devstral 24B — Mistral, spécialisé agents et génération de code" },
-    KnownModel { ollama_tag: "gemma3:12b",       ram_mb: 12_400, description: "Gemma 3 12B — excellent multilingue, code et instruction-following" },
-    KnownModel { ollama_tag: "qwen3:14b",        ram_mb: 10_700, description: "Qwen 3 14B — excellent code + raisonnement, recommandé milieu de gamme" },
-    KnownModel { ollama_tag: "deepseek-r1:14b",  ram_mb:  9_500, description: "DeepSeek-R1 14B distill — chain-of-thought, très précis en maths/code" },
-    KnownModel { ollama_tag: "phi4:14b",         ram_mb:  9_000, description: "Phi-4 14B Microsoft — fort raisonnement dans un modèle compact" },
+    KnownModel {
+        ollama_tag: "devstral:24b",
+        ram_mb: 14_400,
+        description: "Devstral 24B — Mistral, spécialisé agents et génération de code",
+    },
+    KnownModel {
+        ollama_tag: "gemma3:12b",
+        ram_mb: 12_400,
+        description: "Gemma 3 12B — excellent multilingue, code et instruction-following",
+    },
+    KnownModel {
+        ollama_tag: "qwen3:14b",
+        ram_mb: 10_700,
+        description: "Qwen 3 14B — excellent code + raisonnement, recommandé milieu de gamme",
+    },
+    KnownModel {
+        ollama_tag: "deepseek-r1:14b",
+        ram_mb: 9_500,
+        description: "DeepSeek-R1 14B distill — chain-of-thought, très précis en maths/code",
+    },
+    KnownModel {
+        ollama_tag: "phi4:14b",
+        ram_mb: 9_000,
+        description: "Phi-4 14B Microsoft — fort raisonnement dans un modèle compact",
+    },
     // ── GPU d'entrée de gamme / CPU haute mémoire (6–8 Go) ─────────────────
-    KnownModel { ollama_tag: "mistral-nemo:12b", ram_mb:  7_200, description: "Mistral Nemo 12B — généraliste, fenêtre de contexte 128k" },
-    KnownModel { ollama_tag: "llama3.3:8b",      ram_mb:  6_200, description: "Llama 3.3 8B — qualité supérieure à 3.1:8b, même empreinte" },
-    KnownModel { ollama_tag: "llama3.1:8b",      ram_mb:  5_800, description: "Llama 3.1 8B — très répandu, fenêtre 128k, toujours pertinent" },
-    KnownModel { ollama_tag: "qwen3:8b",         ram_mb:  5_100, description: "Qwen 3 8B — excellent code et raisonnement, compact" },
+    KnownModel {
+        ollama_tag: "mistral-nemo:12b",
+        ram_mb: 7_200,
+        description: "Mistral Nemo 12B — généraliste, fenêtre de contexte 128k",
+    },
+    KnownModel {
+        ollama_tag: "llama3.3:8b",
+        ram_mb: 6_200,
+        description: "Llama 3.3 8B — qualité supérieure à 3.1:8b, même empreinte",
+    },
+    KnownModel {
+        ollama_tag: "llama3.1:8b",
+        ram_mb: 5_800,
+        description: "Llama 3.1 8B — très répandu, fenêtre 128k, toujours pertinent",
+    },
+    KnownModel {
+        ollama_tag: "qwen3:8b",
+        ram_mb: 5_100,
+        description: "Qwen 3 8B — excellent code et raisonnement, compact",
+    },
     // ── CPU avec 8 Go RAM (4–5 Go) ─────────────────────────────────────────
-    KnownModel { ollama_tag: "deepseek-r1:7b",   ram_mb:  4_500, description: "DeepSeek-R1 7B distill — raisonnement chain-of-thought compact" },
-    KnownModel { ollama_tag: "mistral:7b",       ram_mb:  4_100, description: "Mistral 7B — référence CPU, très répandu, solide" },
+    KnownModel {
+        ollama_tag: "deepseek-r1:7b",
+        ram_mb: 4_500,
+        description: "DeepSeek-R1 7B distill — raisonnement chain-of-thought compact",
+    },
+    KnownModel {
+        ollama_tag: "mistral:7b",
+        ram_mb: 4_100,
+        description: "Mistral 7B — référence CPU, très répandu, solide",
+    },
     // ── CPU avec 6 Go RAM (3–4 Go) ─────────────────────────────────────────
-    KnownModel { ollama_tag: "qwen3:4b",         ram_mb:  3_600, description: "Qwen 3 4B — excellent rapport qualité/RAM 2026, meilleur choix léger" },
-    KnownModel { ollama_tag: "gemma3:4b",        ram_mb:  3_000, description: "Gemma 3 4B — multilingue, solide sur CPU" },
-    KnownModel { ollama_tag: "phi4-mini",        ram_mb:  2_800, description: "Phi-4 Mini 3.8B — fort raisonnement sur CPU, successeur de phi3.5" },
+    KnownModel {
+        ollama_tag: "qwen3:4b",
+        ram_mb: 3_600,
+        description: "Qwen 3 4B — excellent rapport qualité/RAM 2026, meilleur choix léger",
+    },
+    KnownModel {
+        ollama_tag: "gemma3:4b",
+        ram_mb: 3_000,
+        description: "Gemma 3 4B — multilingue, solide sur CPU",
+    },
+    KnownModel {
+        ollama_tag: "phi4-mini",
+        ram_mb: 2_800,
+        description: "Phi-4 Mini 3.8B — fort raisonnement sur CPU, successeur de phi3.5",
+    },
     // ── CPU avec 4 Go RAM (≤ 2 Go) ─────────────────────────────────────────
-    KnownModel { ollama_tag: "llama3.2:3b",      ram_mb:  2_000, description: "Llama 3.2 3B — basse mémoire, contexte multimodal" },
-    KnownModel { ollama_tag: "gemma2:2b",        ram_mb:  1_400, description: "Gemma 2 2B — très léger, qualité correcte" },
-    KnownModel { ollama_tag: "llama3.2:1b",      ram_mb:    700, description: "Llama 3.2 1B — minimaliste, CPU très contraint" },
+    KnownModel {
+        ollama_tag: "llama3.2:3b",
+        ram_mb: 2_000,
+        description: "Llama 3.2 3B — basse mémoire, contexte multimodal",
+    },
+    KnownModel {
+        ollama_tag: "gemma2:2b",
+        ram_mb: 1_400,
+        description: "Gemma 2 2B — très léger, qualité correcte",
+    },
+    KnownModel {
+        ollama_tag: "llama3.2:1b",
+        ram_mb: 700,
+        description: "Llama 3.2 1B — minimaliste, CPU très contraint",
+    },
 ];
 
 // ─── Types de détection ──────────────────────────────────────────────────────
 
 /// Type de serveur LLM local détecté.
+///
+/// `#[non_exhaustive]` : de nouveaux backends peuvent être ajoutés en minor.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BackendKind {
     /// Ollama (`http://localhost:11434`) — runner multi-modèles le plus répandu.
     Ollama,
@@ -159,10 +242,7 @@ const DETECT_TIMEOUT: Duration = Duration::from_secs(1);
 ///
 /// Voir le tableau en tête de module pour la liste des backends et ports sondés.
 pub async fn detect_llm_options() -> Vec<LlmOption> {
-    let client = Client::builder()
-        .timeout(DETECT_TIMEOUT)
-        .build()
-        .unwrap_or_default();
+    let client = Client::builder().timeout(DETECT_TIMEOUT).build().unwrap_or_default();
 
     let mut out = Vec::new();
     // Ollama (port natif, API spécifique)
@@ -259,10 +339,7 @@ fn ram_for(tag: &str) -> Option<u64> {
 #[must_use]
 pub fn best_llm_option(options: &[LlmOption]) -> Option<&LlmOption> {
     let hw = detect_hardware();
-    let budget_mb = hw
-        .gpu_vram_mb
-        .map(|v| v * 9 / 10)
-        .unwrap_or(hw.total_ram_mb * 6 / 10);
+    let budget_mb = hw.gpu_vram_mb.map(|v| v * 9 / 10).unwrap_or(hw.total_ram_mb * 6 / 10);
 
     options
         .iter()
@@ -276,18 +353,12 @@ pub fn best_llm_option(options: &[LlmOption]) -> Option<&LlmOption> {
 #[must_use]
 pub fn propose_models_to_install(installed: &[LlmOption]) -> Vec<&'static KnownModel> {
     let hw = detect_hardware();
-    let budget_mb = hw
-        .gpu_vram_mb
-        .map(|v| v * 9 / 10)
-        .unwrap_or(hw.total_ram_mb * 6 / 10);
+    let budget_mb = hw.gpu_vram_mb.map(|v| v * 9 / 10).unwrap_or(hw.total_ram_mb * 6 / 10);
     let installed_ids: Vec<&str> = installed.iter().map(|o| o.model_id.as_str()).collect();
 
     KNOWN_MODELS
         .iter()
-        .filter(|m| {
-            m.ram_mb <= budget_mb
-                && !installed_ids.iter().any(|id| id.starts_with(m.ollama_tag))
-        })
+        .filter(|m| m.ram_mb <= budget_mb && !installed_ids.iter().any(|id| id.starts_with(m.ollama_tag)))
         .collect()
 }
 
@@ -356,12 +427,7 @@ pub async fn choose_llm() -> Result<LlmProvision> {
             let tags: Vec<_> = proposals
                 .iter()
                 .take(3)
-                .map(|m| {
-                    format!(
-                        "`ollama pull {}` (~{} Mo) — {}",
-                        m.ollama_tag, m.ram_mb, m.description
-                    )
-                })
+                .map(|m| format!("`ollama pull {}` (~{} Mo) — {}", m.ollama_tag, m.ram_mb, m.description))
                 .collect();
             format!("Modèles disponibles pour votre machine :\n{}", tags.join("\n"))
         }
@@ -427,7 +493,10 @@ impl LlmInference for OllamaBackend {
         let url = format!("{}/v1/chat/completions", self.base_url);
         let body = ChatRequest {
             model: &self.model,
-            messages: [ChatMessage { role: "user", content: prompt }],
+            messages: [ChatMessage {
+                role: "user",
+                content: prompt,
+            }],
             stream: false,
         };
 
@@ -442,9 +511,7 @@ impl LlmInference for OllamaBackend {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(MemoryError::Inference(format!(
-                "serveur LLM : HTTP {status} — {text}"
-            )));
+            return Err(MemoryError::Inference(format!("serveur LLM : HTTP {status} — {text}")));
         }
 
         let parsed: ChatResponse = resp

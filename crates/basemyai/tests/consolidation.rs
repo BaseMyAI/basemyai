@@ -3,7 +3,7 @@
 //! la promotion des faits en `semantic`, le peuplement du graphe, et la
 //! déduplication (relancer ne duplique pas).
 
-use basemyai::{consolidate, AgentId, LlmInference, Memory, MemoryLayer};
+use basemyai::{AgentId, LlmInference, Memory, MemoryLayer, consolidate};
 use basemyai_core::libsql::Connection;
 use basemyai_core::{Embedder, Result as CoreResult, Store};
 
@@ -76,10 +76,16 @@ async fn consolidates_episodes_into_facts_and_graph() {
     let store = Store::open_in_memory().await.expect("open");
     // Connexion gardée pour inspecter le graphe (base :memory: partagée).
     let conn = store.connect();
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a")).await.expect("open memory");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
 
-    mem.remember("Alice a rejoint Acme en mars", MemoryLayer::Episodic).await.expect("ep1");
-    mem.remember("Acme a racheté Beta", MemoryLayer::Episodic).await.expect("ep2");
+    mem.remember("Alice a rejoint Acme en mars", MemoryLayer::Episodic)
+        .await
+        .expect("ep1");
+    mem.remember("Acme a racheté Beta", MemoryLayer::Episodic)
+        .await
+        .expect("ep2");
 
     let report = consolidate(&mem, &FakeLlm).await.expect("consolidate");
     assert_eq!(report.episodes_seen, 2);
@@ -91,22 +97,33 @@ async fn consolidates_episodes_into_facts_and_graph() {
     // Le fait est promu en `semantic` et redevient recherchable.
     let hits = mem.recall("Alice travaille chez Acme", 5).await.expect("recall");
     assert!(
-        hits.iter().any(|r| r.text == "Alice travaille chez Acme" && r.layer == MemoryLayer::Semantic),
+        hits.iter()
+            .any(|r| r.text == "Alice travaille chez Acme" && r.layer == MemoryLayer::Semantic),
         "le fait consolidé doit être retrouvé en couche sémantique"
     );
 
     // Le graphe est peuplé (2 entités, 1 arête) pour l'agent.
-    assert_eq!(scalar_i64(&conn, "SELECT COUNT(*) FROM entity WHERE agent_id = 'a'").await, 2);
-    assert_eq!(scalar_i64(&conn, "SELECT COUNT(*) FROM edge WHERE agent_id = 'a'").await, 1);
+    assert_eq!(
+        scalar_i64(&conn, "SELECT COUNT(*) FROM entity WHERE agent_id = 'a'").await,
+        2
+    );
+    assert_eq!(
+        scalar_i64(&conn, "SELECT COUNT(*) FROM edge WHERE agent_id = 'a'").await,
+        1
+    );
 }
 
 #[tokio::test]
 async fn consolidation_is_idempotent() {
     let store = Store::open_in_memory().await.expect("open");
     let conn = store.connect();
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a")).await.expect("open memory");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
 
-    mem.remember("Alice a rejoint Acme", MemoryLayer::Episodic).await.expect("ep");
+    mem.remember("Alice a rejoint Acme", MemoryLayer::Episodic)
+        .await
+        .expect("ep");
 
     let first = consolidate(&mem, &FakeLlm).await.expect("first");
     assert_eq!(first.facts_added, 1);
@@ -118,17 +135,29 @@ async fn consolidation_is_idempotent() {
 
     // Un seul fait sémantique, deux entités, une arête malgré les deux passes.
     assert_eq!(
-        scalar_i64(&conn, "SELECT COUNT(*) FROM memory WHERE agent_id='a' AND layer='semantic'").await,
+        scalar_i64(
+            &conn,
+            "SELECT COUNT(*) FROM memory WHERE agent_id='a' AND layer='semantic'"
+        )
+        .await,
         1
     );
-    assert_eq!(scalar_i64(&conn, "SELECT COUNT(*) FROM entity WHERE agent_id='a'").await, 2);
-    assert_eq!(scalar_i64(&conn, "SELECT COUNT(*) FROM edge WHERE agent_id='a'").await, 1);
+    assert_eq!(
+        scalar_i64(&conn, "SELECT COUNT(*) FROM entity WHERE agent_id='a'").await,
+        2
+    );
+    assert_eq!(
+        scalar_i64(&conn, "SELECT COUNT(*) FROM edge WHERE agent_id='a'").await,
+        1
+    );
 }
 
 #[tokio::test]
 async fn no_episodes_is_a_noop() {
     let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a")).await.expect("open memory");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
 
     // Aucun épisode : la consolidation ne touche pas au LLM et renvoie un rapport vide.
     let report = consolidate(&mem, &FakeLlm).await.expect("consolidate");

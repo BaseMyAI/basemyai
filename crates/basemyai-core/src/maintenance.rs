@@ -28,6 +28,7 @@ pub struct MaintenanceWorker {
 }
 
 impl MaintenanceWorker {
+    /// Crée un worker sans tâche. Utiliser [`register`](Self::register) pour en ajouter.
     #[must_use]
     pub fn new() -> Self {
         Self::default()

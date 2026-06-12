@@ -1,6 +1,5 @@
-//! Tâches de maintenance **sémantiques**, injectées dans le worker agnostique
-//! du core. Le GC par `valid_until` vit ici (ADR-005/ADR-008) : le core fait
-//! tourner la boucle, mais ignore le sens de l'expiration.
+//! GC des mémoires expirées (ADR-005/ADR-008). La sémantique `valid_until`
+//! est portée par `basemyai`, jamais par le core.
 
 use basemyai_core::{MaintenanceTask, Result, Store};
 
