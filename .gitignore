@@ -1,8 +1,98 @@
+# ── Rust ─────────────────────────────────────────────────────────────────────
 /target/
+# Cargo.lock exclu (workspace multi-crates avec binaires — lock inclus par convention)
+# Si tu veux versionner le lock, retire cette ligne.
 Cargo.lock
+
+# ── Bases de données libSQL ───────────────────────────────────────────────────
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite3
+
+# ── Modèles ML (Candle / GGUF / HuggingFace) ─────────────────────────────────
+# Ces fichiers peuvent peser plusieurs Go — ne jamais committer
+*.gguf
+*.ggml
+*.safetensors
+*.bin
+*.pt
+*.onnx
+models/
+.cache/
+
+# ── Bindings Python (PyO3 / maturin) ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.pyi
+.venv/
+venv/
+dist/
+*.egg-info/
+target/wheels/
+.maturin/
+bindings/basemyai-py/python/basemyai/basemyai.pdb
+
+# Pytest cache and wheel metadata
+.pytest_cache/
+pip-wheel-metadata/
+
+# ── Bindings Node.js (NAPI-rs) ────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-error.log*
+*.node
+.yarn/
+dist/
+
+
+# ── Environnement & secrets ───────────────────────────────────────────────────
 .env
-# fichier de plan temporaire
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+
+# ── Profiling / coverage ──────────────────────────────────────────────────────
+*.profraw
+*.profdata
+lcov.info
+coverage/
+tarpaulin-report.html
+
+# ── Benchmarks (critère / iai) ────────────────────────────────────────────────
+criterion/
+iai/
+
+# ── Logs & artefacts temporaires ─────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*.swp
+*.orig
+
+# ── Fichiers de plan temporaires (Claude) ────────────────────────────────────
 cr*.md
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.code-workspace
+*.iml
+.fleet/
+.anthropic/

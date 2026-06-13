@@ -4,7 +4,14 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/basemyai-core", "crates/basemyai"]
+members = [
+    "crates/basemyai-core",
+    "crates/basemyai",
+    "crates/basemyai-mcp",
+    "crates/basemyai-rest",
+    "bindings/basemyai-py",
+    "bindings/basemyai-node",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -38,16 +45,82 @@ dirs = "5"
 # OpenSSL sur Windows (pas de dep système supplémentaire).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 sha2 = "0.10"
+# HTTP framework — basemyai-mcp (transport HTTP) et basemyai-rest.
+axum        = { version = "0.8", features = ["macros"] }
+tower       = { version = "0.5", features = ["util"] }
+tower-http  = { version = "0.6", features = ["timeout", "trace", "request-id", "limit", "set-header"] }
+# MCP (Model Context Protocol) — server + macros.
+rmcp        = { version = "1.7", features = ["server", "macros"] }
+# JSON Schema pour les macros #[tool] de rmcp.
+schemars    = "1.0"
+# Comparaison de tokens en temps constant (auth Bearer anti timing-attack).
+subtle      = "2"
+# UUID v4 — généré pour les souvenirs et X-Request-Id.
+uuid        = { version = "1", features = ["v4"] }
+# Lazy singleton (runtime tokio dans les bindings FFI).
+once_cell   = "1"
+# Parsing de config.toml (clé API MCP, db-path).
+toml        = "0.8"
 
 # Lints partagés par tout le workspace (Rust 2026).
+# Gate : `cargo clippy --workspace --all-targets -- -D warnings` (CLAUDE.md).
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
 
 [workspace.lints.clippy]
+# Base : tout `clippy::all`, priorité basse pour que les règles ci-dessous priment.
 all = { level = "warn", priority = -1 }
+
+# --- Encode les règles dures de CLAUDE.md dans le compilateur ---
+# « Jamais unwrap() en code lib » (les tests sont exemptés via clippy.toml).
+# NB : on n'active PAS `expect_used` — la règle CLAUDE.md autorise `expect("message")`,
+# or ce lint interdit tout `expect`, même messagé. Il contredirait la règle.
+unwrap_used = "warn"
+# « Pas de Mutex std tenu à travers un .await » — le lint exact pour ça.
+await_holding_lock = "warn"
+# Pas de panic!/todo!/unimplemented! qui traîne en lib (les `todo!()` du scaffold
+# doivent être traqués, pas oubliés).
+todo = "warn"
+
+# --- Hygiène d'allocation / clonage (repris de la politique SurrealDB) ---
+# `Arc::clone(&x)` plutôt que `x.clone()` : la duplication de pointeur devient visible.
+clone_on_ref_ptr = "warn"
+redundant_clone = "warn"
+implicit_clone = "warn"
+unnecessary_to_owned = "warn"
+inefficient_to_string = "warn"
+cloned_instead_of_copied = "warn"
+option_as_ref_cloned = "warn"
+
+# --- Idiomes & micro-perf à faible bruit ---
+explicit_into_iter_loop = "warn"
+trivially_copy_pass_by_ref = "warn"
+mutex_atomic = "warn"
+lossy_float_literal = "warn"
+set_contains_or_insert = "warn"
+
+# Profils
+# --------
+# `dev` : itération rapide. `line-tables-only` garde les backtraces panic/RUST_BACKTRACE
+# (fichier:ligne) mais jette le DWARF des variables locales — une part notable du coût
+# de codegen+link, rarement utile au quotidien. `unpacked` évite une passe de packaging.
+# Gain net sur un workspace qui tire libSQL (bindgen/cc) + Candle.
+# Pour debugger sous gdb/lldb : `cargo build --config 'profile.dev.debug=2'`.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# `profiling` : binaire optimisé MAIS symbolisable (perf/flamegraph), unwind conservé.
+# ThinLTO multi-CU pour que le link parallélise au lieu d'un rustc mono-thread interminable.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = false
+lto = "thin"
+codegen-units = 16
