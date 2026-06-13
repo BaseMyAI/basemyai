@@ -19,6 +19,10 @@ Un ADR documente une décision architecturale importante : pourquoi elle a été
 | [ADR-011](#adr-011) | Pivot vers libSQL (vecteur natif + chiffrement), traits async | ✅ Accepted |
 | [ADR-012](#adr-012) | Phase 2 Cognition — Graphe, RRF, Oubli adaptatif, Consolidation | ✅ Accepted |
 | [ADR-013](#adr-013) | Inférence LLM model-agnostic + provisioning hardware-aware | ✅ Accepted |
+| [ADR-014](#adr-014) | Recherche hybride : full-text BM25 (FTS5) fusionné au vecteur par RRF | ✅ Accepted |
+| [ADR-015](#adr-015) | Métriques de distance additionnelles : euclidienne & hamming par re-classement | ✅ Accepted |
+| [ADR-016](#adr-016) | AnythingLLM comme backend LLM de premier rang via API workspace-chat | ✅ Accepted |
+| [ADR-017](#adr-017) | Consolidation par sampling MCP (emprunter le LLM du client) + politique des modes LLM | ✅ Accepted |
 
 ---
 
@@ -687,3 +691,314 @@ Détection automatique + installation silencieuse du modèle (`ollama pull`) —
 API d'inférence cloud (OpenAI, Anthropic) — viole le privacy-first / 100 % local.
 
 Branching par backend dans le pipeline — `OllamaBackend` + `/v1/chat/completions` unifie tout ; le branching est une fausse complexité.
+
+---
+
+## ADR-014
+
+### Recherche hybride : full-text BM25 (FTS5) fusionné au vecteur par RRF
+
+**Statut** : ✅ Accepted | **Date** : 2026-06
+
+**Contexte**
+
+Le recall purement vectoriel rate les **termes exacts rares** : sigles, identifiants, références, noms propres peu fréquents (« ACME-42 », un UUID, un nom de fichier). L'embedding les noie dans la sémantique. À l'inverse, une recherche par mots-clés seule rate les reformulations. La RRF (`rrf_fuse`, ADR-012) était déjà en place mais sans second signal à fusionner. libSQL embarque **FTS5 + `bm25()`** dans son cœur (vérifié : virtual table + MATCH + ranking BM25 disponibles sans extension externe ni feature).
+
+**Décision**
+
+Index **full-text autonome** `memory_fts` (migration schéma V4) : table virtuelle FTS5 `(id UNINDEXED, agent_id UNINDEXED, content, tokenize='porter unicode61 remove_diacritics 2')`. Racinisation (`porter`) + pliage des accents, en-DB, 100 % local, zéro dépendance nouvelle.
+
+- **Tenue à jour par la façade `Memory`** : INSERT au `remember`, DELETE au `forget` et au `purge_agent`. La migration V4 **backfille** les souvenirs déjà présents (`INSERT … SELECT FROM memory`).
+- **`Memory::recall_hybrid(query, k)`** : produit deux classements — vecteur (`vector_knn`) et BM25 (`memory_fts MATCH … ORDER BY bm25`) — tous deux bornés `agent_id` + validité temporelle, puis les fusionne par `rrf_fuse`. Le `score` du `Record` retourné porte le score RRF fusionné.
+- **Sûreté MATCH** : la requête libre est tokenisée (alphanumérique), chaque terme cité en littéral (insensible aux mots-clés FTS5 AND/OR/NEAR) et joint par OR (orienté rappel) — pas d'erreur de syntaxe ni d'injection.
+- **Surfaces** : exposé via l'outil MCP `recall_hybrid`. REST/SDK : à câbler ultérieurement (même signature que `recall`).
+
+**Conséquences**
+
+✅ Parité (et différenciation) sur la recherche hybride sans quitter libSQL : pas de moteur externe, pas de réseau.
+✅ Réutilise `rrf_fuse` (mécanisme pur déjà testé) — la fusion reste agnostique des poids.
+✅ Isolation agent + validité temporelle préservées sur les **deux** signaux.
+⚠️ `memory_fts` duplique le `content` (pas external-content) : coût disque ~1× le texte. Choix assumé pour la simplicité de synchronisation et l'absence de triggers.
+⚠️ FTS5 exige le **nom réel** de la table dans `MATCH`/`bm25` (pas d'alias).
+⚠️ `valid_until` n'est pas dans l'index FTS : la validité est filtrée par jointure sur `memory` au moment de la requête (un soft-delete laisse la ligne FTS, masquée au recall).
+
+**Alternatives rejetées**
+
+FTS5 **external-content** (`content='memory'`) — évite la duplication mais impose des triggers de synchronisation et un mapping `content_rowid` ; complexité supérieure pour un gain disque modéré.
+
+Moteur de recherche externe (Tantivy, Meilisearch) — viole le single-file local / zéro-dépendance-externe (pile commune ADR-011).
+
+Pondération linéaire vecteur+BM25 — exige de calibrer des poids hétérogènes ; la RRF s'en affranchit (ADR-012).
+
+---
+
+## ADR-015
+
+### Métriques de distance additionnelles : euclidienne & hamming par re-classement
+
+**Statut** : ✅ Accepted | **Date** : 2026-06
+
+**Contexte**
+
+L'index vectoriel natif libSQL est **cosinus** (`metric=cosine`). Certains cas d'usage veulent une autre métrique : euclidienne (L2, sensible à la magnitude) ou hamming (quantification binaire, rapide). Ré-indexer en plusieurs métriques alourdirait le schéma et le stockage.
+
+**Décision**
+
+`basemyai_core::Metric { Cosine, Euclidean, Hamming }` + `Store::vector_knn_metric(table, query, k, filter, metric)`. Pour `Cosine` : chemin natif inchangé. Pour `Euclidean`/`Hamming` : **sur-échantillonnage** du top-k cosinus (`k × 16`) puis **re-classement en Rust** sur les vecteurs réels récupérés via `vector_extract`. Hamming = nombre de dimensions où le signe diffère (1 bit/dim). Exposé côté `basemyai` par `Memory::recall_with_metric`.
+
+**Conséquences**
+
+✅ Métriques multiples sans index supplémentaire : un seul index cosinus alimente le rappel ANN.
+✅ Mécanisme au core (agnostique), sens au consommateur (cohérent ADR-001).
+⚠️ Le rappel reste piloté par l'ANN cosinus : pour des métriques très divergentes du cosinus, l'oversample ×16 est best-effort (un voisin L2-proche mais cosinus-lointain peut manquer).
+⚠️ Re-classement = lecture des vecteurs des candidats (coût mémoire/CPU borné par `k × 16`).
+
+---
+
+## ADR-016
+
+### AnythingLLM comme backend LLM de premier rang via API workspace-chat
+
+**Statut** : ✅ Accepted | **Date** : 2026-06
+**Amende** : ADR-013 (AnythingLLM n'est plus « détection seule » : c'est un backend d'inférence à part entière).
+
+**Contexte**
+
+ADR-013 a fait d'AnythingLLM un cas particulier : il est détecté (via `GET /api/ping`) mais exclu de `best_llm_option` avec `ram_mb = None` et ce commentaire : *« proxy multi-provider, non utilisable directement pour l'inférence »*.
+
+Ce jugement était correct pour le cas général (AnythingLLM ne répond pas à `POST /v1/chat/completions`), mais trop restrictif : AnythingLLM expose une **API workspace-chat propre** authentifiée, `POST /api/v1/workspace/{slug}/chat`, qui :
+
+1. Accepte un corps `{"message": "...", "mode": "chat"}` + header `Authorization: Bearer <api_key>`.
+2. Retourne `{"textResponse": "...", "metrics": {...}}` — pas de format OpenAI.
+3. Délègue au backend LLM **configuré dans le workspace** (Ollama, LM Studio, OpenAI, Anthropic…).
+4. Répond en **moins de 50 ms** (mesure sur `qwen3-vl:4b-instruct` local via Ollama).
+
+L'extraction JSON structurée a été validée en E2E (13 juin 2026) : le modèle `qwen3-vl:4b-instruct` via AnythingLLM extrait correctement des faits d'épisodes au format `{"facts":[{"subject":...,"predicate":...,"object":...,"confidence":...}]}`.
+
+**La friction majeure d'ADR-013 était l'absence d'API key et de workspace slug dans le flux de détection automatique.** Ces informations ne sont pas découvrables sans authentification ; elles doivent être fournies explicitement par l'utilisateur (variables d'environnement ou config).
+
+**Décision**
+
+**1 — Nouveau backend `AnythingLlmBackend`** dans `basemyai/src/provision/llm.rs` :
+
+```rust
+pub struct AnythingLlmBackend {
+    client:         Client,
+    base_url:       String,
+    workspace_slug: String,  // slug du workspace AnythingLLM (ex. "mon-espace-de-travail")
+    timeout:        Duration,
+}
+
+impl AnythingLlmBackend {
+    pub fn new(base_url: &str, workspace_slug: &str, api_key: &str) -> Self;
+    pub fn with_timeout(mut self, timeout: Duration) -> Self;
+}
+
+#[async_trait]
+impl LlmInference for AnythingLlmBackend {
+    async fn complete(&self, prompt: &str) -> Result<String>;
+    fn model_id(&self) -> &str;   // retourne le workspace_slug
+}
+```
+
+Corps de la requête :
+
+```json
+{ "message": "<prompt>", "mode": "chat" }
+```
+
+Réponse parsée via `text_response` (champ `"textResponse"` JSON). Erreur explicite si `textResponse` est `null` ou vide.
+
+**2 — Variables d'environnement pour la config AnythingLLM** :
+
+| Variable | Usage |
+| --- | --- |
+| `BASEMYAI_ANYTHINGLLM_URL` | URL de base (défaut : `http://localhost:3001`) |
+| `BASEMYAI_ANYTHINGLLM_KEY` | Clé API Bearer (obligatoire si fallback activé) |
+| `BASEMYAI_ANYTHINGLLM_WORKSPACE` | Slug du workspace (obligatoire si fallback activé) |
+
+**3 — Mise à jour de `choose_llm()`** :
+
+La politique de sélection devient **à deux niveaux** :
+
+```text
+Niveau 1 (hardware-aware, inchangé)
+  detect_llm_options() → best_llm_option() → OpenAiCompatBackend
+  Si un modèle direct tient en RAM → retourner ce backend.
+
+Niveau 2 (fallback AnythingLLM, si niveau 1 échoue)
+  Si les trois variables d'env. BASEMYAI_ANYTHINGLLM_* sont définies
+      → AnythingLlmBackend::new(url, slug, key)
+  Sinon → Err(MemoryError::Inference) avec hint (inchangé + nouvelle ligne d'aide
+           "ou configurer BASEMYAI_ANYTHINGLLM_KEY + BASEMYAI_ANYTHINGLLM_WORKSPACE")
+```
+
+Le niveau 2 n'exige **pas** de connaître le modèle ou sa RAM : AnythingLLM gère ça en interne. `LlmProvision.ram_mb` vaut `None` dans ce cas.
+
+**4 — `probe_anythingllm` inchangée** : la détection reste sans auth (simple `GET /api/ping`). Les informations de configuration (clé, workspace) ne transitent jamais dans la phase de découverte automatique.
+
+**5 — Test E2E gated** : `tests/consolidation_e2e.rs`, annoté `#[ignore]` (jamais exécuté en CI), déclenché manuellement par `cargo test -- --ignored consolidation_e2e`. Lit les trois variables d'env., crée des épisodes, appelle `consolidate()`, vérifie que des entités et arêtes apparaissent dans le graphe. C'est la première exécution E2E du pipeline consolidation→graphe contre un vrai LLM.
+
+**Conséquences**
+
+✅ AnythingLLM devient un backend d'inférence à part entière — aucune modification du code consommateur (`consolidate` injecte un `&dyn LlmInference`, agnostique).
+✅ Couvre le cas où Ollama n'est pas accessible directement mais AnythingLLM tourne en proxy (cas fréquent : Ollama configuré dans AnythingLLM mais non exposé sur le port 11434).
+✅ Zéro regression : la politique niveau 1 (Ollama/LM Studio directement) est prioritaire et inchangée.
+✅ `LlmInference` reste le seul contrat — `AnythingLlmBackend` est un détail d'implémentation.
+✅ La validation E2E de la consolidation est enfin possible sans Ollama exposé.
+⚠️ Le modèle effectivement utilisé est opaque pour BaseMyAI : `model_id()` retourne le `workspace_slug`, pas le nom du modèle. `ram_mb = None` dans `LlmProvision`.
+⚠️ Le prompt passe par le RAG d'AnythingLLM (similarité de workspace) avant d'atteindre le LLM — si le workspace contient des documents, ils peuvent polluer la réponse. Recommandation : utiliser un workspace vide ou dédié BaseMyAI.
+⚠️ `mode: "chat"` conserve l'historique de session côté AnythingLLM (par `sessionId`). La consolidation n'envoie pas de `sessionId` → chaque appel est sans état de son côté, mais AnythingLLM crée une nouvelle session à chaque requête. Sans `sessionId`, les sessions orphelines s'accumulent. **Mitigation V2** : passer un `sessionId` fixe par agent (ex. `"basemyai-{agent_id}"`).
+⚠️ AnythingLLM n'expose pas `GET /v1/models` → exclu de la détection automatique hardware-aware (`ram_mb = None` reste correct). La RAM consommée dépend du backend sous-jacent configuré dans AnythingLLM.
+
+### Alternatives rejetées
+
+Tenter `/api/v1/openai/chat/completions` — retourne `401` en mode single-user (testé 13 juin 2026) ; ce endpoint nécessite le mode multi-utilisateur avec un JWT distinct. Incompatible avec la configuration par défaut d'AnythingLLM.
+
+Lire la config AnythingLLM (`~/.config/anythingllm/...`) pour extraire automatiquement la clé — dépendance à des détails d'implémentation internes non documentés, fragile et plateforme-spécifique.
+
+Forcer l'utilisateur à configurer Ollama directement plutôt qu'AnythingLLM — UX dégradée pour qui a déjà AnythingLLM en service ; le proxy ajoute des features (RAG sur workspace, logs UI) que l'utilisateur a peut-être intentionnellement choisies.
+
+Ajouter AnythingLLM au niveau 1 (hardware-aware) — impossible sans connaître le modèle et sa RAM, informations non accessibles sans auth. Le niveau 2 (fallback explicitement configuré) est le bon modèle.
+
+---
+
+## ADR-017
+
+### Consolidation par sampling MCP (emprunter le LLM du client) + politique des modes LLM
+
+**Statut** : ⛔ Superseded par **ADR-018** | **Date** : 2026-06
+**Amende** : ADR-013, ADR-016 (ajoute une 3ᵉ source d'inférence ; clarifie la politique de bout en bout).
+
+> **Superseded (13 juin 2026)** : le sampling MCP n'est **pas** le levier plug-and-play
+> escompté. Vérifié sur sources officielles : Claude Code ne l'implémente pas (feature
+> request ouvert, `-32601 Method not found`), et la primitive est **dépréciée** dans le
+> protocole (SEP-2577, 2026-07-28). ADR-018 inverse la priorité : LLM côté serveur si
+> disponible, sinon **consolidation pilotée par l'agent** (universelle), sampling devenu
+> simple option opportuniste. `SamplingBackend` et l'outil `consolidate` restent, recâblés.
+
+**Contexte**
+
+La consolidation (ADR-012) exige un LLM. ADR-013/016 ont câblé deux sources : serveur local OpenAI-compat (Ollama, LM Studio…) et AnythingLLM. Les deux supposent que **l'utilisateur a installé et configuré un LLM** quelque part. Pour une part importante de l'audience visée — les utilisateurs de **Claude Code, Claude Desktop, Cursor, Windsurf, ChatGPT Desktop, Codex** — c'est une friction inutile : **ils ont déjà un LLM**, celui de leur agent. Leur demander d'installer Ollama *en plus* pour que BaseMyAI consolide est absurde.
+
+Le rôle de BaseMyAI vis-à-vis de ces agents n'est pas de *consommer* un LLM : c'est de **leur fournir une mémoire persistante**. Le canal est **MCP** (`basemyai-mcp`, déjà implémenté). Or le protocole MCP expose une primitive **`sampling/createMessage`** : un serveur MCP peut demander au client de produire une complétion LLM. C'est exactement le levier manquant — le serveur **emprunte le cerveau du client**.
+
+Vérifié (13 juin 2026) : `rmcp 1.7` expose `Peer<RoleServer>::create_message(CreateMessageRequestParams) -> CreateMessageResult` côté serveur, et `ClientHandler::create_message` côté client. Un test E2E in-memory (serveur + client MCP reliés par duplex) valide le chemin complet `remember → consolidate (sampling) → graphe peuplé → recall_graph`.
+
+**Décision**
+
+**1 — `SamplingBackend` (dans `basemyai-mcp`, pas `basemyai`)**
+
+Un backend qui implémente `basemyai::LlmInference` en déléguant `complete()` à `peer.create_message(...)`. Il vit dans `basemyai-mcp` (le seul crate qui dépend de `rmcp`) : **le crate mémoire reste agnostique de MCP**. `model_id()` retourne `"mcp-sampling"` (le modèle réel est choisi par le client, connu seulement au retour via `CreateMessageResult::model`).
+
+**2 — Outil MCP `consolidate`**
+
+Nouvel outil : l'agent l'appelle avec un `agent_id` ; le handler récupère le `Peer` depuis le `RequestContext<RoleServer>`, construit un `SamplingBackend`, et exécute `consolidate(memory, &backend)`. Le sampling se produit **pendant l'appel d'outil** : le serveur sous-demande au client, le LLM du client extrait, le graphe est peuplé. Déclenchement **explicite** (déterministe, observable) ; le worker de fond avec `Peer` capturé est reporté en V2 (cycle de vie du peer + multi-sessions HTTP à cadrer).
+
+**3 — Politique des sources de consolidation, ordonnée et explicite**
+
+```text
+1. Sampling MCP    — si BaseMyAI tourne comme serveur MCP (outil `consolidate`)
+                     → emprunte le LLM du client. Zéro install, zéro clé.
+2. LLM local       — Ollama / LM Studio / AnythingLLM (ADR-013/016)
+                     → détection hardware-aware, reste sur la machine.
+3. Cloud opt-in    — Claude API / OpenAI API (BYOK), UNIQUEMENT si configuré
+                     explicitement → sort de la machine (voir implications).
+4. Indisponible    — la mémoire (remember/recall/graphe manuel) fonctionne ;
+                     la consolidation auto est simplement absente.
+```
+
+**4 — Implications de confidentialité, à exposer clairement (exigence produit)**
+
+Chaque mode a un périmètre de données différent ; le produit DOIT le rendre lisible (doc + message au setup) :
+
+| Mode | Où partent les épisodes | Privacy-first ? | Consentement |
+| --- | --- | --- | --- |
+| **Sampling MCP** | Vers le client MCP que l'utilisateur a **déjà** choisi (Claude Code, ChatGPT…). BaseMyAI n'impose aucun tiers. | ✅ Oui — c'est *son* client, *son* modèle, *son* choix (local ou cloud, décidé par lui). MCP prévoit un **consentement humain** au sampling côté client. | Implicite (le client a sa propre UX de consentement). |
+| **LLM local** | Nulle part : reste sur la machine (localhost). | ✅ Oui — 100 % local, le pilier d'origine. | Implicite (serveur local lancé par l'utilisateur). |
+| **Cloud opt-in (BYOK)** | Vers Anthropic / OpenAI (selon la clé fournie). Les épisodes — données les plus sensibles — **quittent la machine**. | ⚠️ **Non** — rompt le 100 % local. À n'activer qu'en connaissance de cause. | **Explicite obligatoire** : variable d'env. dédiée + avertissement au démarrage. Jamais de défaut, jamais silencieux. |
+
+Le mode cloud n'est jamais le défaut et ne s'active jamais par simple présence d'une clé d'environnement générique : il exige une variable **dédiée et non ambiguë** (`BASEMYAI_CLOUD_LLM_OPTIN=1` + clé), et émet un avertissement explicite « vos épisodes sont envoyés à `<provider>` » au premier usage.
+
+**Conséquences**
+
+✅ **Vrai plug-and-play** pour les agents MCP : `claude mcp add basemyai …` suffit, la consolidation marche sans aucun LLM installé ni clé.
+✅ Le crate `basemyai` **reste agnostique de MCP** : `SamplingBackend` est dans `basemyai-mcp`, derrière le trait `LlmInference`.
+✅ Un seul backend de sampling couvre **tous** les hôtes MCP (Claude Code/Desktop, Cursor, Windsurf, ChatGPT Desktop…).
+✅ Le sampling reste **privacy-first** : la donnée passe par le client choisi par l'utilisateur, pas par un tiers imposé par BaseMyAI.
+✅ La politique à 4 niveaux dégrade proprement : il y a toujours une réponse claire (jusqu'au mode « consolidation absente mais mémoire fonctionnelle »).
+⚠️ Le sampling exige une **session MCP active** : il ne marche pas pour les consommateurs SDK Python/Node/REST standalone (eux relèvent des modes local ou cloud).
+⚠️ Le client peut **refuser** le sampling (consentement humain) → `complete` remonte une erreur claire ; l'appelant peut retomber sur un autre mode.
+⚠️ Le modèle réel du sampling est **opaque** (`model_id = "mcp-sampling"`) et sa qualité dépend du client — un petit modèle local côté client donnera une extraction plus pauvre.
+⚠️ Le mode cloud opt-in **viole le pilier 100 % local** : c'est un choix de l'utilisateur, encadré, jamais un défaut. Implémentation déférée (le backend Claude/OpenAI BYOK fera l'objet de son propre câblage, sous cette politique).
+
+**Alternatives rejetées**
+
+Consolidation en tâche de fond via sampling (worker périodique avec `Peer` capturé) — séduisant mais le `Peer` n'est valide que pendant une session ; multi-sessions HTTP et cycle de vie à cadrer. Reporté V2 ; l'outil explicite couvre le besoin V1.
+
+Mettre `SamplingBackend` dans `basemyai` — importerait `rmcp` dans le crate mémoire, violant son agnosticité (ADR-001). Il vit dans `basemyai-mcp`, derrière le trait.
+
+Cloud par défaut / activé par une clé générique (`OPENAI_API_KEY`…) — exfiltration silencieuse des données les plus sensibles. Inacceptable : le cloud est opt-in dédié et explicite, jamais déduit.
+
+Forcer l'installation d'un LLM local pour tous — c'est la friction même que cet ADR supprime pour les utilisateurs d'agents MCP.
+
+## ADR-018
+
+### Consolidation pilotée par l'agent — politique d'inférence à niveaux (supersède ADR-017)
+
+**Statut** : ✅ Accepted | **Date** : 2026-06-13
+**Supersède** : ADR-017. **Amende** : ADR-012, ADR-013, ADR-016.
+
+**Contexte**
+
+ADR-017 pariait sur le **sampling MCP** comme levier « plug-and-play » : le serveur emprunte le LLM du client via `sampling/createMessage`. Le test E2E réel dans Claude Code (v2.1.176, 13 juin 2026) a invalidé le pari :
+
+- **Claude Code n'implémente pas le sampling** : `consolidate` remonte `MCP error -32601: Method not found`. C'est documenté comme *feature request* ouvert ([anthropics/claude-code#1785]), pas un bug de notre code.
+- **Le sampling est déprécié dans le protocole** : SEP-2577 (2026-07-28) déprécie Roots, Sampling et Logging. *« New implementations should NOT adopt it. »*
+- **Aucun autre client majeur** (Claude Desktop, Cursor, Windsurf, ChatGPT) ne confirme le support.
+
+Or BaseMyAI tourne le plus souvent **dans un agent qui est lui-même un LLM** (Claude dans Claude Code). Le bon levier n'est donc pas de *demander* une complétion au client (sampling), mais d'**inverser le contrôle** : laisser l'agent faire l'extraction avec son propre raisonnement, et n'exposer côté serveur que la préparation (épisodes + consigne) et la persistance. C'est universel (outils + prompts MCP, supportés partout), non déprécié, et de meilleure qualité (c'est le modèle de l'agent, pas un petit LLM local).
+
+**Décision**
+
+**1 — `consolidate()` du crate `basemyai` scindé en briques réutilisables**
+
+`consolidation_prompt(memory) -> Option<ConsolidationInput>` (lit les épisodes valides + bâtit le prompt), `parse_extraction(raw) -> Extraction`, `apply_extraction(memory, &Extraction) -> ConsolidationReport` (peuple le graphe + promeut les faits, idempotent). `consolidate(memory, &dyn LlmInference)` compose les trois — **signature inchangée, rétrocompatible**. Les types `Extraction` / `ExtractedEntity` / `ExtractedRelation` deviennent publics (sans dépendance à `schemars` : le crate mémoire reste pur).
+
+**2 — Outil MCP `consolidate` : politique d'inférence à niveaux**
+
+```text
+1. Sampling MCP   — SEULEMENT si le client annonce la capability `sampling`
+                    (rare ; déprécié). Vérifié via peer.peer_info().capabilities.
+2. LLM local      — choose_llm() : Ollama/LM Studio/AnythingLLM détecté ou env.
+                    Autonome : le serveur fait l'extraction, l'agent reçoit le bilan.
+3. Piloté agent   — sinon : renvoie status="extraction_required" + episodes +
+                    instructions. L'AGENT appelant extrait avec son propre LLM,
+                    puis persiste via `consolidate_apply`. Universel, zéro install.
+```
+
+**3 — Nouvel outil MCP `consolidate_apply`** — reçoit `agent_id` + `facts`/`entities`/`relations` (types `JsonSchema` propres au crate MCP, convertis en `basemyai::Extraction`), appelle `apply_extraction`. Idempotent.
+
+**4 — Nouveau prompt MCP `consolidate_memory`** — pilote le flux de bout en bout en mode interactif : `/mcp__basemyai__consolidate_memory agent_id=X` injecte les épisodes + la consigne ; l'agent extrait et appelle `consolidate_apply`.
+
+**5 — Annotations d'outils** (best-practice MCP) sur les 8 outils : `read_only_hint`, `destructive_hint`, `idempotent_hint`, `open_world_hint=false` (mémoire = monde fermé, local).
+
+**Conséquences**
+
+✅ La consolidation marche **dans Claude Code** (et tout client MCP) sans serveur LLM ni clé, en empruntant le LLM de l'agent — le vrai plug-and-play, supérieur au sampling (qualité du modèle de l'agent).
+✅ Le mode autonome (worker de fond, SDK, REST) garde le LLM local/cloud (pas d'agent pour piloter).
+✅ Plus de dépendance à une primitive dépréciée ; le sampling reste branché en option opportuniste à coût nul (sauté si non annoncé).
+
+⚠️ Le mode « piloté agent » consomme des tokens de l'agent et suppose qu'il suit la consigne (extraire → `consolidate_apply`). La description de l'outil et le prompt cadrent ce flux.
+⚠️ La sélection du niveau dépend de l'environnement (un LLM local détecté prime sur l'agent-driven) ; documenté. Un utilisateur voulant la qualité de l'agent malgré un LLM local utilise le prompt `consolidate_memory`.
+⚠️ Le mode cloud opt-in BYOK reste **déféré** (mode hérité d'ADR-017, sous garde-fous).
+
+**Alternatives rejetées**
+
+Garder le sampling en primaire (ADR-017) — invalidé : non supporté par le client cible, déprécié dans le protocole.
+
+Forcer un LLM local embarqué (llama.cpp/mistral.rs in-process) pour l'autonomie totale — lourd ; reporté V2 (le modèle Candle actuel est *embedding-only*, incapable de génération). L'agent-driven couvre le besoin interactif sans ce coût.
+
+Élicitation MCP pour l'extraction — l'élicitation demande une saisie **humaine** structurée, pas une génération LLM ; inadaptée à l'extraction de faits.
+
+[anthropics/claude-code#1785]: https://github.com/anthropics/claude-code/issues/1785
