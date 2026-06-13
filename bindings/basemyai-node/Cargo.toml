@@ -1,0 +1,43 @@
+[package]
+name        = "basemyai-node"
+description = "Node.js bindings for basemyai — local memory engine for AI agents."
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+authors.workspace     = true
+repository.workspace  = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default   = ["crypto", "embed"]
+crypto    = ["basemyai/crypto"]
+embed     = ["basemyai/embed"]
+# `test-util` : expose Memory.openInMemory (base :memory:, embedder déterministe)
+# pour les tests/spikes sans CMake ni modèle.
+test-util = ["basemyai/test-util"]
+
+[dependencies]
+basemyai = { path = "../../crates/basemyai" }
+
+# NAPI-RS 3 — async feature : gestion du runtime tokio interne + Promise JS.
+# napi9 = Node-API version 9 (Node 18+).
+napi        = { version = "3", features = ["async", "napi9"] }
+napi-derive = { version = "3" }
+
+tokio    = { version = "1", features = ["rt-multi-thread", "macros"] }
+once_cell = "1"
+
+thiserror.workspace = true
+
+[build-dependencies]
+napi-build = { version = "1" }
+
+# Pas de `[profile.release]` ici : Cargo ignore les profils hors racine du
+# workspace. NAPI-RS 3 intercepte les panics à la frontière FFI (rejet de Promise),
+# donc `panic = "abort"` n'est pas requis pour la sûreté mémoire.
+
+[lints]
+workspace = true
