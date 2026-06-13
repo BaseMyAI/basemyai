@@ -1,0 +1,329 @@
+@import "tailwindcss";
+
+/* =========================================================
+   BaseMyAI — Blacksite Memory
+   Tailwind v4 Brand Color System
+   Direction: private AI infrastructure / local memory / 2026
+   ========================================================= */
+
+/*
+   PRIMITIVES
+   These generate utilities like:
+   bg-ink-950, text-memory-300, border-secure-500, bg-rust-600
+*/
+@theme static {
+  /* ---------------------------------------------------------
+     Ink — optical black / graphite scale
+     Usage: backgrounds, surfaces, borders, text hierarchy
+     --------------------------------------------------------- */
+  --color-ink-50: #f7f6f0;
+  --color-ink-100: #ebe8de;
+  --color-ink-200: #d8d3c5;
+  --color-ink-300: #bcb5a6;
+  --color-ink-400: #968f82;
+  --color-ink-500: #746f66;
+  --color-ink-600: #565451;
+  --color-ink-700: #373a3d;
+  --color-ink-800: #22252a;
+  --color-ink-900: #111316;
+  --color-ink-950: #050607;
+
+  /* ---------------------------------------------------------
+     Memory — proprietary brand signal
+     Usage: CTAs, focus states, active data, hero highlights
+     --------------------------------------------------------- */
+  --color-memory-50: #fcffe7;
+  --color-memory-100: #f5ffc1;
+  --color-memory-200: #ebff83;
+  --color-memory-300: #dfff4a;
+  --color-memory-400: #d7ff3f;
+  --color-memory-500: #bde800;
+  --color-memory-600: #91b800;
+  --color-memory-700: #6b8900;
+  --color-memory-800: #4a5f00;
+  --color-memory-900: #303d00;
+  --color-memory-950: #171f00;
+
+  /* ---------------------------------------------------------
+     Secure — privacy / encryption / valid state
+     Usage: success, live status, encryption, isolation
+     --------------------------------------------------------- */
+  --color-secure-50: #e7fff8;
+  --color-secure-100: #c5f7ea;
+  --color-secure-200: #8eead5;
+  --color-secure-300: #4dd9bd;
+  --color-secure-400: #1bc3a3;
+  --color-secure-500: #00a88a;
+  --color-secure-600: #00866f;
+  --color-secure-700: #006b5a;
+  --color-secure-800: #075146;
+  --color-secure-900: #073c35;
+  --color-secure-950: #02211e;
+
+  /* ---------------------------------------------------------
+     Rust — destructive / warning / build signal
+     Usage: critical errors, destructive actions, build failures
+     --------------------------------------------------------- */
+  --color-rust-50: #fff1eb;
+  --color-rust-100: #ffdccd;
+  --color-rust-200: #ffb99f;
+  --color-rust-300: #ff8d63;
+  --color-rust-400: #ff6b35;
+  --color-rust-500: #ff5a1f;
+  --color-rust-600: #e94313;
+  --color-rust-700: #b93410;
+  --color-rust-800: #8f2a12;
+  --color-rust-900: #6f2412;
+  --color-rust-950: #3b1007;
+
+  /* ---------------------------------------------------------
+     Vector — secondary data color, deliberately restrained
+     Usage: charts, vector search visualization, links if needed
+     --------------------------------------------------------- */
+  --color-vector-50: #eef7ff;
+  --color-vector-100: #d8edff;
+  --color-vector-200: #b7ddff;
+  --color-vector-300: #86c6ff;
+  --color-vector-400: #4ca2f6;
+  --color-vector-500: #2e7fd8;
+  --color-vector-600: #1f64b8;
+  --color-vector-700: #1d4f91;
+  --color-vector-800: #1d426f;
+  --color-vector-900: #1b3556;
+  --color-vector-950: #101f35;
+}
+
+/*
+   SEMANTIC TOKENS
+   These generate utilities like:
+   bg-background, text-foreground, bg-card, border-border, ring-ring
+
+   @theme inline is intentional because these tokens reference runtime
+   CSS variables. This is the Tailwind v4-safe pattern.
+*/
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-inverse: var(--surface-inverse);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-subtle: var(--subtle);
+  --color-subtle-foreground: var(--subtle-foreground);
+
+  --color-border: var(--border);
+  --color-border-muted: var(--border-muted);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-active: var(--primary-active);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-hover: var(--secondary-hover);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+
+  --color-chart-memory: var(--chart-memory);
+  --color-chart-secure: var(--chart-secure);
+  --color-chart-rust: var(--chart-rust);
+  --color-chart-vector: var(--chart-vector);
+  --color-chart-muted: var(--chart-muted);
+}
+
+/* =========================================================
+   DEFAULT THEME — Blacksite dark
+   ========================================================= */
+
+:root {
+  color-scheme: dark;
+
+  /* Base */
+  --background: var(--color-ink-950);
+  --foreground: var(--color-ink-50);
+
+  /* Surfaces */
+  --surface: #0a0b0d;
+  --surface-muted: var(--color-ink-900);
+  --surface-raised: var(--color-ink-800);
+  --surface-inverse: var(--color-ink-50);
+
+  /* Cards / overlays */
+  --card: #0c0d0f;
+  --card-foreground: var(--color-ink-50);
+
+  --popover: #111316;
+  --popover-foreground: var(--color-ink-50);
+
+  /* Text hierarchy */
+  --muted: var(--color-ink-900);
+  --muted-foreground: #9d998f;
+
+  --subtle: var(--color-ink-800);
+  --subtle-foreground: #77736a;
+
+  /* Lines */
+  --border: rgba(247, 246, 240, 0.12);
+  --border-muted: rgba(247, 246, 240, 0.07);
+  --input: rgba(247, 246, 240, 0.14);
+  --ring: var(--color-memory-400);
+
+  /* Brand actions */
+  --primary: var(--color-memory-400);
+  --primary-hover: var(--color-memory-300);
+  --primary-active: var(--color-memory-500);
+  --primary-foreground: var(--color-ink-950);
+
+  /* Secondary action */
+  --secondary: var(--color-secure-500);
+  --secondary-hover: var(--color-secure-400);
+  --secondary-foreground: var(--color-ink-950);
+
+  /* Accent */
+  --accent: var(--color-memory-400);
+  --accent-foreground: var(--color-ink-950);
+
+  /* Status */
+  --success: var(--color-secure-500);
+  --success-foreground: var(--color-ink-950);
+
+  --warning: var(--color-rust-500);
+  --warning-foreground: var(--color-ink-950);
+
+  --destructive: var(--color-rust-500);
+  --destructive-foreground: #ffffff;
+
+  --info: var(--color-vector-500);
+  --info-foreground: #ffffff;
+
+  /* Charts */
+  --chart-memory: var(--color-memory-400);
+  --chart-secure: var(--color-secure-500);
+  --chart-rust: var(--color-rust-500);
+  --chart-vector: var(--color-vector-500);
+  --chart-muted: var(--color-ink-500);
+}
+
+/* =========================================================
+   LIGHT MODE — docs / README / marketing white sections
+   Use: <html class="light"> or <section class="light">
+   ========================================================= */
+
+.light {
+  color-scheme: light;
+
+  --background: #f7f5ed;
+  --foreground: #11100d;
+
+  --surface: #fffdf6;
+  --surface-muted: #eee9dc;
+  --surface-raised: #ffffff;
+  --surface-inverse: #050607;
+
+  --card: #fffdf7;
+  --card-foreground: #11100d;
+
+  --popover: #ffffff;
+  --popover-foreground: #11100d;
+
+  --muted: #ebe6d9;
+  --muted-foreground: #6f6a61;
+
+  --subtle: #f1ecdf;
+  --subtle-foreground: #8a8376;
+
+  --border: rgba(17, 16, 13, 0.12);
+  --border-muted: rgba(17, 16, 13, 0.07);
+  --input: rgba(17, 16, 13, 0.14);
+  --ring: var(--color-memory-500);
+
+  --primary: var(--color-memory-500);
+  --primary-hover: var(--color-memory-400);
+  --primary-active: var(--color-memory-600);
+  --primary-foreground: #050607;
+
+  --secondary: var(--color-secure-600);
+  --secondary-hover: var(--color-secure-500);
+  --secondary-foreground: #ffffff;
+
+  --accent: var(--color-memory-500);
+  --accent-foreground: #050607;
+
+  --success: var(--color-secure-600);
+  --success-foreground: #ffffff;
+
+  --warning: var(--color-rust-600);
+  --warning-foreground: #ffffff;
+
+  --destructive: var(--color-rust-600);
+  --destructive-foreground: #ffffff;
+
+  --info: var(--color-vector-600);
+  --info-foreground: #ffffff;
+
+  --chart-memory: var(--color-memory-600);
+  --chart-secure: var(--color-secure-600);
+  --chart-rust: var(--color-rust-600);
+  --chart-vector: var(--color-vector-600);
+  --chart-muted: var(--color-ink-400);
+}
+
+/* =========================================================
+   OPTIONAL: brand-specific utility components
+   Tailwind v4 keeps utilities atomic, but these are useful for
+   repeated brand surfaces.
+   ========================================================= */
+
+@layer components {
+  .surface-blacksite {
+    @apply bg-card text-card-foreground border border-border;
+  }
+
+  .surface-blacksite-raised {
+    @apply bg-surface-raised text-card-foreground border border-border;
+  }
+
+  .text-brand-gradient {
+    @apply bg-gradient-to-b from-ink-50 to-ink-300 bg-clip-text text-transparent;
+  }
+
+  .memory-glow {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--primary) 30%, transparent),
+      0 0 32px color-mix(in oklab, var(--primary) 18%, transparent);
+  }
+
+  .blacksite-grid {
+    background-image:
+      linear-gradient(to right, rgb(247 246 240 / 0.055) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(247 246 240 / 0.055) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+}
