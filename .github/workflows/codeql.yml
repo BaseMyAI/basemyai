@@ -1,0 +1,66 @@
+# CodeQL security analysis for Rust
+#
+# Runs on push to main/releases and weekly on Sunday.
+# Uses build-mode: none to avoid a full Rust compilation (saves disk space).
+# Results appear in the GitHub Security tab and do NOT block PR merges.
+
+name: CodeQL
+
+on:
+  push:
+    branches:
+      - main
+      - 'releases/*'
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-environment
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          # build-mode: none uses rust-analyzer instead of a full compile —
+          # dramatically reduces disk space and build time.
+          build-mode: none
+          queries: security-extended
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:rust"
+          upload: always
+
+      - name: Cleanup CodeQL database
+        if: always()
+        run: rm -rf "${{ runner.temp }}/codeql_databases" || true

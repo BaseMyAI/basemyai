@@ -1,0 +1,112 @@
+name: Node prebuilds
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Construit les binaires natifs NAPI (.node, features crypto + embed) par
+# plateforme. napi9 est stable au niveau ABI : un prebuild par OS/arch couvre
+# Node 18/20/22 (testé ci-dessous). crypto exige CMake.
+defaults:
+  run:
+    working-directory: bindings/basemyai-node
+
+jobs:
+  build:
+    name: prebuild (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install CMake (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Install CMake (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      - name: Install CMake (Windows)
+        if: runner.os == 'Windows'
+        run: pip install cmake
+
+      # libsql-ffi 0.9.30 appelle `cp`, absent du PATH Windows — Git le fournit.
+      - name: Add Git usr/bin to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "C:/Program Files/Git/usr/bin" >> "$GITHUB_PATH"
+
+      - run: npm install --include=dev
+
+      - name: Build native addon
+        run: npx napi build --platform --release --target ${{ matrix.target }} --features crypto,embed
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: bindings/basemyai-node/*.node
+
+  test:
+    name: test (node ${{ matrix.node }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm install --include=dev
+      # Build debug sans crypto/embed (rapide) pour valider l'ABI sur chaque Node.
+      - run: npx napi build --platform --no-default-features --features test-util
+      - run: npx jest
+
+  # Publication npm — uniquement sur tag, et seulement si le secret est présent.
+  # Nécessite `NPM_TOKEN` dans les secrets du dépôt (rien n'est publié sans).
+  publish-npm:
+    name: publish to npm
+    needs: [build, test]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install --include=dev
+      - name: Collect prebuilt addons
+        uses: actions/download-artifact@v4
+        with:
+          path: bindings/basemyai-node/artifacts
+      - name: Assemble platform packages
+        run: npx napi create-npm-dirs && npx napi artifacts --output-dir ./artifacts
+      - name: Publish
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

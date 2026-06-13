@@ -1,0 +1,77 @@
+name: Improvement
+description: Suggest an improvement to an existing feature.
+type: "Improvement"
+labels: ["triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest an improvement for BaseMyAI!
+  - id: kind
+    type: dropdown
+    attributes:
+      label: What component does this affect?
+      options:
+        - basemyai-core (storage / vectors / embeddings)
+        - basemyai (memory layers / temporal RAG / cognition)
+        - Python SDK (PyO3)
+        - Node SDK (NAPI-RS)
+        - REST sidecar
+        - basemyai CLI (setup / provision)
+        - Documentation
+    validations:
+      required: true
+  - id: problem
+    type: textarea
+    attributes:
+      label: Is this improvement related to a problem?
+      description: What is the use case in which this improvement is relevant?
+      placeholder: A clear and concise description of what the problem is.
+    validations:
+      required: true
+  - id: solution
+    type: textarea
+    attributes:
+      label: Suggest a solution
+      description: Suggest a solution and how it might work.
+      placeholder: A clear and concise description of what you want to happen.
+    validations:
+      required: true
+  - id: alternatives
+    type: textarea
+    attributes:
+      label: Alternative approaches
+      description: Describe alternatives you've considered.
+      placeholder: A clear and concise description of any alternative solutions or approaches you've considered.
+    validations:
+      required: true
+  - id: version
+    type: input
+    attributes:
+      label: BaseMyAI version
+      description: Paste the output of `cargo pkgid basemyai` or the version from your Cargo.toml / pip show basemyai
+      placeholder: basemyai 0.1.0
+    validations:
+      required: true
+  - id: contact
+    type: input
+    attributes:
+      label: Contact details
+      description: How can we get in touch with you if we need more info?
+      placeholder: discord:username or email@example.com
+    validations:
+      required: false
+  - type: checkboxes
+    attributes:
+      label: Is there an existing issue for this?
+      description: Please search [our issues](https://github.com/basemyai/basemyai/issues) to see if this improvement was already requested.
+      options:
+        - label: I have searched the existing issues
+          required: true
+  - type: checkboxes
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/basemyai/basemyai/blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true

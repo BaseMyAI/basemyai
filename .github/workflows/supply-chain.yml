@@ -1,0 +1,63 @@
+name: Supply chain security
+
+run-name: "Supply chain '${{ github.head_ref || github.ref_name }}'"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - 'crates/*/Cargo.toml'
+      - .github/workflows/supply-chain.yml
+    branches:
+      - main
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - 'crates/*/Cargo.toml'
+      - .github/workflows/supply-chain.yml
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: Check dependencies (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-environment
+        with:
+          enable-sccache: 'false'
+
+      - name: Install cargo-deny
+        run: cargo install --debug --locked cargo-deny@0.19.4
+
+      - name: Check dependencies
+        run: cargo deny check
+
+      - name: Summarize failure
+        if: failure()
+        run: |
+          echo "## ⚠️ Supply chain check failed" >> $GITHUB_STEP_SUMMARY
+          echo "A dependency has a known vulnerability, is banned, or has an incompatible license." >> $GITHUB_STEP_SUMMARY
+          echo "Run \`cargo deny check\` locally to see details, then update \`deny.toml\` accordingly." >> $GITHUB_STEP_SUMMARY

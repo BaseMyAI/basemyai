@@ -1,17 +1,56 @@
 name: CI
 
+run-name: "CI run '${{ github.head_ref || github.ref_name }}'"
+
 on:
+  workflow_dispatch:
   push:
+    branches:
+      - main
+      - 'releases/*'
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  # ── Lint + tests — features par défaut ──────────────────────────────────────
-  ci:
-    name: CI — ${{ matrix.os }}
+
+  # ── Format ──────────────────────────────────────────────────────────────────
+
+  format:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # ── Gate qualité : clippy + tests, features légères ─────────────────────────
+  # Ni CMake (crypto) ni Candle (embed) : couvre tout le workspace rapidement.
+  # `--features` interdit à la racine d'un workspace virtuel → on cible chaque
+  # crate avec `-p`. Les features `crypto`/`embed` ont leurs jobs dédiés.
+
+  gate:
+    name: clippy + test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -19,28 +58,35 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-
-      # rust-toolchain.toml épingle la version (1.95) — dtolnay la respecte.
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-
-      # Cache `.cargo/registry` + `target/` par OS + Cargo.lock.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: clippy (default)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (-D warnings)
+        run: |
+          set -euxo pipefail
+          cargo clippy -p basemyai-core --all-targets -- -D warnings
+          cargo clippy -p basemyai --features test-util --all-targets -- -D warnings
+          cargo clippy -p basemyai-mcp --no-default-features --features stdio,http,test-util --all-targets -- -D warnings
+          cargo clippy -p basemyai-rest --no-default-features --features test-util --all-targets -- -D warnings
+          cargo clippy -p basemyai-py --no-default-features --features test-util --all-targets -- -D warnings
+          cargo clippy -p basemyai-node --no-default-features --features test-util --all-targets -- -D warnings
 
-      # Compile séparément pour éviter l'OOM Windows du build workspace complet.
-      - name: test basemyai-core
-        run: cargo test -p basemyai-core
+      - name: Test
+        run: |
+          set -euxo pipefail
+          cargo test -p basemyai-core
+          cargo test -p basemyai --features test-util
+          cargo test -p basemyai-mcp --no-default-features --features stdio,http,test-util
+          cargo test -p basemyai-rest --no-default-features --features test-util
 
-      - name: test basemyai
-        run: cargo test -p basemyai
+  # ── Feature `embed` : Candle ML (compile + tests réels #[ignore]) ────────────
 
-  # ── Feature `embed` : Candle ML ─────────────────────────────────────────────
   embed:
-    name: embed — ${{ matrix.os }}
+    name: embed (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -48,29 +94,24 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
       - uses: Swatinem/rust-cache@v2
         with:
           key: embed
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: clippy (embed)
-        run: cargo clippy --workspace --all-targets --features embed -- -D warnings
+      - name: Build + test (embed)
+        run: |
+          set -euxo pipefail
+          cargo test -p basemyai-core --features embed
+          cargo test -p basemyai --features embed
 
-      # Les tests embed réels sont #[ignore] (exigent BASEMYAI_MODEL_DIR) ;
-      # seul le compile-check est utile ici.
-      - name: test basemyai-core (embed)
-        run: cargo test -p basemyai-core --features embed
+  # ── Feature `crypto` : chiffrement libSQL — exige CMake ─────────────────────
+  # Bug libsql-ffi 0.9.30 : son build.rs appelle `cp`, absent du PATH Windows.
+  # Le `usr/bin` de Git (présent sur les runners GitHub) le fournit.
 
-      - name: test basemyai (embed)
-        run: cargo test -p basemyai --features embed
-
-  # ── Feature `crypto` : chiffrement libSQL — exige CMake ──────────────────────
   crypto:
-    name: crypto — ${{ matrix.os }}
+    name: crypto (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -81,32 +122,66 @@ jobs:
 
       - name: Install CMake (Ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y cmake
+        run: sudo apt-get update && sudo apt-get install -y cmake
 
       - name: Install CMake (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake
 
-      # Workaround libsql-ffi : le build script appelle `cp` qui n'est pas sur
-      # le PATH par défaut de PowerShell ; Git Bash l'expose.
+      - name: Install CMake (Windows)
+        if: runner.os == 'Windows'
+        run: pip install cmake
+
       - name: Add Git usr/bin to PATH (Windows)
         if: runner.os == 'Windows'
-        shell: bash
         run: echo "C:/Program Files/Git/usr/bin" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
       - uses: Swatinem/rust-cache@v2
         with:
           key: crypto
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: clippy (crypto)
-        run: cargo clippy --workspace --all-targets --features crypto -- -D warnings
+      - name: Test (crypto)
+        run: |
+          set -euxo pipefail
+          cargo test -p basemyai-core --features crypto
+          cargo test -p basemyai --features crypto
 
-      - name: test basemyai-core (crypto)
-        run: cargo test -p basemyai-core --features crypto
+  # ── Required checks gate ─────────────────────────────────────────────────────
+  # Single job used as the branch-protection rule target.
+  # Add / remove jobs above and mirror the change here.
 
-      - name: test basemyai (crypto)
-        run: cargo test -p basemyai --features crypto
+  required-checks:
+    name: Required checks
+    runs-on: ubuntu-latest
+    if: success() || failure()
+    needs:
+      - format
+      - gate
+      - embed
+      - crypto
+    steps:
+      - name: Check for failures
+        run: |
+          results=(
+            "${{ needs.format.result }}"
+            "${{ needs.gate.result }}"
+            "${{ needs.embed.result }}"
+            "${{ needs.crypto.result }}"
+          )
+
+          failed=false
+          for result in "${results[@]}"; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "❌ A required job had result: $result"
+              failed=true
+            fi
+          done
+
+          if [[ "$failed" == "true" ]]; then
+            echo "❌ One or more required checks failed"
+            exit 1
+          else
+            echo "✅ All required CI checks passed!"
+          fi

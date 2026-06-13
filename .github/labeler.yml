@@ -1,0 +1,93 @@
+# Auto-labeler config for github/issue-labeler
+# Applied by .github/workflows/labeler.yml on issues and PRs.
+# Matches against issue/PR title AND body (include-title: 1, include-body: 1).
+
+# ── Crates ───────────────────────────────────────────────────────────────────
+"crate:basemyai-core":
+  - '(?i)\bbasemyai.core\b'
+  - '(?i)\bcore\s+crate\b'
+
+"crate:basemyai":
+  - '(?i)\bbasemyai\s+crate\b'
+  - '(?i)\bmemory\s+layer\b'
+  - '(?i)\btemporal.rag\b'
+  - '(?i)\bknowledge.graph\b'
+  - '(?i)\brrf\b'
+  - '(?i)\bconsolidat\b'
+
+# ── Bindings ─────────────────────────────────────────────────────────────────
+"bindings:python":
+  - '(?i)\bpyo3\b'
+  - '(?i)\bpython\s+sdk\b'
+  - '(?i)\bpip\s+install\b'
+
+"bindings:node":
+  - '(?i)\bnapi\b'
+  - '(?i)\bnode\.?js?\b'
+  - '(?i)\bnpm\s+install\b'
+  - '(?i)\btypescript\s+sdk\b'
+
+"bindings:rest":
+  - '(?i)\brest\s+sidecar\b'
+  - '(?i)\baxum\b'
+  - '(?i)\bhttp\s+api\b'
+
+# ── Infra / storage ──────────────────────────────────────────────────────────
+"storage":
+  - '(?i)\blibsql\b'
+  - '(?i)\bsqlite\b'
+  - '(?i)\bvector.top.k\b'
+  - '(?i)\bannf?\b'
+
+"embeddings":
+  - '(?i)\bcandle\b'
+  - '(?i)\bembedd?ing\b'
+  - '(?i)\bminilm\b'
+  - '(?i)\ball.minilm\b'
+
+"encryption":
+  - '(?i)\bcrypto\b'
+  - '(?i)\bencrypt\b'
+  - '(?i)\bcmake\b'
+
+# ── Type ─────────────────────────────────────────────────────────────────────
+"bug":
+  - '(?i)\bbug\b'
+  - '(?i)\bcrash\b'
+  - '(?i)\bpanic\b'
+  - '(?i)\bregress\b'
+  - '(?i)\bbroken\b'
+  - '(?i)\bnot\s+work\b'
+
+"feature":
+  - '(?i)\bfeature\s+request\b'
+  - '(?i)\bnew\s+feature\b'
+  - '(?i)\badd\s+support\b'
+
+"performance":
+  - '(?i)\bperformance\b'
+  - '(?i)\bperf\b'
+  - '(?i)\bslow\b'
+  - '(?i)\boptimiz\b'
+  - '(?i)\blatency\b'
+  - '(?i)\bthroughput\b'
+
+"security":
+  - '(?i)\bsecurity\b'
+  - '(?i)\bvulnerab\b'
+  - '(?i)\bcve\b'
+  - '(?i)\binjection\b'
+  - '(?i)\bghost\b'
+
+"documentation":
+  - '(?i)\bdocs?\b'
+  - '(?i)\bdocumentation\b'
+  - '(?i)\breadme\b'
+  - '(?i)\bexample\b'
+  - '(?i)\btutorial\b'
+
+"ci":
+  - '(?i)\bci\b'
+  - '(?i)\bgithub\s+action\b'
+  - '(?i)\bworkflow\b'
+  - '(?i)\bpipeline\b'

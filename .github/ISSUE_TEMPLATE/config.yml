@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://docs.basemyai.com
+    about: Read the official documentation.
+  - name: Ask a question
+    url: https://github.com/basemyai/basemyai/discussions
+    about: Ask questions and discuss with other community members.
+  - name: Discord
+    url: https://discord.gg/basemyai
+    about: Join our Discord for real-time help and discussion.
+  - name: Security issues
+    url: https://github.com/basemyai/basemyai/security/advisories/new
+    about: Report security vulnerabilities privately here — do not open a public issue.

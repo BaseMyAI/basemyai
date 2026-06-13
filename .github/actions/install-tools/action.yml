@@ -1,0 +1,40 @@
+name: 'Install tools'
+description: 'Install cargo tools needed for CI'
+
+inputs:
+  preset:
+    description: 'Preset tool collection (test, quality). Takes precedence over tools.'
+    required: false
+  tools:
+    description: 'Tools to install (comma-separated). Used if preset is not specified.'
+    required: false
+    default: 'cargo-nextest'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve tools
+      id: resolve
+      shell: bash
+      run: |
+        if [[ -n "${{ inputs.preset }}" ]]; then
+          case "${{ inputs.preset }}" in
+            test)
+              echo "tools=cargo-nextest" >> $GITHUB_OUTPUT
+              ;;
+            quality)
+              echo "tools=cargo-nextest,cargo-machete" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "::error::Unknown preset: ${{ inputs.preset }}"
+              exit 1
+              ;;
+          esac
+        else
+          echo "tools=${{ inputs.tools }}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Install tools
+      uses: taiki-e/install-action@80e6af7a2ec7f280fffe2d0a9d3a12a9d11d86e9 # v2.75.1
+      with:
+        tool: ${{ steps.resolve.outputs.tools }}

@@ -1,0 +1,21 @@
+name: 'Check clippy'
+description: 'Run cargo clippy — the project quality gate'
+
+inputs:
+  save-cache:
+    description: 'Whether to save the cargo cache'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup environment
+      uses: ./.github/actions/setup-environment
+      with:
+        components: clippy
+        save-cache: ${{ inputs.save-cache }}
+
+    - name: Run clippy
+      shell: bash
+      run: cargo clippy --workspace --all-targets -- -D warnings

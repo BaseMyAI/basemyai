@@ -1,0 +1,100 @@
+name: Bug report
+description: File a bug report.
+type: "Bug"
+labels: ["triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - id: kind
+    type: dropdown
+    attributes:
+      label: What component does this affect?
+      options:
+        - basemyai-core (storage / vectors / embeddings)
+        - basemyai (memory layers / temporal RAG / cognition)
+        - Python SDK (PyO3)
+        - Node SDK (NAPI-RS)
+        - REST sidecar
+        - basemyai CLI (setup / provision)
+    validations:
+      required: true
+  - id: what
+    type: textarea
+    attributes:
+      label: Describe the bug
+      description: What exactly is going wrong?
+      placeholder: |
+        Give a short description of what the bug is. Include as much relevant information as possible.
+        Please ensure that all code is formatted within code blocks.
+    validations:
+      required: true
+  - id: steps
+    type: textarea
+    attributes:
+      label: Steps to reproduce
+      description: What are the steps necessary to reproduce this bug?
+      placeholder: |
+        Show the exact code or commands needed to reproduce the behaviour.
+        Ideally, anyone interested in the issue should be able to directly copy and paste the code to run it.
+        Screenshots are welcome, but always include code that can be copied and pasted.
+    validations:
+      required: true
+  - id: expected
+    type: textarea
+    attributes:
+      label: Expected behaviour
+      description: What is the behaviour that you would expect to see?
+      placeholder: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+  - id: version
+    type: input
+    attributes:
+      label: BaseMyAI version
+      description: Paste the output of `cargo pkgid basemyai` or the version from your Cargo.toml / pip show basemyai / npm list basemyai
+      placeholder: basemyai 0.1.0
+    validations:
+      required: true
+  - id: platform
+    type: dropdown
+    attributes:
+      label: Platform
+      options:
+        - Linux (x86_64)
+        - Linux (aarch64)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows (x86_64)
+    validations:
+      required: false
+  - id: contact
+    type: input
+    attributes:
+      label: Contact details
+      description: How can we get in touch with you if we need more info?
+      placeholder: discord:username or email@example.com
+    validations:
+      required: false
+  - type: checkboxes
+    attributes:
+      label: Could this be a bug in your application?
+      description: Please confirm that this issue resides with BaseMyAI, not your own code.
+      options:
+        - label: I confirm this is a bug with BaseMyAI, not with my own application
+          required: true
+  - type: checkboxes
+    attributes:
+      label: Is there an existing issue for this?
+      description: Please search [our issues](https://github.com/basemyai/basemyai/issues) to see if this bug already exists.
+      options:
+        - label: I confirm that I have searched the existing issues
+          required: true
+  - type: checkboxes
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/basemyai/basemyai/blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
