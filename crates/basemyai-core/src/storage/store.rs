@@ -5,17 +5,24 @@
 //! chiffrement au repos est intégré (feature `crypto`, qui exige CMake).
 
 use std::fmt;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use libsql::{Builder, Connection, Database};
+use libsql::{Builder, Connection, Database, TransactionBehavior};
+use tokio::sync::{Mutex, MutexGuard};
 
-use super::{Filter, Neighbor, Value};
+use super::{Filter, Metric, Neighbor, Value};
 use crate::{CoreError, Result};
 
 /// Facteur de sur-échantillonnage du top-k natif quand un `Filter` est présent :
 /// on demande `k * KNN_OVERSAMPLE` voisins avant d'appliquer le `WHERE`, pour
 /// qu'il reste ~`k` résultats une fois filtrés.
 const KNN_OVERSAMPLE: usize = 8;
+
+/// Sur-échantillonnage pour le re-classement par métrique non native
+/// (euclidienne/hamming) : on récupère `k * RERANK_OVERSAMPLE` candidats cosinus
+/// avant de trier en Rust sur la métrique demandée.
+const RERANK_OVERSAMPLE: usize = 16;
 
 /// Clé de chiffrement, **fournie à l'ouverture, jamais persistée**. `Debug` masqué.
 #[derive(Clone)]
@@ -52,6 +59,9 @@ pub struct Store {
     conn: Connection,
     path: Option<PathBuf>,
     encrypted: bool,
+    /// Sérialise les [`WriteTxn`] : la connexion étant partagée, deux `BEGIN`
+    /// concurrents s'imbriqueraient (erreur SQLite) sans ce verrou.
+    write_lock: Mutex<()>,
 }
 
 impl fmt::Debug for Store {
@@ -78,6 +88,7 @@ impl Store {
             conn,
             path: Some(path.to_path_buf()),
             encrypted,
+            write_lock: Mutex::new(()),
         })
     }
 
@@ -92,6 +103,7 @@ impl Store {
             conn,
             path: None,
             encrypted: false,
+            write_lock: Mutex::new(()),
         })
     }
 
@@ -224,6 +236,96 @@ impl Store {
         Ok(out)
     }
 
+    /// KNN avec **métrique explicite**.
+    ///
+    /// [`Metric::Cosine`] emprunte le chemin natif ([`vector_knn`](Self::vector_knn)).
+    /// [`Metric::Euclidean`] / [`Metric::Hamming`] sur-échantillonnent les candidats
+    /// cosinus (`k * RERANK_OVERSAMPLE`) puis les **re-classent en Rust** sur les
+    /// vecteurs réels (rappel piloté par l'ANN cosinus, tri par la métrique cible).
+    ///
+    /// # Errors
+    /// [`CoreError::Vector`] si `table` est invalide, ou échec SQL.
+    pub async fn vector_knn_metric(
+        &self,
+        table: &str,
+        query: &[f32],
+        k: usize,
+        filter: Option<&Filter>,
+        metric: Metric,
+    ) -> Result<Vec<Neighbor>> {
+        match metric {
+            Metric::Cosine => self.vector_knn(table, query, k, filter).await,
+            Metric::Euclidean | Metric::Hamming => self.vector_knn_reranked(table, query, k, filter, metric).await,
+        }
+    }
+
+    /// Re-classement en Rust : récupère les vecteurs des candidats cosinus
+    /// sur-échantillonnés, recalcule la distance pour `metric`, trie, tronque à `k`.
+    async fn vector_knn_reranked(
+        &self,
+        table: &str,
+        query: &[f32],
+        k: usize,
+        filter: Option<&Filter>,
+        metric: Metric,
+    ) -> Result<Vec<Neighbor>> {
+        let table = ident(table)?;
+        let conn = self.connect();
+        let inner_k = k.saturating_mul(RERANK_OVERSAMPLE);
+
+        // Placeholders : 1) query (vector_top_k) 2) inner_k 3..) params du filtre.
+        let mut params: Vec<libsql::Value> = vec![
+            libsql::Value::Text(vec_to_json(query)),
+            libsql::Value::Integer(i64::try_from(inner_k).unwrap_or(i64::MAX)),
+        ];
+        let where_clause = match filter {
+            Some(f) if !f.where_sql.is_empty() => {
+                params.extend(f.params.iter().map(to_libsql_value));
+                format!(" WHERE {}", f.where_sql)
+            }
+            _ => String::new(),
+        };
+
+        let sql = format!(
+            "SELECT t.id, vector_extract(t.emb) AS v \
+             FROM vector_top_k('{table}_idx', vector(?), ?) AS top \
+             JOIN {table} AS t ON t.rowid = top.id{where_clause}",
+        );
+
+        let mut rows = conn.query(&sql, params).await.map_err(map)?;
+        let mut scored: Vec<Neighbor> = Vec::new();
+        while let Some(row) = rows.next().await.map_err(map)? {
+            let id = row.get::<String>(0).map_err(map)?;
+            let vtext = row.get::<String>(1).map_err(map)?;
+            let candidate = parse_vector(&vtext);
+            scored.push(Neighbor {
+                id,
+                distance: metric_distance(query, &candidate, metric),
+            });
+        }
+
+        scored.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        Ok(scored)
+    }
+
+    /// Ouvre une [`WriteTxn`] : transaction d'écriture **sérialisée**
+    /// (`BEGIN IMMEDIATE` + verrou writer interne). Toute écriture multi-tables
+    /// du consommateur doit passer par ici pour être atomique — un échec en
+    /// cours de route annule tout (rollback automatique au drop).
+    ///
+    /// # Errors
+    /// [`CoreError::Storage`] si le `BEGIN` échoue.
+    pub async fn begin_write(&self) -> Result<WriteTxn<'_>> {
+        let writer = self.write_lock.lock().await;
+        let txn = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await
+            .map_err(map)?;
+        Ok(WriteTxn { txn, _writer: writer })
+    }
+
     /// Chemin du fichier (`None` si en mémoire).
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
@@ -234,6 +336,35 @@ impl Store {
     #[must_use]
     pub fn is_encrypted(&self) -> bool {
         self.encrypted
+    }
+}
+
+/// Transaction d'écriture sérialisée, ouverte par [`Store::begin_write`].
+///
+/// Déréférence vers la [`Connection`] sous-jacente : les `execute`/`query`
+/// passés dessus font partie de la transaction. Sans [`commit`](Self::commit),
+/// le drop **annule** tout (rollback). Le verrou writer est tenu pendant toute
+/// la vie de la transaction — les autres `WriteTxn` attendent.
+pub struct WriteTxn<'a> {
+    txn: libsql::Transaction,
+    _writer: MutexGuard<'a, ()>,
+}
+
+impl WriteTxn<'_> {
+    /// Valide la transaction et relâche le verrou writer.
+    ///
+    /// # Errors
+    /// [`CoreError::Storage`] si le `COMMIT` échoue.
+    pub async fn commit(self) -> Result<()> {
+        self.txn.commit().await.map_err(map)
+    }
+}
+
+impl Deref for WriteTxn<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        &self.txn
     }
 }
 
@@ -299,4 +430,43 @@ fn to_libsql_value(v: &Value) -> libsql::Value {
 
 fn map(e: libsql::Error) -> CoreError {
     CoreError::Storage(e.to_string())
+}
+
+/// Parse la sortie texte de `vector_extract` (`"[a,b,c]"`) en `Vec<f32>`.
+fn parse_vector(s: &str) -> Vec<f32> {
+    s.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .filter_map(|x| {
+            let t = x.trim();
+            if t.is_empty() { None } else { t.parse::<f32>().ok() }
+        })
+        .collect()
+}
+
+/// Distance entre `query` et `candidate` pour la métrique de re-classement.
+/// `Cosine` n'emprunte pas ce chemin (fallback défensif neutre).
+fn metric_distance(query: &[f32], candidate: &[f32], metric: Metric) -> f32 {
+    match metric {
+        Metric::Euclidean => query
+            .iter()
+            .zip(candidate)
+            .map(|(x, y)| {
+                let d = x - y;
+                d * d
+            })
+            .sum::<f32>()
+            .sqrt(),
+        Metric::Hamming => {
+            let mut differing = 0.0_f32;
+            for (x, y) in query.iter().zip(candidate) {
+                if x.is_sign_negative() != y.is_sign_negative() {
+                    differing += 1.0;
+                }
+            }
+            differing
+        }
+        Metric::Cosine => 1.0,
+    }
 }

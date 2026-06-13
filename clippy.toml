@@ -1,0 +1,12 @@
+# Politique Clippy partagée — voir [workspace.lints.clippy] dans Cargo.toml.
+# Ce fichier configure le COMPORTEMENT de certains lints (les seuils),
+# pas leur activation (ça, c'est dans Cargo.toml).
+
+# Règle CLAUDE.md : « Jamais unwrap() en code lib ». On active donc `unwrap_used`
+# au workspace — mais les tests ont le droit de paniquer franchement (c'est leur
+# job). Ces options exemptent les fns `#[test]` et `#[cfg(test)]`.
+# (`allow-expect-in-tests` reste posé par sûreté même si `expect_used` n'est pas
+# activé : la règle autorise `expect("message")`.)
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

@@ -47,12 +47,25 @@ impl MemoryLayer {
 }
 
 /// Une mémoire retournée par `recall`.
+///
+/// `score` est la **distance cosinus** brute renvoyée par l'index (`0` = identique,
+/// croissante = moins pertinent). Les surfaces publiques (SDK, REST) exposent en
+/// général la **similarité** via [`Record::similarity`].
 #[derive(Debug, Clone)]
 pub struct Record {
     pub id: String,
     pub text: String,
     pub layer: MemoryLayer,
     pub score: f32,
+}
+
+impl Record {
+    /// Similarité cosinus normalisée dans `[0, 1]` (`1` = identique), dérivée de
+    /// la distance brute. C'est la forme exposée par les SDK et le sidecar REST.
+    #[must_use]
+    pub fn similarity(&self) -> f32 {
+        (1.0 - self.score).clamp(0.0, 1.0)
+    }
 }
 
 /// Statistiques de la mémoire d'un agent (souvenirs valides à l'instant courant).

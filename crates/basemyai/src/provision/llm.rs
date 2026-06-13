@@ -9,8 +9,9 @@
 //!   commande Ollama correspondante) et on retourne une erreur claire.
 //!
 //! Les serveurs détectés exposent tous l'API compatible OpenAI
-//! (`POST /v1/chat/completions`) — [`OllamaBackend`] couvre donc Ollama, LM Studio,
-//! Jan, vLLM, KoboldCPP, LocalAI et tout serveur exposant cet endpoint.
+//! (`POST /v1/chat/completions`) — [`OpenAiCompatBackend`] couvre donc Ollama,
+//! LM Studio, Jan, vLLM, KoboldCPP, LocalAI et tout serveur exposant cet
+//! endpoint. ([`OllamaBackend`] reste un alias, nom historique d'ADR-013.)
 //!
 //! ## Backends sondés
 //!
@@ -367,10 +368,11 @@ pub fn propose_models_to_install(installed: &[LlmOption]) -> Vec<&'static KnownM
 /// Résultat de `choose_llm` : un backend prêt à l'emploi.
 pub struct LlmProvision {
     /// Backend connecté, implémentant [`LlmInference`].
-    pub backend: OllamaBackend,
-    /// Modèle sélectionné (tag).
+    pub backend: Box<dyn LlmInference>,
+    /// Modèle sélectionné (tag ou slug workspace pour AnythingLLM).
     pub model_id: String,
-    /// RAM estimée consommée par ce modèle (Mo).
+    /// RAM estimée consommée par ce modèle en Mo.
+    /// `None` pour AnythingLLM (modèle géré côté proxy).
     pub ram_mb: Option<u64>,
 }
 
@@ -383,29 +385,37 @@ pub struct LlmProvision {
 pub async fn choose_llm() -> Result<LlmProvision> {
     let options = detect_llm_options().await;
 
+    // ── Niveau 1 : backend direct OpenAI-compat (hardware-aware) ─────────────
     if let Some(opt) = best_llm_option(&options) {
         return Ok(LlmProvision {
-            backend: OllamaBackend::new(&opt.server_url, &opt.model_id),
+            backend:  Box::new(OpenAiCompatBackend::new(&opt.server_url, &opt.model_id)),
             model_id: opt.model_id.clone(),
-            ram_mb: opt.ram_mb,
+            ram_mb:   opt.ram_mb,
         });
     }
 
-    // Aucun modèle sélectionnable — construire un message d'aide contextuel.
+    // ── Niveau 2 : fallback AnythingLLM (config explicite via env, ADR-016) ──
+    if let Some(backend) = anythingllm_from_env() {
+        let model_id = backend.workspace_slug.clone();
+        return Ok(LlmProvision { backend: Box::new(backend), model_id, ram_mb: None });
+    }
+
+    // ── Aucun backend — message d'aide contextuel ─────────────────────────────
     let has_anythingllm = options.iter().any(|o| o.backend == BackendKind::AnythingLlm);
     let usable: Vec<_> = options.iter().filter(|o| o.ram_mb.is_some()).collect();
 
     let hint = if usable.is_empty() {
         if has_anythingllm {
-            "AnythingLLM détecté (port 3001) mais non utilisable directement pour l'inférence. \
-             Dans les paramètres AnythingLLM, activez Ollama ou LM Studio comme backend — \
-             BaseMyAI les détectera automatiquement."
+            "AnythingLLM détecté (port 3001). Pour l'utiliser comme backend d'inférence, \
+             définissez BASEMYAI_ANYTHINGLLM_KEY et BASEMYAI_ANYTHINGLLM_WORKSPACE. \
+             Alternativement, configurez Ollama ou LM Studio comme backend dans AnythingLLM."
                 .to_string()
         } else {
             let proposals = propose_models_to_install(&[]);
             if proposals.is_empty() {
                 "Aucun serveur LLM local détecté. Installez Ollama (https://ollama.com) \
-                 puis `ollama pull <modèle>`."
+                 puis `ollama pull <modèle>`. Ou configurez BASEMYAI_ANYTHINGLLM_KEY + \
+                 BASEMYAI_ANYTHINGLLM_WORKSPACE pour utiliser AnythingLLM."
                     .to_string()
             } else {
                 let tags: Vec<_> = proposals
@@ -438,24 +448,169 @@ pub async fn choose_llm() -> Result<LlmProvision> {
 
 // ─── Backend OpenAI-compat universel ─────────────────────────────────────────
 
+/// Timeout par défaut d'un appel d'inférence. Généreux : un prompt de
+/// consolidation sur un petit modèle CPU peut prendre plusieurs minutes —
+/// mais **borné** : un serveur local figé ne doit jamais bloquer la
+/// maintenance indéfiniment.
+const INFERENCE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Timeout d'établissement de connexion : un serveur local répond vite ou pas.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Backend LLM via **API compatible OpenAI v1** (`POST /v1/chat/completions`).
 ///
 /// Couvre Ollama, LM Studio, Jan, vLLM, KoboldCPP, LocalAI et tout serveur
 /// exposant cet endpoint sans modification.
-pub struct OllamaBackend {
+pub struct OpenAiCompatBackend {
     client: Client,
     base_url: String,
     model: String,
+    timeout: Duration,
 }
 
-impl OllamaBackend {
+/// Alias historique (nom d'ADR-013). Préférer [`OpenAiCompatBackend`] : le
+/// backend parle à tout serveur OpenAI-compat, pas seulement Ollama.
+pub type OllamaBackend = OpenAiCompatBackend;
+
+// ─── Backend AnythingLLM (workspace-chat API) ─────────────────────────────────
+
+/// Backend LLM via l'**API workspace-chat d'AnythingLLM**
+/// (`POST /api/v1/workspace/{slug}/chat`).
+///
+/// Authentifié par Bearer token (`api_key`). Retourne le champ `textResponse`
+/// de la réponse JSON. Le modèle effectif est déterminé par la configuration
+/// du workspace côté AnythingLLM — BaseMyAI ne le connaît pas ; `model_id()`
+/// retourne le `workspace_slug` comme identifiant opaque.
+///
+/// **Note (ADR-016)** : le prompt transite par le RAG du workspace. Si celui-ci
+/// contient des documents, ils peuvent apparaître dans la réponse. Utiliser un
+/// workspace vide ou dédié BaseMyAI pour la consolidation.
+///
+/// # Variables d'environnement
+///
+/// `choose_llm()` utilise automatiquement ce backend en fallback si les trois
+/// variables suivantes sont définies :
+///
+/// - `BASEMYAI_ANYTHINGLLM_URL` (défaut : `http://localhost:3001`)
+/// - `BASEMYAI_ANYTHINGLLM_KEY` (obligatoire)
+/// - `BASEMYAI_ANYTHINGLLM_WORKSPACE` (slug du workspace, obligatoire)
+pub struct AnythingLlmBackend {
+    client:         Client,
+    base_url:       String,
+    workspace_slug: String,
+    api_key:        String,
+    timeout:        Duration,
+}
+
+impl AnythingLlmBackend {
+    /// Construit un backend AnythingLLM.
+    ///
+    /// - `base_url` : URL de base, ex. `"http://localhost:3001"`.
+    /// - `workspace_slug` : slug du workspace, ex. `"mon-espace-de-travail"`.
+    /// - `api_key` : clé API Bearer.
+    #[must_use]
+    pub fn new(base_url: &str, workspace_slug: &str, api_key: &str) -> Self {
+        Self {
+            client:         Client::builder().connect_timeout(CONNECT_TIMEOUT).build().unwrap_or_default(),
+            base_url:       base_url.trim_end_matches('/').to_string(),
+            workspace_slug: workspace_slug.to_string(),
+            api_key:        api_key.to_string(),
+            timeout:        INFERENCE_TIMEOUT,
+        }
+    }
+
+    /// Remplace le timeout d'inférence (défaut : 300 s).
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
+/// Lit la configuration AnythingLLM depuis les variables d'environnement
+/// (`BASEMYAI_ANYTHINGLLM_URL`, `_KEY`, `_WORKSPACE`).
+///
+/// Retourne `None` si la clé ou le workspace slug sont absents.
+#[must_use]
+pub fn anythingllm_from_env() -> Option<AnythingLlmBackend> {
+    let key  = std::env::var("BASEMYAI_ANYTHINGLLM_KEY").ok()?;
+    let slug = std::env::var("BASEMYAI_ANYTHINGLLM_WORKSPACE").ok()?;
+    let url  = std::env::var("BASEMYAI_ANYTHINGLLM_URL")
+        .unwrap_or_else(|_| "http://localhost:3001".to_string());
+    Some(AnythingLlmBackend::new(&url, &slug, &key))
+}
+
+#[derive(Serialize)]
+struct AnythingLlmChatRequest<'a> {
+    message: &'a str,
+    mode:    &'static str,
+}
+
+#[derive(Deserialize)]
+struct AnythingLlmChatResponse {
+    #[serde(rename = "textResponse")]
+    text_response: Option<String>,
+    error:         Option<String>,
+}
+
+#[async_trait::async_trait]
+impl LlmInference for AnythingLlmBackend {
+    async fn complete(&self, prompt: &str) -> Result<String> {
+        let url  = format!("{}/api/v1/workspace/{}/chat", self.base_url, self.workspace_slug);
+        let body = AnythingLlmChatRequest { message: prompt, mode: "chat" };
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .timeout(self.timeout)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| MemoryError::Inference(format!("AnythingLLM : requête échouée : {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text   = resp.text().await.unwrap_or_default();
+            return Err(MemoryError::Inference(format!("AnythingLLM : HTTP {status} — {text}")));
+        }
+
+        let parsed: AnythingLlmChatResponse = resp
+            .json()
+            .await
+            .map_err(|e| MemoryError::Inference(format!("AnythingLLM : réponse illisible : {e}")))?;
+
+        if let Some(ref err) = parsed.error && !err.is_empty() {
+            return Err(MemoryError::Inference(format!("AnythingLLM erreur : {err}")));
+        }
+
+        parsed
+            .text_response
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| MemoryError::Inference("AnythingLLM : réponse vide (textResponse null)".into()))
+    }
+
+    fn model_id(&self) -> &str {
+        &self.workspace_slug
+    }
+}
+
+impl OpenAiCompatBackend {
     #[must_use]
     pub fn new(base_url: &str, model: &str) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder().connect_timeout(CONNECT_TIMEOUT).build().unwrap_or_default(),
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
+            timeout: INFERENCE_TIMEOUT,
         }
+    }
+
+    /// Remplace le timeout d'inférence (défaut : 300 s). À allonger pour de
+    /// très gros prompts sur CPU, à raccourcir pour des réponses interactives.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -488,7 +643,7 @@ struct ChatChoiceMessage {
 }
 
 #[async_trait::async_trait]
-impl LlmInference for OllamaBackend {
+impl LlmInference for OpenAiCompatBackend {
     async fn complete(&self, prompt: &str) -> Result<String> {
         let url = format!("{}/v1/chat/completions", self.base_url);
         let body = ChatRequest {
@@ -503,6 +658,7 @@ impl LlmInference for OllamaBackend {
         let resp = self
             .client
             .post(&url)
+            .timeout(self.timeout)
             .json(&body)
             .send()
             .await

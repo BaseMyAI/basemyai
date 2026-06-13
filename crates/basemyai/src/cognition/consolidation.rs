@@ -14,7 +14,7 @@
 
 use basemyai_core::CoreError;
 use basemyai_core::libsql;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::inference::LlmInference;
 use crate::{Graph, Memory, MemoryError, MemoryLayer, Result, now_unix};
@@ -37,53 +37,97 @@ pub struct ConsolidationReport {
     pub relations_upserted: usize,
 }
 
-/// Schéma JSON attendu en sortie du LLM. Champs absents tolérés (`default`).
-#[derive(Debug, Deserialize)]
-struct RawExtraction {
-    #[serde(default)]
-    facts: Vec<String>,
-    #[serde(default)]
-    entities: Vec<RawEntity>,
-    #[serde(default)]
-    relations: Vec<RawRelation>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawEntity {
-    id: String,
-    kind: String,
-    label: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawRelation {
-    src: String,
-    relation: String,
-    dst: String,
-}
-
-/// Exécute une passe de consolidation pour l'agent de `memory`, en s'appuyant sur
-/// le fournisseur d'inférence `llm`.
+/// Résultat d'extraction : faits durables + entités + relations.
 ///
-/// Étapes : lecture des épisodes valides → prompt → extraction LLM (JSON) →
-/// peuplement du graphe (idempotent) → promotion des faits en `semantic` (avec
-/// déduplication). Aucune écriture si aucun épisode.
+/// C'est le schéma JSON produit par le LLM (autonome) **ou** par l'agent lui-même
+/// (consolidation pilotée par l'agent, ADR-018). Champs absents tolérés (`default`).
+/// Sérialisable pour permettre aux consommateurs (serveur MCP) de le transporter.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Extraction {
+    /// Faits durables à promouvoir en couche `semantic`.
+    #[serde(default)]
+    pub facts: Vec<String>,
+    /// Entités du graphe (nœuds).
+    #[serde(default)]
+    pub entities: Vec<ExtractedEntity>,
+    /// Relations du graphe (arêtes), référençant les `id` des entités.
+    #[serde(default)]
+    pub relations: Vec<ExtractedRelation>,
+}
+
+/// Une entité extraite (nœud du graphe).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedEntity {
+    /// Identifiant stable de l'entité (référencé par les relations).
+    pub id: String,
+    /// Type/catégorie de l'entité (ex. `"person"`, `"project"`).
+    pub kind: String,
+    /// Libellé lisible.
+    pub label: String,
+}
+
+/// Une relation extraite (arête du graphe).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedRelation {
+    /// `id` de l'entité source.
+    pub src: String,
+    /// Type de relation (ex. `"works_on"`).
+    pub relation: String,
+    /// `id` de l'entité destination.
+    pub dst: String,
+}
+
+/// Entrée de consolidation : les épisodes bruts + le prompt d'extraction prêt à
+/// soumettre. Produit par [`consolidation_prompt`].
+///
+/// Deux usages :
+/// - **autonome** : passer `prompt` à un [`LlmInference`] (cf. [`consolidate`]) ;
+/// - **piloté par l'agent** (ADR-018) : remettre `episodes` à l'agent appelant
+///   (via le serveur MCP) pour qu'il fasse l'extraction avec son propre LLM, puis
+///   applique le résultat via [`apply_extraction`].
+#[derive(Debug, Clone)]
+pub struct ConsolidationInput {
+    /// Contenus des épisodes valides, du plus récent au plus ancien.
+    pub episodes: Vec<String>,
+    /// Prompt d'extraction complet (consigne + schéma + épisodes).
+    pub prompt: String,
+}
+
+/// Prépare une passe de consolidation : lit les épisodes valides de l'agent et
+/// construit le prompt d'extraction. Retourne `None` s'il n'y a aucun épisode
+/// (rien à consolider).
 ///
 /// # Errors
-/// - [`MemoryError::Inference`] si l'appel LLM échoue.
-/// - [`MemoryError::Extraction`] si la sortie n'est pas le JSON attendu.
-/// - [`MemoryError::Core`] en cas d'échec de stockage/embedding.
-pub async fn consolidate(memory: &Memory, llm: &dyn LlmInference) -> Result<ConsolidationReport> {
+/// [`MemoryError::Core`] en cas d'échec de lecture.
+pub async fn consolidation_prompt(memory: &Memory) -> Result<Option<ConsolidationInput>> {
     let episodes = recent_episodes(memory, MAX_EPISODES).await?;
     if episodes.is_empty() {
-        return Ok(ConsolidationReport::default());
+        return Ok(None);
     }
-
     let prompt = build_prompt(&episodes);
-    let raw = llm.complete(&prompt).await?;
-    let extraction: RawExtraction = serde_json::from_str(raw.trim())
-        .map_err(|e| MemoryError::Extraction(format!("JSON d'extraction invalide : {e}")))?;
+    Ok(Some(ConsolidationInput { episodes, prompt }))
+}
 
+/// Parse la sortie JSON d'une extraction (tolère les fences/espaces autour).
+///
+/// # Errors
+/// [`MemoryError::Extraction`] si la sortie n'est pas le JSON attendu.
+pub fn parse_extraction(raw: &str) -> Result<Extraction> {
+    serde_json::from_str(strip_json_fences(raw))
+        .map_err(|e| MemoryError::Extraction(format!("JSON d'extraction invalide : {e}")))
+}
+
+/// Applique une extraction (déjà parsée) à la mémoire : peuple le graphe
+/// (idempotent, `ON CONFLICT`) puis promeut les faits en `semantic` (dédupliqués
+/// par contenu exact). Réutilisable quel que soit le producteur de l'extraction
+/// (LLM autonome, agent MCP, import).
+///
+/// `episodes_seen` du rapport est laissé à 0 : l'appelant qui connaît le nombre
+/// d'épisodes (cf. [`consolidate`]) peut le renseigner.
+///
+/// # Errors
+/// [`MemoryError::Core`] en cas d'échec de stockage/embedding.
+pub async fn apply_extraction(memory: &Memory, extraction: &Extraction) -> Result<ConsolidationReport> {
     // Graphe : upserts idempotents (ON CONFLICT) — relancer ne duplique pas.
     let graph = Graph::new(memory.store(), memory.agent().clone());
     for e in &extraction.entities {
@@ -94,7 +138,6 @@ pub async fn consolidate(memory: &Memory, llm: &dyn LlmInference) -> Result<Cons
     }
 
     let mut report = ConsolidationReport {
-        episodes_seen: episodes.len(),
         entities_upserted: extraction.entities.len(),
         relations_upserted: extraction.relations.len(),
         ..ConsolidationReport::default()
@@ -111,6 +154,39 @@ pub async fn consolidate(memory: &Memory, llm: &dyn LlmInference) -> Result<Cons
     }
 
     Ok(report)
+}
+
+/// Exécute une passe de consolidation **autonome** pour l'agent de `memory`, en
+/// s'appuyant sur le fournisseur d'inférence `llm`.
+///
+/// Compose [`consolidation_prompt`] → `llm.complete` → [`parse_extraction`] →
+/// [`apply_extraction`]. Aucune écriture si aucun épisode.
+///
+/// Pour la consolidation **pilotée par l'agent** (le LLM du client MCP fait
+/// l'extraction), voir [`consolidation_prompt`] + [`apply_extraction`] (ADR-018).
+///
+/// # Errors
+/// - [`MemoryError::Inference`] si l'appel LLM échoue.
+/// - [`MemoryError::Extraction`] si la sortie n'est pas le JSON attendu.
+/// - [`MemoryError::Core`] en cas d'échec de stockage/embedding.
+pub async fn consolidate(memory: &Memory, llm: &dyn LlmInference) -> Result<ConsolidationReport> {
+    let Some(input) = consolidation_prompt(memory).await? else {
+        return Ok(ConsolidationReport::default());
+    };
+
+    let raw = llm.complete(&input.prompt).await?;
+    let extraction = parse_extraction(&raw)?;
+
+    let mut report = apply_extraction(memory, &extraction).await?;
+    report.episodes_seen = input.episodes.len();
+    Ok(report)
+}
+
+/// Retire d'éventuelles fences Markdown (```json … ```) autour d'un JSON et trim.
+fn strip_json_fences(raw: &str) -> &str {
+    let s = raw.trim();
+    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).unwrap_or(s);
+    s.strip_suffix("```").unwrap_or(s).trim()
 }
 
 /// Lit les contenus des épisodes **encore valides** de l'agent, du plus récent au

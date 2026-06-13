@@ -32,6 +32,11 @@ pub enum MemoryError {
     /// schéma attendu.
     #[error("extraction parse error: {0}")]
     Extraction(String),
+
+    /// Export/import de mémoire invalide : en-tête absent ou incompatible,
+    /// ligne JSONL malformée.
+    #[error("porting error: {0}")]
+    Porting(String),
 }
 
 /// Alias de résultat de la couche mémoire.

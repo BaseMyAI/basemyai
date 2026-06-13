@@ -27,8 +27,8 @@ pub use embed::CandleEmbedder;
 pub use embed::{Device, Embedder};
 pub use error::{CoreError, Result};
 pub use maintenance::{MaintenanceTask, MaintenanceWorker};
-pub use storage::{EncryptionKey, Migration, Store};
-pub use storage::{Filter, Neighbor, Value};
+pub use storage::{EncryptionKey, Migration, Store, WriteTxn};
+pub use storage::{Filter, Metric, Neighbor, Value};
 
 /// Ré-export : les consommateurs déclarent leur schéma et leurs requêtes via
 /// l'API libSQL exposée par [`Store::connect`].
