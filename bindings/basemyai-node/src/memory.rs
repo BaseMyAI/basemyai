@@ -1,15 +1,21 @@
 //! Façade `Memory` exposée à Node. Les méthodes `async` deviennent des `Promise`
 //! JS, exécutées sur le runtime tokio interne de NAPI-RS. Moteur 100 % local.
 
+#[cfg(feature = "embed")]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use napi::Result;
+#[cfg(not(feature = "embed"))]
+use napi::{Error, Status};
 use napi_derive::napi;
 
 use basemyai::MemoryLayer;
+#[cfg(feature = "embed")]
+use basemyai_core::{CandleEmbedder, Device, EncryptionKey, Store};
 
 use crate::errors::to_napi;
-use crate::types::{AgentStats, Entity, Record};
+use crate::types::{AgentStats, Entity, MemoryOpenOptions, Record};
 
 /// Mémoire d'un agent (tenant). Ouverte par une fabrique asynchrone, puis
 /// interrogée par `remember`/`recall`/... (toutes des `Promise`).
@@ -20,6 +26,12 @@ pub struct Memory {
 
 #[napi]
 impl Memory {
+    /// Ouvre une mémoire persistée de production, chiffrée, avec embedder Candle.
+    #[napi(factory)]
+    pub async fn open(options: MemoryOpenOptions) -> Result<Memory> {
+        open_production(options).await
+    }
+
     /// `agent_id` propriétaire de cette mémoire.
     #[napi]
     pub fn agent(&self) -> String {
@@ -40,6 +52,16 @@ impl Memory {
         let inner = Arc::clone(&self.inner);
         let k = k.unwrap_or(5) as usize;
         let records = inner.recall(&query, k).await.map_err(to_napi)?;
+        Ok(records.into_iter().map(Record::from).collect())
+    }
+
+    /// Recall limité à une couche mémoire (`short_term`, `episodic`, `procedural`, `semantic`).
+    #[napi(js_name = "recallByLayer")]
+    pub async fn recall_by_layer(&self, query: String, layer: String, k: Option<u32>) -> Result<Vec<Record>> {
+        let inner = Arc::clone(&self.inner);
+        let layer = MemoryLayer::from_table(&layer).map_err(to_napi)?;
+        let k = k.unwrap_or(5) as usize;
+        let records = inner.recall_by_layer(&query, layer, k).await.map_err(to_napi)?;
         Ok(records.into_iter().map(Record::from).collect())
     }
 
@@ -95,6 +117,47 @@ impl Memory {
             .map_err(to_napi)?;
         Ok(reached.into_iter().map(Entity::from).collect())
     }
+}
+
+#[cfg(feature = "embed")]
+async fn open_production(options: MemoryOpenOptions) -> Result<Memory> {
+    let MemoryOpenOptions {
+        path,
+        agent_id,
+        encryption_key,
+        model_path,
+        allow_model_download,
+    } = options;
+
+    let agent = basemyai::AgentId::new(agent_id).ok_or_else(|| to_napi(basemyai::MemoryError::MissingAgent))?;
+    let (model_dir, device) = if let Some(model_path) = model_path {
+        (PathBuf::from(model_path), Device::Cpu)
+    } else {
+        let provision = basemyai::provision(allow_model_download.unwrap_or(false))
+            .await
+            .map_err(to_napi)?;
+        (provision.model_path, provision.device)
+    };
+    let embedder = CandleEmbedder::load(&model_dir, device)
+        .map_err(basemyai::MemoryError::from)
+        .map_err(to_napi)?;
+    let db_path = PathBuf::from(path);
+    let store = Store::open(&db_path, Some(EncryptionKey::new(encryption_key)))
+        .await
+        .map_err(basemyai::MemoryError::from)
+        .map_err(to_napi)?;
+    let mem = basemyai::Memory::open(store, Box::new(embedder), agent)
+        .await
+        .map_err(to_napi)?;
+    Ok(Memory { inner: Arc::new(mem) })
+}
+
+#[cfg(not(feature = "embed"))]
+async fn open_production(_options: MemoryOpenOptions) -> Result<Memory> {
+    Err(Error::new(
+        Status::GenericFailure,
+        "Memory.open requires the basemyai-node `embed` feature",
+    ))
 }
 
 /// Fabrique **test-only** isolée dans son propre bloc `impl` : le `#[cfg]` est

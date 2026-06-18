@@ -56,3 +56,26 @@ test('remember defaults to semantic layer', async () => {
   const stats = await mem.stats();
   expect(stats.semantic).toBe(1);
 });
+
+test('recallByLayer filters to one memory layer', async () => {
+  const mem = await Memory.openInMemory('agent-layer');
+  await mem.remember('deploy runbook uses cargo clippy', 'procedural');
+  await mem.remember('cargo clippy is part of the baseline', 'semantic');
+
+  const hits = await mem.recallByLayer('cargo clippy', 'procedural', 5);
+  expect(hits.length).toBeGreaterThan(0);
+  expect(hits.every((h) => h.layer === 'procedural')).toBe(true);
+  expect(hits.some((h) => h.text.includes('deploy runbook'))).toBe(true);
+});
+
+test('forget physically removes a memory', async () => {
+  const mem = await Memory.openInMemory('agent-forget');
+  const id = await mem.remember('delete me permanently', 'semantic');
+
+  await mem.forget(id);
+
+  const hits = await mem.recall('delete me permanently', 5);
+  expect(hits.every((h) => h.id !== id)).toBe(true);
+  const stats = await mem.stats();
+  expect(stats.total).toBe(0);
+});

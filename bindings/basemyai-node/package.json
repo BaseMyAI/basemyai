@@ -7,6 +7,8 @@
   "scripts": {
     "build": "napi build --platform --release --features crypto,embed",
     "build:debug": "napi build --platform --features embed",
+    "build:test": "napi build --platform --no-default-features --features test-util",
+    "test": "npm run build:test && jest",
     "prepublishOnly": "napi build --platform --release --features crypto,embed"
   },
   "devDependencies": {

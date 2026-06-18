@@ -5,17 +5,16 @@
  * interrogée par `remember`/`recall`/... (toutes des `Promise`).
  */
 export declare class Memory {
-  /**
-   * Ouvre une mémoire **éphémère, non chiffrée** (`:memory:`) avec un embedder
-   * déterministe sans modèle. Réservé aux tests/spikes (pas de CMake/Candle).
-   */
-  static openInMemory(agentId: string): Promise<Memory>
+  /** Ouvre une mémoire persistée de production, chiffrée, avec embedder Candle. */
+  static open(options: MemoryOpenOptions): Promise<Memory>
   /** `agent_id` propriétaire de cette mémoire. */
   agent(): string
   /** Mémorise `text` dans une couche (défaut `semantic`). Résout vers l'UUID. */
   remember(text: string, layer?: string | undefined | null): Promise<string>
   /** Recall temporel sémantique : résout vers un tableau de `Record`. */
   recall(query: string, k?: number | undefined | null): Promise<Array<Record>>
+  /** Recall limité à une couche mémoire (`short_term`, `episodic`, `procedural`, `semantic`). */
+  recallByLayer(query: string, layer: string, k?: number | undefined | null): Promise<Array<Record>>
   /**
    * Recall hybride : vecteur + BM25 (full-text) fusionnés par RRF. Résout vers
    * un tableau de `Record` (le `score` porte le score RRF fusionné).
@@ -29,6 +28,15 @@ export declare class Memory {
   stats(): Promise<AgentStats>
   /** Traverse le graphe depuis `start` : résout vers un tableau d'`Entity`. */
   recallGraph(start: string, maxDepth?: number | undefined | null): Promise<Array<Entity>>
+}
+
+/** Options de production pour ouvrir une mémoire persistée. */
+export interface MemoryOpenOptions {
+  path: string
+  agentId: string
+  encryptionKey: string
+  modelPath?: string | undefined | null
+  allowModelDownload?: boolean | undefined | null
 }
 
 /** Statistiques d'un agent, par couche. */

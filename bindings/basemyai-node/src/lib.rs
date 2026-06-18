@@ -11,4 +11,4 @@ mod memory;
 mod types;
 
 pub use memory::Memory;
-pub use types::{AgentStats, Entity, Record};
+pub use types::{AgentStats, Entity, MemoryOpenOptions, Record};
