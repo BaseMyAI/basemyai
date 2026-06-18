@@ -29,7 +29,7 @@ pub use error::{MemoryError, Result};
 pub use maintenance::{AdaptiveForgetting, ConsolidationTask, ExpiredMemoryGc};
 #[cfg(feature = "test-util")]
 pub use memory::HashEmbedder;
-pub use memory::schema::{EMBEDDING_DIM, schema};
+pub use memory::schema::{BMAI_FORMAT_VERSION, EMBEDDING_DIM, schema};
 pub use memory::{AgentId, AgentStats, ImportReport, Memory, MemoryLayer, Record};
 pub use provision::{
     AnythingLlmBackend, BASELINE_DIM, BASELINE_MODEL_ID, BackendKind, HardwareProfile, KNOWN_MODELS, KnownModel,

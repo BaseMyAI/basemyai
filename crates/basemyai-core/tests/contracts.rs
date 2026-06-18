@@ -1,6 +1,6 @@
 //! Contrats du socle : types stables, indépendants des backends natifs.
 
-use basemyai_core::{Device, EncryptionKey, Filter, Value};
+use basemyai_core::{Device, EncryptionKey, EngineKind, Filter, StorageEngine, Store, Value};
 
 #[test]
 fn device_defaults_to_cpu() {
@@ -20,4 +20,17 @@ fn filter_carries_parameterized_clause() {
     let filter = Filter::new("col = ?", vec![Value::Integer(7)]);
     assert_eq!(filter.where_sql, "col = ?");
     assert_eq!(filter.params.len(), 1);
+}
+
+#[tokio::test]
+async fn store_reports_libsql_capabilities() {
+    let store = Store::open_in_memory().await.expect("store opens");
+    let caps = store.capabilities();
+
+    assert_eq!(caps.kind, EngineKind::Libsql);
+    assert!(caps.vectors);
+    assert!(caps.full_text);
+    assert!(caps.recursive_queries);
+    assert!(caps.transactions);
+    assert!(!caps.encrypted);
 }

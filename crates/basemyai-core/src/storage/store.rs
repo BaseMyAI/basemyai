@@ -12,7 +12,7 @@ use libsql::{Builder, Connection, Database, TransactionBehavior};
 use tokio::sync::{Mutex, MutexGuard};
 
 use super::{Filter, Metric, Neighbor, Value};
-use crate::{CoreError, Result};
+use crate::{CoreError, EngineCapabilities, Result, StorageEngine};
 
 /// Facteur de sur-échantillonnage du top-k natif quand un `Filter` est présent :
 /// on demande `k * KNN_OVERSAMPLE` voisins avant d'appliquer le `WHERE`, pour
@@ -336,6 +336,12 @@ impl Store {
     #[must_use]
     pub fn is_encrypted(&self) -> bool {
         self.encrypted
+    }
+}
+
+impl StorageEngine for Store {
+    fn capabilities(&self) -> EngineCapabilities {
+        EngineCapabilities::libsql(self.encrypted)
     }
 }
 
