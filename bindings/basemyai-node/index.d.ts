@@ -26,17 +26,12 @@ export declare class Memory {
   forget(id: string): Promise<void>
   /** Compte des souvenirs valides par couche : résout vers `AgentStats`. */
   stats(): Promise<AgentStats>
+  /** Insère ou met à jour une entité du graphe pour cet agent. */
+  addGraphEntity(id: string, kind: string, label: string): Promise<void>
+  /** Crée ou met à jour une relation orientée du graphe pour cet agent. */
+  addGraphEdge(src: string, relation: string, dst: string, weight?: number | undefined | null): Promise<void>
   /** Traverse le graphe depuis `start` : résout vers un tableau d'`Entity`. */
   recallGraph(start: string, maxDepth?: number | undefined | null): Promise<Array<Entity>>
-}
-
-/** Options de production pour ouvrir une mémoire persistée. */
-export interface MemoryOpenOptions {
-  path: string
-  agentId: string
-  encryptionKey: string
-  modelPath?: string | undefined | null
-  allowModelDownload?: boolean | undefined | null
 }
 
 /** Statistiques d'un agent, par couche. */
@@ -54,6 +49,15 @@ export interface Entity {
   kind: string
   label: string
   depth: number
+}
+
+/** Options de production pour ouvrir une mémoire persistée. */
+export interface MemoryOpenOptions {
+  path: string
+  agentId: string
+  encryptionKey: string
+  modelPath?: string
+  allowModelDownload?: boolean
 }
 
 /** Un souvenir retourné par `recall`. */

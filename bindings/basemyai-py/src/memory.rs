@@ -183,6 +183,42 @@ impl Memory {
         })
     }
 
+    /// Ajoute ou met à jour une entité dans le graphe de cette mémoire.
+    fn add_graph_entity<'p>(
+        &self,
+        py: Python<'p>,
+        id: String,
+        kind: String,
+        label: String,
+    ) -> PyResult<Bound<'p, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            inner.graph().add_entity(&id, &kind, &label).await.map_err(to_pyerr)?;
+            Ok(())
+        })
+    }
+
+    /// Ajoute ou met à jour une relation orientée `src -> dst`.
+    #[pyo3(signature = (src, relation, dst, weight = 1.0))]
+    fn add_graph_edge<'p>(
+        &self,
+        py: Python<'p>,
+        src: String,
+        relation: String,
+        dst: String,
+        weight: f64,
+    ) -> PyResult<Bound<'p, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            inner
+                .graph()
+                .add_edge(&src, &relation, &dst, weight)
+                .await
+                .map_err(to_pyerr)?;
+            Ok(())
+        })
+    }
+
     /// Traverse le graphe entités/relations depuis `start` : rend `list[Entity]`.
     #[pyo3(signature = (start, max_depth = 2))]
     fn recall_graph<'p>(&self, py: Python<'p>, start: String, max_depth: u32) -> PyResult<Bound<'p, PyAny>> {
