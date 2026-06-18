@@ -269,7 +269,9 @@ impl Memory {
             }
         }
         if !header_seen {
-            return Err(MemoryError::Porting("en-tête absent : ce n'est pas un export BaseMyAI".into()));
+            return Err(MemoryError::Porting(
+                "en-tête absent : ce n'est pas un export BaseMyAI".into(),
+            ));
         }
 
         // ── Ré-embedding par lots (hors transaction : CPU-bound) ─────────────
@@ -393,7 +395,9 @@ fn integer_opt(row: &libsql::Row, idx: i32) -> Result<Option<i64>> {
     match row.get_value(idx).map_err(storage)? {
         libsql::Value::Null => Ok(None),
         libsql::Value::Integer(i) => Ok(Some(i)),
-        other => Err(basemyai_core::CoreError::Storage(format!("colonne {idx} : entier attendu, reçu {other:?}")).into()),
+        other => {
+            Err(basemyai_core::CoreError::Storage(format!("colonne {idx} : entier attendu, reçu {other:?}")).into())
+        }
     }
 }
 

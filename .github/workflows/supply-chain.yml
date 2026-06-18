@@ -8,6 +8,8 @@ on:
     paths:
       - Cargo.lock
       - Cargo.toml
+      - deny.toml
+      - 'bindings/*/Cargo.toml'
       - 'crates/*/Cargo.toml'
       - .github/workflows/supply-chain.yml
     branches:
@@ -16,6 +18,8 @@ on:
     paths:
       - Cargo.lock
       - Cargo.toml
+      - deny.toml
+      - 'bindings/*/Cargo.toml'
       - 'crates/*/Cargo.toml'
       - .github/workflows/supply-chain.yml
   merge_group:

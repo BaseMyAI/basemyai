@@ -92,8 +92,7 @@ fn anythingllm_backend_model_id_is_workspace_slug() {
 
 #[test]
 fn anythingllm_backend_with_timeout_changes_timeout() {
-    let b = AnythingLlmBackend::new("http://localhost:3001", "ws", "key")
-        .with_timeout(Duration::from_secs(10));
+    let b = AnythingLlmBackend::new("http://localhost:3001", "ws", "key").with_timeout(Duration::from_secs(10));
     // Le timeout est privé ; on vérifie uniquement que le builder compile et retourne Self.
     let _ = b;
 }
@@ -114,9 +113,8 @@ fn anythingllm_backend_with_timeout_changes_timeout() {
 #[tokio::test]
 #[ignore = "nécessite AnythingLLM actif + BASEMYAI_ANYTHINGLLM_KEY + BASEMYAI_ANYTHINGLLM_WORKSPACE"]
 async fn consolidation_e2e_anythingllm_extracts_facts_and_graph() {
-    let backend = anythingllm_from_env().expect(
-        "BASEMYAI_ANYTHINGLLM_KEY et BASEMYAI_ANYTHINGLLM_WORKSPACE doivent être définis",
-    );
+    let backend = anythingllm_from_env()
+        .expect("BASEMYAI_ANYTHINGLLM_KEY et BASEMYAI_ANYTHINGLLM_WORKSPACE doivent être définis");
 
     let memory = open_memory("e2e-agent").await;
 
@@ -196,7 +194,11 @@ async fn choose_llm_falls_back_to_anythingllm() {
     let provision = choose_llm().await.expect("choose_llm doit retourner un backend");
     // Le model_id est le slug du workspace quand c'est AnythingLLM.
     println!("Backend choisi : model_id={}", provision.model_id);
-    let response = provision.backend.complete("Réponds juste 'pong'.").await.expect("completion");
+    let response = provision
+        .backend
+        .complete("Réponds juste 'pong'.")
+        .await
+        .expect("completion");
     assert!(!response.is_empty(), "la réponse ne doit pas être vide");
     println!("Réponse LLM : {response}");
 }

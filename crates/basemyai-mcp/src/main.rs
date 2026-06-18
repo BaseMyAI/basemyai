@@ -61,7 +61,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mp = basemyai::provision(consent).await?;
     let embedder: Arc<dyn Embedder> = Arc::new(CandleEmbedder::load(&mp.model_path, mp.device)?);
 
-    let provider = Arc::new(EncryptedFileProvider::new(db_path, EncryptionKey::new(db_key), embedder));
+    let provider = Arc::new(EncryptedFileProvider::new(
+        db_path,
+        EncryptionKey::new(db_key),
+        embedder,
+    ));
     let server = McpServer::new(provider, config.clone());
 
     match transport.as_str() {
@@ -83,7 +87,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(all(feature = "crypto", feature = "embed")))]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    Err("basemyai-mcp must be built with the `crypto` and `embed` features for the production server \
+    Err(
+        "basemyai-mcp must be built with the `crypto` and `embed` features for the production server \
          (they are in the default feature set)"
-        .into())
+            .into(),
+    )
 }

@@ -95,15 +95,28 @@ async fn consolidate_borrows_client_llm_via_sampling() {
         .call_tool(call("consolidate", json!({ "agent_id": "a" })))
         .await
         .expect("consolidate tool");
-    assert_ne!(consolidate.is_error, Some(true), "la consolidation par sampling ne doit pas être en erreur");
+    assert_ne!(
+        consolidate.is_error,
+        Some(true),
+        "la consolidation par sampling ne doit pas être en erreur"
+    );
 
     let result = consolidate.structured_content.expect("consolidate structured content");
-    assert_eq!(result["status"], "done", "doit avoir consolidé côté serveur : {result:?}");
-    assert_eq!(result["via"], "sampling", "doit être passé par le sampling : {result:?}");
+    assert_eq!(
+        result["status"], "done",
+        "doit avoir consolidé côté serveur : {result:?}"
+    );
+    assert_eq!(
+        result["via"], "sampling",
+        "doit être passé par le sampling : {result:?}"
+    );
 
     // 3) Le graphe doit être peuplé : on traverse depuis « alice » → « basemyai ».
     let graph = client
-        .call_tool(call("recall_graph", json!({ "agent_id": "a", "start": "alice", "max_depth": 2 })))
+        .call_tool(call(
+            "recall_graph",
+            json!({ "agent_id": "a", "start": "alice", "max_depth": 2 }),
+        ))
         .await
         .expect("recall_graph tool");
 
@@ -146,18 +159,28 @@ async fn consolidate_apply_persists_agent_extraction() {
         ))
         .await
         .expect("consolidate_apply tool");
-    assert_ne!(applied.is_error, Some(true), "consolidate_apply ne doit pas être en erreur");
+    assert_ne!(
+        applied.is_error,
+        Some(true),
+        "consolidate_apply ne doit pas être en erreur"
+    );
 
     let result = applied.structured_content.expect("apply structured content");
     assert_eq!(result["status"], "done");
-    assert_eq!(result["via"], "agent", "doit être marqué comme piloté par l'agent : {result:?}");
+    assert_eq!(
+        result["via"], "agent",
+        "doit être marqué comme piloté par l'agent : {result:?}"
+    );
     assert_eq!(result["facts_added"], 1);
     assert_eq!(result["entities_upserted"], 2);
     assert_eq!(result["relations_upserted"], 1);
 
     // Le graphe est peuplé : depuis « bob » on atteint « basemyai ».
     let graph = client
-        .call_tool(call("recall_graph", json!({ "agent_id": "b", "start": "bob", "max_depth": 2 })))
+        .call_tool(call(
+            "recall_graph",
+            json!({ "agent_id": "b", "start": "bob", "max_depth": 2 }),
+        ))
         .await
         .expect("recall_graph tool");
     let value = graph.structured_content.expect("recall_graph structured content");
@@ -169,13 +192,18 @@ async fn consolidate_apply_persists_agent_extraction() {
 
     // Le fait a été promu en couche sémantique et est rappelable.
     let recall = client
-        .call_tool(call("recall", json!({ "agent_id": "b", "query": "who maintains BaseMyAI", "k": 5 })))
+        .call_tool(call(
+            "recall",
+            json!({ "agent_id": "b", "query": "who maintains BaseMyAI", "k": 5 }),
+        ))
         .await
         .expect("recall tool");
     let value = recall.structured_content.expect("recall structured content");
     let items = value["items"].as_array().expect("items array");
     assert!(
-        items.iter().any(|i| i["text"].as_str().is_some_and(|t| t.contains("Bob maintains BaseMyAI"))),
+        items
+            .iter()
+            .any(|i| i["text"].as_str().is_some_and(|t| t.contains("Bob maintains BaseMyAI"))),
         "le fait promu doit être rappelable : {items:?}"
     );
 

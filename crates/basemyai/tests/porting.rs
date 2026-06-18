@@ -90,7 +90,10 @@ async fn roundtrip_restores_memories_graph_and_validity() {
     seed(&source).await;
 
     let jsonl = source.export_jsonl().await.expect("export");
-    assert!(jsonl.lines().count() >= 7, "en-tête + 3 souvenirs + 2 entités + 1 arête");
+    assert!(
+        jsonl.lines().count() >= 7,
+        "en-tête + 3 souvenirs + 2 entités + 1 arête"
+    );
 
     // Import dans une base neuve, sous un AUTRE agent : l'export est portable.
     let target = open_memory("b").await;
@@ -98,7 +101,10 @@ async fn roundtrip_restores_memories_graph_and_validity() {
     assert_eq!(report.memories, 3, "3 souvenirs importés (expiré inclus : backup)");
     assert_eq!(report.entities, 2);
     assert_eq!(report.edges, 1);
-    assert_eq!(report.memories_skipped + report.entities_skipped + report.edges_skipped, 0);
+    assert_eq!(
+        report.memories_skipped + report.entities_skipped + report.edges_skipped,
+        0
+    );
 
     // Recall sémantique : les valides remontent, l'expiré non.
     let hits = target.recall("the sky is blue", 5).await.expect("recall");

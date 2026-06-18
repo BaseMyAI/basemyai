@@ -388,16 +388,20 @@ pub async fn choose_llm() -> Result<LlmProvision> {
     // ── Niveau 1 : backend direct OpenAI-compat (hardware-aware) ─────────────
     if let Some(opt) = best_llm_option(&options) {
         return Ok(LlmProvision {
-            backend:  Box::new(OpenAiCompatBackend::new(&opt.server_url, &opt.model_id)),
+            backend: Box::new(OpenAiCompatBackend::new(&opt.server_url, &opt.model_id)),
             model_id: opt.model_id.clone(),
-            ram_mb:   opt.ram_mb,
+            ram_mb: opt.ram_mb,
         });
     }
 
     // ── Niveau 2 : fallback AnythingLLM (config explicite via env, ADR-016) ──
     if let Some(backend) = anythingllm_from_env() {
         let model_id = backend.workspace_slug.clone();
-        return Ok(LlmProvision { backend: Box::new(backend), model_id, ram_mb: None });
+        return Ok(LlmProvision {
+            backend: Box::new(backend),
+            model_id,
+            ram_mb: None,
+        });
     }
 
     // ── Aucun backend — message d'aide contextuel ─────────────────────────────
@@ -494,11 +498,11 @@ pub type OllamaBackend = OpenAiCompatBackend;
 /// - `BASEMYAI_ANYTHINGLLM_KEY` (obligatoire)
 /// - `BASEMYAI_ANYTHINGLLM_WORKSPACE` (slug du workspace, obligatoire)
 pub struct AnythingLlmBackend {
-    client:         Client,
-    base_url:       String,
+    client: Client,
+    base_url: String,
     workspace_slug: String,
-    api_key:        String,
-    timeout:        Duration,
+    api_key: String,
+    timeout: Duration,
 }
 
 impl AnythingLlmBackend {
@@ -510,11 +514,14 @@ impl AnythingLlmBackend {
     #[must_use]
     pub fn new(base_url: &str, workspace_slug: &str, api_key: &str) -> Self {
         Self {
-            client:         Client::builder().connect_timeout(CONNECT_TIMEOUT).build().unwrap_or_default(),
-            base_url:       base_url.trim_end_matches('/').to_string(),
+            client: Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
+            base_url: base_url.trim_end_matches('/').to_string(),
             workspace_slug: workspace_slug.to_string(),
-            api_key:        api_key.to_string(),
-            timeout:        INFERENCE_TIMEOUT,
+            api_key: api_key.to_string(),
+            timeout: INFERENCE_TIMEOUT,
         }
     }
 
@@ -532,31 +539,33 @@ impl AnythingLlmBackend {
 /// Retourne `None` si la clé ou le workspace slug sont absents.
 #[must_use]
 pub fn anythingllm_from_env() -> Option<AnythingLlmBackend> {
-    let key  = std::env::var("BASEMYAI_ANYTHINGLLM_KEY").ok()?;
+    let key = std::env::var("BASEMYAI_ANYTHINGLLM_KEY").ok()?;
     let slug = std::env::var("BASEMYAI_ANYTHINGLLM_WORKSPACE").ok()?;
-    let url  = std::env::var("BASEMYAI_ANYTHINGLLM_URL")
-        .unwrap_or_else(|_| "http://localhost:3001".to_string());
+    let url = std::env::var("BASEMYAI_ANYTHINGLLM_URL").unwrap_or_else(|_| "http://localhost:3001".to_string());
     Some(AnythingLlmBackend::new(&url, &slug, &key))
 }
 
 #[derive(Serialize)]
 struct AnythingLlmChatRequest<'a> {
     message: &'a str,
-    mode:    &'static str,
+    mode: &'static str,
 }
 
 #[derive(Deserialize)]
 struct AnythingLlmChatResponse {
     #[serde(rename = "textResponse")]
     text_response: Option<String>,
-    error:         Option<String>,
+    error: Option<String>,
 }
 
 #[async_trait::async_trait]
 impl LlmInference for AnythingLlmBackend {
     async fn complete(&self, prompt: &str) -> Result<String> {
-        let url  = format!("{}/api/v1/workspace/{}/chat", self.base_url, self.workspace_slug);
-        let body = AnythingLlmChatRequest { message: prompt, mode: "chat" };
+        let url = format!("{}/api/v1/workspace/{}/chat", self.base_url, self.workspace_slug);
+        let body = AnythingLlmChatRequest {
+            message: prompt,
+            mode: "chat",
+        };
 
         let resp = self
             .client
@@ -570,7 +579,7 @@ impl LlmInference for AnythingLlmBackend {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text   = resp.text().await.unwrap_or_default();
+            let text = resp.text().await.unwrap_or_default();
             return Err(MemoryError::Inference(format!("AnythingLLM : HTTP {status} — {text}")));
         }
 
@@ -579,7 +588,9 @@ impl LlmInference for AnythingLlmBackend {
             .await
             .map_err(|e| MemoryError::Inference(format!("AnythingLLM : réponse illisible : {e}")))?;
 
-        if let Some(ref err) = parsed.error && !err.is_empty() {
+        if let Some(ref err) = parsed.error
+            && !err.is_empty()
+        {
             return Err(MemoryError::Inference(format!("AnythingLLM erreur : {err}")));
         }
 
@@ -598,7 +609,10 @@ impl OpenAiCompatBackend {
     #[must_use]
     pub fn new(base_url: &str, model: &str) -> Self {
         Self {
-            client: Client::builder().connect_timeout(CONNECT_TIMEOUT).build().unwrap_or_default(),
+            client: Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
             timeout: INFERENCE_TIMEOUT,

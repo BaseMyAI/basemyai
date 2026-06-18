@@ -91,9 +91,8 @@ impl LlmInference for SamplingBackend {
             .await
             .map_err(|e| MemoryError::Inference(format!("MCP sampling refusé ou échoué : {e}")))?;
 
-        extract_text(&result.message).ok_or_else(|| {
-            MemoryError::Inference("réponse de sampling MCP sans contenu textuel".into())
-        })
+        extract_text(&result.message)
+            .ok_or_else(|| MemoryError::Inference("réponse de sampling MCP sans contenu textuel".into()))
     }
 
     fn model_id(&self) -> &str {
@@ -107,5 +106,9 @@ impl LlmInference for SamplingBackend {
 /// [`SamplingContent`](rmcp::model::SamplingContent) (single ou multiple) ; on
 /// prend le premier élément textuel. Retourne `None` s'il n'y a pas de texte.
 fn extract_text(message: &SamplingMessage) -> Option<String> {
-    message.content.first().and_then(|c| c.as_text()).map(|t| t.text.clone())
+    message
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|t| t.text.clone())
 }

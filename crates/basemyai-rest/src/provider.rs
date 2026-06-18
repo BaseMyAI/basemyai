@@ -45,7 +45,12 @@ impl MemoryProvider for EncryptedFileProvider {
         let store = basemyai_core::Store::open(&self.store_path, Some(self.key.clone()))
             .await
             .map_err(basemyai::MemoryError::from)?;
-        Memory::open(store, Box::new(SharedEmbedder(std::sync::Arc::clone(&self.embedder))), agent).await
+        Memory::open(
+            store,
+            Box::new(SharedEmbedder(std::sync::Arc::clone(&self.embedder))),
+            agent,
+        )
+        .await
     }
 }
 

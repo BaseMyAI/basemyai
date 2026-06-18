@@ -4,90 +4,46 @@
 
 # ── Crates ───────────────────────────────────────────────────────────────────
 "crate:basemyai-core":
-  - '(?i)\bbasemyai.core\b'
-  - '(?i)\bcore\s+crate\b'
+  - '/(\bbasemyai.core\b|\bcore\s+crate\b)/i'
 
 "crate:basemyai":
-  - '(?i)\bbasemyai\s+crate\b'
-  - '(?i)\bmemory\s+layer\b'
-  - '(?i)\btemporal.rag\b'
-  - '(?i)\bknowledge.graph\b'
-  - '(?i)\brrf\b'
-  - '(?i)\bconsolidat\b'
+  - '/(\bbasemyai\s+crate\b|\bmemory\s+layer\b|\btemporal.rag\b|\bknowledge.graph\b|\brrf\b|\bconsolidat)/i'
 
 # ── Bindings ─────────────────────────────────────────────────────────────────
 "bindings:python":
-  - '(?i)\bpyo3\b'
-  - '(?i)\bpython\s+sdk\b'
-  - '(?i)\bpip\s+install\b'
+  - '/(\bpyo3\b|\bpython\s+sdk\b|\bpip\s+install\b)/i'
 
 "bindings:node":
-  - '(?i)\bnapi\b'
-  - '(?i)\bnode\.?js?\b'
-  - '(?i)\bnpm\s+install\b'
-  - '(?i)\btypescript\s+sdk\b'
+  - '/(\bnapi\b|\bnode\.?js?\b|\bnpm\s+install\b|\btypescript\s+sdk\b)/i'
 
 "bindings:rest":
-  - '(?i)\brest\s+sidecar\b'
-  - '(?i)\baxum\b'
-  - '(?i)\bhttp\s+api\b'
+  - '/(\brest\s+sidecar\b|\baxum\b|\bhttp\s+api\b)/i'
 
 # ── Infra / storage ──────────────────────────────────────────────────────────
 "storage":
-  - '(?i)\blibsql\b'
-  - '(?i)\bsqlite\b'
-  - '(?i)\bvector.top.k\b'
-  - '(?i)\bannf?\b'
+  - '/(\blibsql\b|\bsqlite\b|\bvector.top.k\b|\bannf?\b)/i'
 
 "embeddings":
-  - '(?i)\bcandle\b'
-  - '(?i)\bembedd?ing\b'
-  - '(?i)\bminilm\b'
-  - '(?i)\ball.minilm\b'
+  - '/(\bcandle\b|\bembedd?ing\b|\bminilm\b|\ball.minilm\b)/i'
 
 "encryption":
-  - '(?i)\bcrypto\b'
-  - '(?i)\bencrypt\b'
-  - '(?i)\bcmake\b'
+  - '/(\bcrypto\b|\bencrypt\b|\bcmake\b)/i'
 
 # ── Type ─────────────────────────────────────────────────────────────────────
 "bug":
-  - '(?i)\bbug\b'
-  - '(?i)\bcrash\b'
-  - '(?i)\bpanic\b'
-  - '(?i)\bregress\b'
-  - '(?i)\bbroken\b'
-  - '(?i)\bnot\s+work\b'
+  - '/(\bbug\b|\bcrash\b|\bpanic\b|\bregress\b|\bbroken\b|\bnot\s+work\b)/i'
 
 "feature":
-  - '(?i)\bfeature\s+request\b'
-  - '(?i)\bnew\s+feature\b'
-  - '(?i)\badd\s+support\b'
+  - '/(\bfeature\s+request\b|\bnew\s+feature\b|\badd\s+support\b)/i'
 
 "performance":
-  - '(?i)\bperformance\b'
-  - '(?i)\bperf\b'
-  - '(?i)\bslow\b'
-  - '(?i)\boptimiz\b'
-  - '(?i)\blatency\b'
-  - '(?i)\bthroughput\b'
+  - '/(\bperformance\b|\bperf\b|\bslow\b|\boptimiz|\blatency\b|\bthroughput\b)/i'
 
 "security":
-  - '(?i)\bsecurity\b'
-  - '(?i)\bvulnerab\b'
-  - '(?i)\bcve\b'
-  - '(?i)\binjection\b'
-  - '(?i)\bghost\b'
+  - '/(\bsecurity\b|\bvulnerab|\bcve\b|\binjection\b|\bghost\b)/i'
 
 "documentation":
-  - '(?i)\bdocs?\b'
-  - '(?i)\bdocumentation\b'
-  - '(?i)\breadme\b'
-  - '(?i)\bexample\b'
-  - '(?i)\btutorial\b'
+  - '/(\bdocs?\b|\bdocumentation\b|\breadme\b|\bexample\b|\btutorial\b)/i'
 
 "ci":
-  - '(?i)\bci\b'
-  - '(?i)\bgithub\s+action\b'
-  - '(?i)\bworkflow\b'
-  - '(?i)\bpipeline\b'
+  - '/(\bci\b|\bgithub\s+action\b|\bworkflow\b|\bpipeline\b)/i'

@@ -31,9 +31,9 @@ use crate::error::McpError;
 use crate::provider::MemoryProvider;
 use crate::sampling::SamplingBackend;
 use crate::tools::{
-    self, ConsolidateApplyParams, ConsolidateParams, ConsolidateResult, EntityItem, InvalidateParams,
-    InvalidateResult, RecallGraphParams, RecallGraphResult, RecallItem, RecallParams, RecallResult, RememberParams,
-    RememberResult, StatsParams, StatsResult,
+    self, ConsolidateApplyParams, ConsolidateParams, ConsolidateResult, EntityItem, InvalidateParams, InvalidateResult,
+    RecallGraphParams, RecallGraphResult, RecallItem, RecallParams, RecallResult, RememberParams, RememberResult,
+    StatsParams, StatsResult,
 };
 
 /// Serveur MCP basemyai. `Clone` : requis par le transport HTTP (un handle par
@@ -190,7 +190,10 @@ impl McpServer {
 
         // Niveau 3 : pas de LLM côté serveur → on délègue à l'agent appelant.
         match basemyai::consolidation_prompt(&mem).await? {
-            None => Ok(ConsolidateResult::done("none", basemyai::ConsolidationReport::default())),
+            None => Ok(ConsolidateResult::done(
+                "none",
+                basemyai::ConsolidationReport::default(),
+            )),
             Some(input) => Ok(ConsolidateResult::extraction_required(&p.agent_id, input)),
         }
     }
@@ -472,7 +475,9 @@ impl ServerHandler for McpServer {
         consolidate_arg.description = Some("Agent whose episodes to consolidate.".to_string());
         let consolidate_prompt = Prompt::new(
             "consolidate_memory",
-            Some("Agent-driven consolidation: extract facts/entities/relations from the agent's episodes, then call consolidate_apply."),
+            Some(
+                "Agent-driven consolidation: extract facts/entities/relations from the agent's episodes, then call consolidate_apply.",
+            ),
             Some(vec![consolidate_arg]),
         );
 
