@@ -27,7 +27,7 @@ pub use embed::CandleEmbedder;
 pub use embed::{Device, Embedder};
 pub use error::{CoreError, Result};
 pub use maintenance::{MaintenanceTask, MaintenanceWorker};
-pub use storage::{EncryptionKey, Migration, Store, WriteTxn};
+pub use storage::{EncryptionKey, EngineCapabilities, EngineKind, Migration, StorageEngine, Store, WriteTxn};
 pub use storage::{Filter, Metric, Neighbor, Value};
 
 /// Ré-export : les consommateurs déclarent leur schéma et leurs requêtes via

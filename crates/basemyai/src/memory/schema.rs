@@ -9,6 +9,21 @@ use basemyai_core::Migration;
 
 /// Dimension des embeddings du baseline (`all-MiniLM-L6-v2`).
 pub const EMBEDDING_DIM: usize = 384;
+/// Version publique du conteneur `.bmai`.
+pub const BMAI_FORMAT_VERSION: u32 = 1;
+
+const BMAI_META_SCHEMA_V5: &str = "\
+CREATE TABLE IF NOT EXISTS bmai_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+INSERT OR IGNORE INTO bmai_meta (key, value) VALUES
+  ('format', 'basemyai-memory'),
+  ('format_version', '1'),
+  ('storage_engine', 'libsql'),
+  ('schema_family', 'agent-memory'),
+  ('embedding_dim', '384');
+";
 
 const MEMORY_SCHEMA_V1: &str = "\
 CREATE TABLE IF NOT EXISTS memory (
@@ -104,6 +119,10 @@ pub fn schema() -> Vec<Migration> {
         Migration {
             version: 4,
             up_sql: MEMORY_FTS_SCHEMA_V4,
+        },
+        Migration {
+            version: 5,
+            up_sql: BMAI_META_SCHEMA_V5,
         },
     ]
 }

@@ -23,6 +23,7 @@ Un ADR documente une décision architecturale importante : pourquoi elle a été
 | [ADR-015](#adr-015) | Métriques de distance additionnelles : euclidienne & hamming par re-classement | ✅ Accepted |
 | [ADR-016](#adr-016) | AnythingLLM comme backend LLM de premier rang via API workspace-chat | ✅ Accepted |
 | [ADR-017](#adr-017) | Consolidation par sampling MCP (emprunter le LLM du client) + politique des modes LLM | ✅ Accepted |
+| [ADR-019](ADR-019-agent-memory-database-format-and-engine.md) | Agent Memory Database, format `.bmai` V1 et frontière StorageEngine | ✅ Accepted |
 
 ---
 
