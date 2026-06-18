@@ -243,22 +243,21 @@ Getting started with BaseMyAI takes two steps: run `basemyai setup` once to prov
 ```python
 from basemyai import Memory
 
-mem = Memory(
+mem = await Memory.open(
     path="./agent.db",
     agent_id="assistant-42",
     encryption_key="…",
-    model_path="~/.basemyai/models/all-MiniLM-L6-v2",
+    model_dir="~/.basemyai/models/all-MiniLM-L6-v2",
 )
 
-# Store a semantic fact, valid indefinitely until explicitly invalidated.
-mem.remember(
+# Store a semantic fact, valid until explicitly invalidated.
+await mem.remember(
     "The user is on the Pro plan.",
     layer="semantic",
-    valid_until=None,
 )
 
 # Temporal RAG: relevant AND still valid, scoped to this agent.
-hits = mem.recall("which plan is the user on?", k=5)
+hits = await mem.recall("which plan is the user on?", k=5)
 for h in hits:
     print(h.text, h.score)
 ```
@@ -268,15 +267,15 @@ for h in hits:
 ```ts
 import { Memory } from "basemyai";
 
-const mem = new Memory({
+const mem = await Memory.open({
     path: "./agent.db",
     agentId: "assistant-42",
     encryptionKey: "…",
-    modelPath: "…",
+    modelPath: "~/.basemyai/models/all-MiniLM-L6-v2",
 });
 
-await mem.remember("The user prefers dark mode.", { layer: "procedural" });
-const hits = await mem.recall("ui preferences", { k: 5 });
+await mem.remember("The user prefers dark mode.", "procedural");
+const hits = await mem.recall("ui preferences", 5);
 ```
 
 **Rust (native)**
@@ -359,54 +358,44 @@ There is **no silent download at first run**. The fetch happens only here, with 
 Store an episodic memory — what happened and when.
 
 ```python
-mem.remember(
+await mem.remember(
     "User asked to refactor the auth module at 14:32.",
     layer="episodic",
-    valid_until="2025-12-31T00:00:00Z",
 )
 ```
 
 Store a procedural skill the agent learned.
 
 ```python
-mem.remember(
+await mem.remember(
     "To deploy: run `make release`, tag the commit, push to origin.",
     layer="procedural",
 )
 ```
 
-Multi-signal recall — fuses vector similarity and graph traversal automatically.
+Hybrid recall — fuses vector similarity and full-text search with RRF.
 
 ```python
-hits = mem.recall_multi(
-    query="how do I deploy?",
-    signals=["vector", "graph"],
-    k=10,
-)
+hits = await mem.recall_hybrid("how do I deploy?", k=10)
 ```
 
 Invalidate a fact that is no longer true.
 
 ```python
-mem.invalidate(record_id="semantic:abc123")
+await mem.invalidate("semantic:abc123")
 # valid_until is set to now() — future recalls skip this record
 ```
 
-Traverse the knowledge graph up to 3 hops.
+Traverse graph entities that have already been consolidated.
 
 ```python
-graph = mem.graph()
-graph.add_entity("project-x", "project", "Project X")
-graph.add_edge("alice", "owns", "project-x", weight=1.0)
-reachable = graph.traverse("alice", max_depth=3)
+reachable = await mem.recall_graph("alice", max_depth=3)
 ```
 
-Consolidate recent episodes into durable facts.
+Recall within one memory layer.
 
 ```python
-mem.consolidate(llm=my_local_llm)
-# reads last N episodes → extracts entities, relations, facts
-# writes to knowledge graph + semantic layer (idempotent)
+procedures = await mem.recall_by_layer("how do I deploy?", "procedural", k=5)
 ```
 
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;Consumption surfaces</h2>
