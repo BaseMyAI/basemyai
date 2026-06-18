@@ -79,3 +79,33 @@ test('forget physically removes a memory', async () => {
   const stats = await mem.stats();
   expect(stats.total).toBe(0);
 });
+
+test('graph entity and edge roundtrip', async () => {
+  const mem = await Memory.openInMemory('agent-graph');
+
+  await mem.addGraphEntity('A', 'person', 'Alice');
+  await mem.addGraphEntity('B', 'org', 'Beta');
+  await mem.addGraphEdge('A', 'knows', 'B');
+
+  const reached = await mem.recallGraph('A');
+  expect(reached).toEqual([
+    {
+      id: 'B',
+      kind: 'org',
+      label: 'Beta',
+      depth: 1,
+    },
+  ]);
+});
+
+test('graph data does not leak between in-memory agents', async () => {
+  const a = await Memory.openInMemory('graph-a');
+  const b = await Memory.openInMemory('graph-b');
+
+  await a.addGraphEntity('A', 'person', 'Alice');
+  await a.addGraphEntity('B', 'org', 'Beta');
+  await a.addGraphEdge('A', 'knows', 'B');
+
+  const reachedB = await b.recallGraph('A');
+  expect(reachedB).toEqual([]);
+});

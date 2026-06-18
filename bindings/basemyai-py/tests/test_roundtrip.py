@@ -73,6 +73,30 @@ async def test_forget_removes_memory():
 
 
 @pytest.mark.asyncio
+async def test_graph_add_entity_edge_and_recall():
+    mem = await basemyai.Memory.open_in_memory("agent-1")
+
+    await mem.add_graph_entity("A", "person", "Alice")
+    await mem.add_graph_entity("B", "company", "Beta")
+    await mem.add_graph_edge("A", "works_with", "B")
+
+    reached = await mem.recall_graph("A")
+    assert any(e.id == "B" and e.label == "Beta" and e.depth == 1 for e in reached)
+
+
+@pytest.mark.asyncio
+async def test_graph_does_not_cross_in_memory_agents():
+    a = await basemyai.Memory.open_in_memory("agent-a")
+    b = await basemyai.Memory.open_in_memory("agent-b")
+
+    await a.add_graph_entity("A", "person", "Alice")
+    await a.add_graph_entity("B", "company", "Beta")
+    await a.add_graph_edge("A", "works_with", "B")
+
+    assert await b.recall_graph("A") == []
+
+
+@pytest.mark.asyncio
 async def test_isolation_between_agents():
     a = await basemyai.Memory.open_in_memory("a")
     b = await basemyai.Memory.open_in_memory("b")
@@ -97,6 +121,8 @@ async def test_empty_agent_raises_validation_error():
 def test_exports_and_typing_marker_present():
     assert "Memory" in basemyai.__all__
     assert hasattr(basemyai.Memory, "recall_by_layer")
+    assert hasattr(basemyai.Memory, "add_graph_entity")
+    assert hasattr(basemyai.Memory, "add_graph_edge")
     package_dir = Path(basemyai.__path__[0])
     assert (package_dir / "__init__.pyi").is_file()
     assert (package_dir / "py.typed").is_file()

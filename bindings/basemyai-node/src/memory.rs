@@ -106,6 +106,24 @@ impl Memory {
         Ok(AgentStats::from(stats))
     }
 
+    /// Insère ou met à jour une entité du graphe pour cet agent.
+    #[napi(js_name = "addGraphEntity")]
+    pub async fn add_graph_entity(&self, id: String, kind: String, label: String) -> Result<()> {
+        let inner = Arc::clone(&self.inner);
+        inner.graph().add_entity(&id, &kind, &label).await.map_err(to_napi)
+    }
+
+    /// Crée ou met à jour une relation orientée du graphe pour cet agent.
+    #[napi(js_name = "addGraphEdge")]
+    pub async fn add_graph_edge(&self, src: String, relation: String, dst: String, weight: Option<f64>) -> Result<()> {
+        let inner = Arc::clone(&self.inner);
+        inner
+            .graph()
+            .add_edge(&src, &relation, &dst, weight.unwrap_or(1.0))
+            .await
+            .map_err(to_napi)
+    }
+
     /// Traverse le graphe depuis `start` : résout vers un tableau d'`Entity`.
     #[napi(js_name = "recallGraph")]
     pub async fn recall_graph(&self, start: String, max_depth: Option<u32>) -> Result<Vec<Entity>> {
