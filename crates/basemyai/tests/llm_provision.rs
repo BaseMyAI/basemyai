@@ -190,7 +190,7 @@ async fn detect_returns_empty_or_list_without_panic() {
 #[tokio::test]
 #[ignore = "nécessite un serveur Ollama actif (ollama serve)"]
 async fn integration_full_llm_cycle() {
-    use basemyai::{LlmInference, choose_llm};
+    use basemyai::choose_llm;
     let provision = choose_llm()
         .await
         .expect("Ollama doit être actif avec au moins un modèle");

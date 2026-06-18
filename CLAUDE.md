@@ -11,9 +11,14 @@ cargo test --workspace                                 # async (tokio) ; libSQL 
 cargo clippy --workspace --all-targets -- -D warnings  # LE gate qualité : doit passer
 cargo build -p basemyai-core --features embed          # active Candle (lourd)
 cargo build -p basemyai-core --features crypto         # chiffrement libSQL — EXIGE CMake installé
+cargo build --profile profiling -p basemyai-rest       # binaire optimisé MAIS symbolisable (perf/flamegraph)
 ```
 
 Le **vecteur est natif libSQL** (compile sans CMake). Seule la feature `crypto` (chiffrement au repos) exige CMake. `embed` tire Candle (lourd).
+
+**Profils** (définis dans le `Cargo.toml` racine) : `dev` est allégé (`debug = "line-tables-only"`) pour itérer vite malgré libSQL+Candle — backtraces panic conservées ; pour debugger sous gdb/lldb : `cargo build --config 'profile.dev.debug=2'`. `profiling` = release symbolisable (perf, flamegraphs).
+
+**Bindings** : le code *test-only* (constructeurs `open_in_memory`) est gardé par `#[cfg(feature = "test-util")]` **avec sa registration** (bloc `#[napi]`/`#[pymethods]` séparé, ou helper gardé) — sinon le build par défaut casse (E0425 napi / `dead_code`). Le gate `--all-targets` ci-dessus couvre les deux bindings en config défaut.
 
 ## Invariants — NE JAMAIS violer
 
@@ -29,7 +34,10 @@ Le **vecteur est natif libSQL** (compile sans CMake). Seule la feature `crypto` 
 - `thiserror` en lib, `#[non_exhaustive]` sur les enums d'erreur publiques.
 - **Jamais `unwrap()`/`expect()` sans message** en code lib. Pas de `static mut`. Pas de `Mutex` std tenu à travers un `.await`.
 - Getters sans préfixe `get_`. `&str` en paramètre plutôt que `String`.
+- **`Arc::clone(&x)` plutôt que `x.clone()`** sur un ref-counted (duplication de pointeur explicite).
 - Tout doit passer le gate clippy ci-dessus avant commit.
+
+**Politique de lints** : curée et commentée dans `[workspace.lints]` du `Cargo.toml` racine ; chaque crate l'hérite via `[lints] workspace = true`. Elle **encode ces règles dans le compilateur** : `unwrap_used`, `await_holding_lock` (= « pas de `Mutex` à travers `.await` »), `todo`, `clone_on_ref_ptr` + famille clonage/perf. Les tests sont exemptés de `unwrap_used` via `clippy.toml` (`allow-unwrap-in-tests`). **`expect_used` n'est volontairement PAS activé** : la règle autorise `expect("message")`, or ce lint interdit tout `expect`. Ne pas l'ajouter.
 
 ## Layout (restructuré 12 juin 2026)
 
@@ -68,7 +76,7 @@ cognition/        ← Pipeline Phase 2 (graphe + consolidation + inférence)
 provision/        ← Provisioning hardware-aware
   ├─ mod.rs       ← re-exports
   ├─ embedder.rs  ← detect_hardware(), provision(), SHA256 verification
-  └─ llm.rs       ← KNOWN_MODELS, detect_llm_options(), choose_llm(), OllamaBackend
+  └─ llm.rs       ← KNOWN_MODELS, detect_llm_options(), choose_llm(), OpenAiCompatBackend (alias OllamaBackend)
 
 maintenance/      ← Tâches de fond
   ├─ mod.rs       ← ConsolidationTask (Arc<Memory> + Arc<dyn LlmInference>)

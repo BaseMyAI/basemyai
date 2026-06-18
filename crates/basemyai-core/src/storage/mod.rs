@@ -1,5 +1,5 @@
 mod store;
 mod vector;
 
-pub use store::{EncryptionKey, Migration, Store};
-pub use vector::{Filter, Neighbor, Value};
+pub use store::{EncryptionKey, Migration, Store, WriteTxn};
+pub use vector::{Filter, Metric, Neighbor, Value};

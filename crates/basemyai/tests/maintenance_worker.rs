@@ -88,6 +88,39 @@ async fn consolidation_task_runs_via_maintenance_interface() {
     );
 }
 
+/// End-to-end : `ConsolidationTask` enregistrée dans un `MaintenanceWorker` et
+/// déclenchée par la **boucle de fond** (`start`), pas par un appel direct à
+/// `run`. Prouve que le wiring tient à travers `tokio::spawn` + `sleep`.
+#[tokio::test]
+async fn consolidation_runs_through_worker_background_loop() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Arc::new(
+        Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+            .await
+            .expect("open memory"),
+    );
+    mem.remember("Alice a rejoint Acme", MemoryLayer::Episodic)
+        .await
+        .expect("épisode");
+
+    // Intervalle court : la boucle déclenche la consolidation rapidement.
+    MaintenanceWorker::new()
+        .register(
+            Duration::from_millis(40),
+            Arc::new(ConsolidationTask::new(Arc::clone(&mem), Arc::new(FakeLlm))),
+        )
+        .start(Arc::new(Store::open_in_memory().await.expect("dummy store")));
+
+    // Laisse la boucle de fond s'exécuter au moins une fois.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let hits = mem.recall("Alice travaille chez Acme", 5).await.expect("recall");
+    assert!(
+        hits.iter().any(|r| r.layer == MemoryLayer::Semantic),
+        "la boucle de maintenance doit avoir consolidé le fait en semantic"
+    );
+}
+
 /// Vérification à la compilation + test que `MaintenanceWorker` accepte les trois
 /// types de tâche sans modification d'interface.
 #[test]

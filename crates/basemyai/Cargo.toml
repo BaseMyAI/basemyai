@@ -19,6 +19,10 @@ categories = ["database-implementations", "algorithms"]
 default = []
 embed = ["basemyai-core/embed"]
 crypto = ["basemyai-core/crypto"]
+# `test-util` : expose `HashEmbedder` + `Memory::open_in_memory` — embedder
+# déterministe sans modèle pour tests/spikes des bindings (ni Candle ni CMake).
+# Jamais en production.
+test-util = []
 
 [dependencies]
 basemyai-core = { version = "0.1.0", path = "../basemyai-core" }

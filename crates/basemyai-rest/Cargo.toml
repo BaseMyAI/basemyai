@@ -1,0 +1,51 @@
+[package]
+name        = "basemyai-rest"
+description = "Local HTTP/JSON sidecar for the BaseMyAI memory engine (for non-Rust languages)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "basemyai_rest"
+path = "src/lib.rs"
+
+[[bin]]
+name = "basemyai-rest"
+path = "src/main.rs"
+
+[features]
+default   = ["crypto", "embed"]
+embed     = ["basemyai/embed"]
+crypto    = ["basemyai/crypto"]
+# `test-util` : InMemoryProvider + embedder déterministe (ni CMake ni Candle).
+test-util = ["basemyai/test-util"]
+
+[dependencies]
+basemyai      = { path = "../basemyai" }
+basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
+
+axum       = { workspace = true }
+tower      = { workspace = true }
+tower-http = { workspace = true }
+
+serde.workspace      = true
+serde_json.workspace = true
+tokio.workspace      = true
+tracing.workspace    = true
+async-trait.workspace = true
+thiserror.workspace  = true
+
+subtle = "2"
+uuid   = { version = "1", features = ["v4"] }
+dirs.workspace = true
+toml   = "0.8"
+
+[dev-dependencies]
+tower = { workspace = true }
+http-body-util = "0.1"
+
+[lints]
+workspace = true

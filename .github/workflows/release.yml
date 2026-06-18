@@ -1,0 +1,43 @@
+name: Release (crates.io + GitHub)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # création de la GitHub Release
+
+# Publie les crates Rust et crée la Release GitHub. Les wheels PyPI et le package
+# npm sont publiés par leurs workflows dédiés (python-wheels.yml / node-prebuilds.yml),
+# également déclenchés par le tag. Rien n'est publié sans les secrets requis.
+jobs:
+  crates-io:
+    name: publish crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish (basemyai-core puis basemyai)
+        # basemyai dépend de basemyai-core : il faut publier le socle d'abord,
+        # puis laisser l'index se propager avant de publier la couche mémoire.
+        if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euxo pipefail
+          cargo publish -p basemyai-core
+          for i in $(seq 1 10); do
+            if cargo publish -p basemyai; then break; fi
+            echo "retry $i: en attente de la propagation de l'index crates.io…"
+            sleep 30
+          done
+
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

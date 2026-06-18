@@ -6,6 +6,7 @@ pub use embedder::{
     provision_with_progress,
 };
 pub use llm::{
-    BackendKind, KNOWN_MODELS, KnownModel, LlmOption, LlmProvision, OllamaBackend, best_llm_option, choose_llm,
-    detect_llm_options, propose_models_to_install,
+    AnythingLlmBackend, BackendKind, KNOWN_MODELS, KnownModel, LlmOption, LlmProvision, OllamaBackend,
+    OpenAiCompatBackend, anythingllm_from_env, best_llm_option, choose_llm, detect_llm_options,
+    propose_models_to_install,
 };

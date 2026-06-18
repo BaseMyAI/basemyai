@@ -53,6 +53,27 @@ CREATE TABLE IF NOT EXISTS edge (
 CREATE INDEX IF NOT EXISTS edge_src_idx ON edge(agent_id, src);
 ";
 
+/// Recherche **hybride** (ADR-014) : index full-text BM25 natif libSQL (FTS5) en
+/// complément du vecteur. Les deux signaux sont fusionnés par RRF (`rrf_fuse`)
+/// dans `recall_hybrid` — un terme exact que l'embedding rate (sigle, identifiant,
+/// nom propre rare) remonte quand même par BM25.
+///
+/// Table **autonome** (pas external-content) : `id` et `agent_id` non indexés
+/// (filtrage/jointure), seul `content` est tokenisé (`porter` = racinisation,
+/// `remove_diacritics` = pliage des accents). Tenue à jour par la façade `Memory`
+/// (insert au `remember`, delete au `forget`/`purge_agent`). Le `INSERT … SELECT`
+/// **backfill** les souvenirs déjà présents lors de la migration.
+const MEMORY_FTS_SCHEMA_V4: &str = "\
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+  id UNINDEXED,
+  agent_id UNINDEXED,
+  content,
+  tokenize = 'porter unicode61 remove_diacritics 2'
+);
+INSERT INTO memory_fts (id, agent_id, content)
+  SELECT id, agent_id, content FROM memory;
+";
+
 /// Oubli adaptatif (VISION §5.2, Phase 2). Ajoute à `memory` les deux signaux
 /// nécessaires au score de rétention : `importance` (pondération métier, défaut
 /// neutre `0`) et `last_access` (dernier accès Unix, *nullable* — le fallback
@@ -79,6 +100,10 @@ pub fn schema() -> Vec<Migration> {
         Migration {
             version: 3,
             up_sql: MEMORY_SCHEMA_V3,
+        },
+        Migration {
+            version: 4,
+            up_sql: MEMORY_FTS_SCHEMA_V4,
         },
     ]
 }

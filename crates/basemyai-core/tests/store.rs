@@ -1,6 +1,6 @@
 //! Store libSQL réel : migrations idempotentes, roundtrip, vecteur natif.
 
-use basemyai_core::{EncryptionKey, Filter, Migration, Store, Value, libsql};
+use basemyai_core::{EncryptionKey, Filter, Metric, Migration, Store, Value, libsql};
 
 const SCHEMA: [Migration; 1] = [Migration {
     version: 1,
@@ -47,6 +47,56 @@ async fn native_vector_knn_returns_nearest() {
     let hits = store.vector_knn("emb", &[1.0, 2.0, 3.0], 1, None).await.expect("knn");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, "a", "le plus proche de [1,2,3] est 'a'");
+}
+
+#[tokio::test]
+async fn euclidean_metric_reranks_by_l2_distance() {
+    let store = Store::open_in_memory().await.expect("open");
+    store.ensure_vector_table("emb", 3).await.expect("vector table");
+    // 'near' colinéaire à la query (cosinus identique) mais plus loin en L2 ;
+    // 'exact' est la query elle-même. L'euclidienne doit préférer 'exact'.
+    store
+        .vector_upsert("emb", "exact", &[1.0, 0.0, 0.0])
+        .await
+        .expect("up exact");
+    store
+        .vector_upsert("emb", "near", &[5.0, 0.0, 0.0])
+        .await
+        .expect("up near");
+    store
+        .vector_upsert("emb", "far", &[0.0, 1.0, 0.0])
+        .await
+        .expect("up far");
+
+    let hits = store
+        .vector_knn_metric("emb", &[1.0, 0.0, 0.0], 2, None, Metric::Euclidean)
+        .await
+        .expect("euclidean knn");
+    assert_eq!(hits[0].id, "exact", "L2 : le vecteur identique est le plus proche");
+    assert!(hits[0].distance < hits[1].distance, "distances triées croissantes");
+}
+
+#[tokio::test]
+async fn hamming_metric_counts_sign_differences() {
+    let store = Store::open_in_memory().await.expect("open");
+    store.ensure_vector_table("emb", 3).await.expect("vector table");
+    store
+        .vector_upsert("emb", "same_signs", &[2.0, 3.0, 4.0])
+        .await
+        .expect("up same");
+    store
+        .vector_upsert("emb", "one_flip", &[-1.0, 3.0, 4.0])
+        .await
+        .expect("up flip");
+
+    let hits = store
+        .vector_knn_metric("emb", &[1.0, 1.0, 1.0], 2, None, Metric::Hamming)
+        .await
+        .expect("hamming knn");
+    // Query toute positive : 'same_signs' (0 diff) avant 'one_flip' (1 diff).
+    assert_eq!(hits[0].id, "same_signs");
+    assert_eq!(hits[0].distance, 0.0);
+    assert_eq!(hits[1].distance, 1.0);
 }
 
 #[tokio::test]

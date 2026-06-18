@@ -1,0 +1,30 @@
+{
+  "name": "basemyai",
+  "version": "0.1.0",
+  "description": "Local memory engine for AI agents — Node.js bindings",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "napi build --platform --release --features crypto,embed",
+    "build:debug": "napi build --platform --features embed",
+    "prepublishOnly": "napi build --platform --release --features crypto,embed"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.6.2",
+    "jest": "^29",
+    "@types/jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5"
+  },
+  "napi": {
+    "binaryName": "basemyai",
+    "targets": [
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "aarch64-unknown-linux-gnu"
+    ]
+  },
+  "license": "MIT"
+}

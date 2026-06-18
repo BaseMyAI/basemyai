@@ -1,0 +1,47 @@
+[package]
+name        = "basemyai-py"
+description = "Python bindings for basemyai — local memory engine for AI agents."
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+authors.workspace     = true
+repository.workspace  = true
+
+[lib]
+name       = "basemyai"
+crate-type = ["cdylib", "rlib"]
+# Pas de doctests : la lib partage son nom `basemyai` avec la crate Rust dont
+# elle dépend — rustdoc ne sait pas résoudre les deux rlibs (E0464) — et les
+# exemples de doc d'un binding PyO3 sont du Python, pas du Rust exécutable.
+doctest    = false
+
+[features]
+default   = ["crypto", "embed"]
+crypto    = ["basemyai/crypto"]
+embed     = ["basemyai/embed"]
+# `test-util` : expose Memory.open_in_memory (base :memory:, embedder déterministe)
+# pour les tests/spikes sans CMake ni modèle.
+test-util = ["basemyai/test-util"]
+
+[dependencies]
+basemyai      = { path = "../../crates/basemyai" }
+basemyai-core = { version = "0.1.0", path = "../../crates/basemyai-core" }
+
+# PyO3 0.29 — extension-module : pas de linkage libpython (wheels portables).
+pyo3 = { version = "0.29", features = ["extension-module"] }
+
+# Bridge Rust tokio future → awaitable Python (asyncio). La feature `tokio-runtime`
+# fournit un runtime multi-thread par défaut. Minor aligné sur pyo3.
+pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+thiserror.workspace = true
+
+# Pas de `[profile.release]` ici : Cargo ignore les profils hors racine du
+# workspace. PyO3 0.29 intercepte les panics à la frontière FFI (conversion en
+# exception Python), donc `panic = "abort"` n'est pas requis pour la sûreté.
+
+[lints]
+workspace = true

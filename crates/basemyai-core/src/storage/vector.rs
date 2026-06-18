@@ -51,6 +51,26 @@ impl Filter {
 pub struct Neighbor {
     /// Identifiant de la ligne (`id TEXT PRIMARY KEY`).
     pub id: String,
-    /// Distance cosinus réelle dans `[0, 2]` (`0` = identique).
+    /// Distance pour la métrique demandée (`0` = identique, croissante = plus
+    /// éloigné). Cosinus dans `[0, 2]` par défaut ; voir [`Metric`].
     pub distance: f32,
+}
+
+/// Métrique de distance pour le KNN.
+///
+/// L'index natif libSQL est **cosinus**. Pour [`Metric::Euclidean`] et
+/// [`Metric::Hamming`], le KNN sur-échantillonne les candidats cosinus puis les
+/// **re-classe en Rust** sur les vecteurs réels (le rappel reste piloté par
+/// l'index ANN cosinus, le tri final par la métrique demandée).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Metric {
+    /// Distance cosinus (native, `1 - cos`). Défaut.
+    #[default]
+    Cosine,
+    /// Distance euclidienne (L2) sur les vecteurs.
+    Euclidean,
+    /// Distance de Hamming par signe : nombre de dimensions où le signe diffère
+    /// (quantification binaire 1 bit/dimension).
+    Hamming,
 }

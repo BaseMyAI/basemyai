@@ -1,0 +1,23 @@
+name: 'Check format'
+description: 'Run cargo fmt check'
+
+inputs:
+  save-cache:
+    description: 'Whether to save the cargo cache'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup environment
+      uses: ./.github/actions/setup-environment
+      with:
+        toolchain: nightly
+        components: rustfmt
+        save-cache: ${{ inputs.save-cache }}
+        enable-sccache: 'false'
+
+    - name: Check format
+      shell: bash
+      run: cargo fmt --all -- --check

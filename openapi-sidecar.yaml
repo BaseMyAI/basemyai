@@ -1,0 +1,573 @@
+openapi: "3.1.0"
+
+info:
+  title: BaseMyAI Sidecar REST API
+  version: "1.0.0"
+  description: >
+    Sidecar HTTP/JSON pour BaseMyAI. Expose le moteur de mémoire local aux
+    langages sans binding Rust natif (Python, Go, Ruby, PHP, …).
+    Toutes les données restent 100 % locales — aucun réseau externe.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:7743/v1
+    description: Instance locale par défaut (port configurable via --port)
+
+# ---------------------------------------------------------------------------
+# Sécurité
+# ---------------------------------------------------------------------------
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: >
+        Clé opaque générée au setup, stockée dans ~/.basemyai/config.toml.
+        En mode --dev (localhost uniquement), la vérification est désactivée.
+
+  schemas:
+
+    # --- Enums ---------------------------------------------------------------
+
+    MemoryLayer:
+      type: string
+      enum:
+        - short_term
+        - episodic
+        - procedural
+        - semantic
+      description: >
+        Couche de mémoire (ADR-004).
+        short_term   — contexte de session (TTL court).
+        episodic     — ce qui s'est passé et quand.
+        procedural   — procédures/compétences apprises.
+        semantic     — faits recherchables vectoriellement.
+
+    # --- Domaine -------------------------------------------------------------
+
+    Record:
+      type: object
+      required: [id, text, layer, score]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Identifiant UUID v4 du souvenir.
+          example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        text:
+          type: string
+          description: Contenu textuel du souvenir.
+          example: "Alice works at Acme Corp since 2023."
+        layer:
+          $ref: "#/components/schemas/MemoryLayer"
+        score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Similarité cosine normalisée (1 = identique).
+          example: 0.92
+
+    AgentStats:
+      type: object
+      required: [short_term, episodic, procedural, semantic, total]
+      properties:
+        short_term:
+          type: integer
+          minimum: 0
+        episodic:
+          type: integer
+          minimum: 0
+        procedural:
+          type: integer
+          minimum: 0
+        semantic:
+          type: integer
+          minimum: 0
+        total:
+          type: integer
+          minimum: 0
+          description: Somme des quatre couches (calculé côté serveur).
+
+    Entity:
+      type: object
+      required: [id, kind, label, depth]
+      properties:
+        id:
+          type: string
+          example: "entity:alice"
+        kind:
+          type: string
+          example: "Person"
+        label:
+          type: string
+          example: "Alice"
+        depth:
+          type: integer
+          minimum: 0
+          example: 1
+
+    GraphResponse:
+      type: object
+      required: [nodes]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Entity"
+        truncated:
+          type: boolean
+          default: false
+          description: Présent et true si la réponse dépasse 256 KiB.
+
+    RecallResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Record"
+        truncated:
+          type: boolean
+          default: false
+          description: Présent et true si la charge utile dépasse 256 KiB.
+
+    HealthResponse:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          example: "ok"
+        version:
+          type: string
+          example: "0.1.0"
+        db_path:
+          type: string
+          example: "/home/user/.basemyai/memory.db"
+        uptime_seconds:
+          type: integer
+          minimum: 0
+
+    RememberRequest:
+      type: object
+      required: [agent_id, text, layer]
+      properties:
+        agent_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: "agent-42"
+        text:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          example: "Alice works at Acme Corp since 2023."
+        layer:
+          $ref: "#/components/schemas/MemoryLayer"
+        valid_until:
+          type: integer
+          format: int64
+          nullable: true
+          description: Expiration epoch UTC en secondes. null = pas d'expiration.
+          example: 1780000000
+
+    RecallRequest:
+      type: object
+      required: [agent_id, query]
+      properties:
+        agent_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: "agent-42"
+        query:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          example: "Who does Alice work for?"
+        k:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+        layer:
+          $ref: "#/components/schemas/MemoryLayer"
+          description: Optionnel. Filtre le recall sur cette couche uniquement.
+
+    RecallGraphRequest:
+      type: object
+      required: [agent_id, start]
+      properties:
+        agent_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: "agent-42"
+        start:
+          type: string
+          minLength: 1
+          example: "entity:alice"
+        max_depth:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            UNAUTHORIZED, VALIDATION_ERROR, NOT_FOUND,
+            PAYLOAD_TOO_LARGE, INTERNAL_ERROR, TIMEOUT,
+            UNKNOWN_LAYER, ENCRYPTION_REQUIRED, MISSING_AGENT.
+          example: "NOT_FOUND"
+        message:
+          type: string
+          example: "Memory record not found for this agent."
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+
+  headers:
+    X-Request-Id:
+      description: UUID v4 généré par le serveur pour chaque requête.
+      schema:
+        type: string
+        format: uuid
+    X-Basemyai-Version:
+      description: Version du binaire.
+      schema:
+        type: string
+        example: "0.1.0"
+
+  responses:
+    Unauthorized:
+      description: Clé API absente ou invalide.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        X-Basemyai-Version:
+          $ref: "#/components/headers/X-Basemyai-Version"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: { code: "UNAUTHORIZED", message: "Missing or invalid Bearer token." }
+
+    BadRequest:
+      description: Corps JSON invalide ou contrainte métier non respectée.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        X-Basemyai-Version:
+          $ref: "#/components/headers/X-Basemyai-Version"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    NotFound:
+      description: Ressource introuvable pour cet agent.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        X-Basemyai-Version:
+          $ref: "#/components/headers/X-Basemyai-Version"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    PayloadTooLarge:
+      description: Corps de requête dépasse la limite (défaut 1 MiB).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        X-Basemyai-Version:
+          $ref: "#/components/headers/X-Basemyai-Version"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    InternalError:
+      description: Erreur interne (store, embedding, chiffrement, …).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        X-Basemyai-Version:
+          $ref: "#/components/headers/X-Basemyai-Version"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    GatewayTimeout:
+      description: Opération annulée après le délai maximal (défaut 30s).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        X-Basemyai-Version:
+          $ref: "#/components/headers/X-Basemyai-Version"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  /remember:
+    post:
+      operationId: remember
+      summary: Mémorise un texte dans une couche pour un agent.
+      description: >
+        Encode le texte en vecteur (all-MiniLM-L6-v2, 384d) et l'insère dans
+        la table mémoire avec le valid_until fourni. Si valid_until est omis
+        ou null, le souvenir n'expire jamais.
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RememberRequest"
+      responses:
+        "201":
+          description: Souvenir créé.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /recall:
+    post:
+      operationId: recall
+      summary: Recherche sémantique dans la mémoire d'un agent.
+      description: >
+        Encode la query, exécute un KNN cosine filtré sur agent_id +
+        validité temporelle (et optionnellement layer), retourne au plus k
+        Records triés par score décroissant. Si la réponse sérialisée dépasse
+        256 KiB, truncated: true est positionné.
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecallRequest"
+      responses:
+        "200":
+          description: Résultats du recall.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecallResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /recall_graph:
+    post:
+      operationId: recallGraph
+      summary: Traversée multi-sauts du graphe d'entités d'un agent.
+      description: >
+        CTE récursive depuis le nœud start, jusqu'à max_depth sauts.
+        Scellée par agent_id. Tronque à 256 KiB si nécessaire.
+      tags: [Graph]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecallGraphRequest"
+      responses:
+        "200":
+          description: Entités atteintes, ordonnées par profondeur puis id.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /memories/{id}:
+    delete:
+      operationId: forgetMemory
+      summary: Suppression physique d'un souvenir (RGPD).
+      description: >
+        DELETE FROM memory WHERE id = ? AND agent_id = ?.
+        Retourne 204 même si l'id n'existait pas (idempotent).
+      tags: [Memory]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        - name: agent_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+          description: Garantit l'isolation — un agent ne peut pas effacer la mémoire d'un autre.
+          example: "agent-42"
+      responses:
+        "204":
+          description: Souvenir supprimé (ou n'existait pas).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /agent/{agent_id}:
+    delete:
+      operationId: forgetAgent
+      summary: Suppression de toutes les données d'un agent (RGPD).
+      description: >
+        Supprime memory + entity + edge WHERE agent_id = ? dans une transaction.
+        Opération irréversible. Retourne 204 même si l'agent n'avait aucune donnée.
+      tags: [Agent]
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+          example: "agent-42"
+      responses:
+        "204":
+          description: Toutes les données de l'agent supprimées.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /agent/{agent_id}/stats:
+    get:
+      operationId: agentStats
+      summary: Statistiques des souvenirs valides d'un agent par couche.
+      tags: [Agent]
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+          example: "agent-42"
+      responses:
+        "200":
+          description: Compteurs par couche.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentStats"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /health:
+    get:
+      operationId: health
+      summary: Liveness/readiness check.
+      description: >
+        Vérifie que le store libSQL est accessible (SELECT 1).
+        Pas d'auth requise — utilisable par les probes sans clé.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: Sidecar opérationnel.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "500":
+          description: Store inaccessible.
+          $ref: "#/components/responses/InternalError"
+
+tags:
+  - name: Memory
+    description: Opérations sur les souvenirs individuels.
+  - name: Graph
+    description: Traversée du graphe d'entités.
+  - name: Agent
+    description: Gestion de l'espace mémoire d'un agent (stats, purge).
+  - name: System
+    description: Opérabilité (health, version).

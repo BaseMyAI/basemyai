@@ -1,0 +1,49 @@
+# Auto-labeler config for github/issue-labeler
+# Applied by .github/workflows/labeler.yml on issues and PRs.
+# Matches against issue/PR title AND body (include-title: 1, include-body: 1).
+
+# ── Crates ───────────────────────────────────────────────────────────────────
+"crate:basemyai-core":
+  - '/(\bbasemyai.core\b|\bcore\s+crate\b)/i'
+
+"crate:basemyai":
+  - '/(\bbasemyai\s+crate\b|\bmemory\s+layer\b|\btemporal.rag\b|\bknowledge.graph\b|\brrf\b|\bconsolidat)/i'
+
+# ── Bindings ─────────────────────────────────────────────────────────────────
+"bindings:python":
+  - '/(\bpyo3\b|\bpython\s+sdk\b|\bpip\s+install\b)/i'
+
+"bindings:node":
+  - '/(\bnapi\b|\bnode\.?js?\b|\bnpm\s+install\b|\btypescript\s+sdk\b)/i'
+
+"bindings:rest":
+  - '/(\brest\s+sidecar\b|\baxum\b|\bhttp\s+api\b)/i'
+
+# ── Infra / storage ──────────────────────────────────────────────────────────
+"storage":
+  - '/(\blibsql\b|\bsqlite\b|\bvector.top.k\b|\bannf?\b)/i'
+
+"embeddings":
+  - '/(\bcandle\b|\bembedd?ing\b|\bminilm\b|\ball.minilm\b)/i'
+
+"encryption":
+  - '/(\bcrypto\b|\bencrypt\b|\bcmake\b)/i'
+
+# ── Type ─────────────────────────────────────────────────────────────────────
+"bug":
+  - '/(\bbug\b|\bcrash\b|\bpanic\b|\bregress\b|\bbroken\b|\bnot\s+work\b)/i'
+
+"feature":
+  - '/(\bfeature\s+request\b|\bnew\s+feature\b|\badd\s+support\b)/i'
+
+"performance":
+  - '/(\bperformance\b|\bperf\b|\bslow\b|\boptimiz|\blatency\b|\bthroughput\b)/i'
+
+"security":
+  - '/(\bsecurity\b|\bvulnerab|\bcve\b|\binjection\b|\bghost\b)/i'
+
+"documentation":
+  - '/(\bdocs?\b|\bdocumentation\b|\breadme\b|\bexample\b|\btutorial\b)/i'
+
+"ci":
+  - '/(\bci\b|\bgithub\s+action\b|\bworkflow\b|\bpipeline\b)/i'

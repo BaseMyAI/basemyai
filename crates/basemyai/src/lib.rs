@@ -20,15 +20,21 @@ pub mod provision;
 mod retrieval;
 pub mod temporal;
 
-pub use cognition::{ConsolidationReport, Graph, LlmInference, Reached, consolidate};
+pub use basemyai_core::Metric;
+pub use cognition::{
+    ConsolidationInput, ConsolidationReport, ExtractedEntity, ExtractedRelation, Extraction, Graph, LlmInference,
+    Reached, apply_extraction, consolidate, consolidation_prompt, parse_extraction,
+};
 pub use error::{MemoryError, Result};
 pub use maintenance::{AdaptiveForgetting, ConsolidationTask, ExpiredMemoryGc};
+#[cfg(feature = "test-util")]
+pub use memory::HashEmbedder;
 pub use memory::schema::{EMBEDDING_DIM, schema};
-pub use memory::{AgentId, AgentStats, Memory, MemoryLayer, Record};
+pub use memory::{AgentId, AgentStats, ImportReport, Memory, MemoryLayer, Record};
 pub use provision::{
-    BASELINE_DIM, BASELINE_MODEL_ID, BackendKind, HardwareProfile, KNOWN_MODELS, KnownModel, LlmOption, LlmProvision,
-    ModelProvision, OllamaBackend, best_llm_option, choose_llm, detect_hardware, detect_llm_options,
-    propose_models_to_install, provision, provision_with_progress,
+    AnythingLlmBackend, BASELINE_DIM, BASELINE_MODEL_ID, BackendKind, HardwareProfile, KNOWN_MODELS, KnownModel,
+    LlmOption, LlmProvision, ModelProvision, OllamaBackend, OpenAiCompatBackend, anythingllm_from_env, best_llm_option,
+    choose_llm, detect_hardware, detect_llm_options, propose_models_to_install, provision, provision_with_progress,
 };
 pub use retrieval::{Fused, RRF_K, Ranking, rrf_fuse};
 pub use temporal::Validity;

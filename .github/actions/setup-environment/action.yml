@@ -1,0 +1,57 @@
+name: 'Setup environment'
+description: 'Install Rust toolchain and setup build cache'
+
+inputs:
+  toolchain:
+    description: 'Rust toolchain version'
+    required: false
+    default: stable
+  components:
+    description: 'Additional Rust components to install (space-separated)'
+    required: false
+    default: ''
+  targets:
+    description: 'Additional targets to install (space-separated)'
+    required: false
+    default: ''
+  cache-key:
+    description: 'Additional cache key suffix'
+    required: false
+    default: ''
+  save-cache:
+    description: 'Whether to save cache (typically only on main branch)'
+    required: false
+    default: 'false'
+  enable-sccache:
+    description: 'Whether to compile via sccache (RUSTC_WRAPPER)'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - name: Setup sccache
+      if: inputs.enable-sccache == 'true'
+      uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+
+    - name: Configure sccache environment
+      if: inputs.enable-sccache == 'true'
+      shell: bash
+      run: |
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      with:
+        save-if: ${{ inputs.save-cache }}
+        shared-key: ${{ inputs.cache-key }}
+        cache-targets: false

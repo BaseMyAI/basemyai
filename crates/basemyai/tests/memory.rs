@@ -71,6 +71,177 @@ async fn remember_then_recall_returns_item() {
 }
 
 #[tokio::test]
+async fn recall_with_metric_supports_euclidean_and_hamming() {
+    use basemyai::Metric;
+
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    mem.remember("the sky is blue", MemoryLayer::Semantic)
+        .await
+        .expect("remember 1");
+    mem.remember("grass is green", MemoryLayer::Semantic)
+        .await
+        .expect("remember 2");
+
+    for metric in [Metric::Euclidean, Metric::Hamming, Metric::Cosine] {
+        let hits = mem
+            .recall_with_metric("the sky is blue", 5, metric)
+            .await
+            .expect("recall");
+        assert!(
+            hits.iter().any(|r| r.text == "the sky is blue"),
+            "metric {metric:?} doit retrouver l'item exact"
+        );
+    }
+}
+
+#[tokio::test]
+async fn recall_hybrid_surfaces_exact_keyword_match() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    mem.remember("the quick brown fox jumps", MemoryLayer::Semantic)
+        .await
+        .expect("r1");
+    let acme = mem
+        .remember("invoice ACME-42 reference number", MemoryLayer::Semantic)
+        .await
+        .expect("r2");
+    mem.remember("grass is green in spring", MemoryLayer::Semantic)
+        .await
+        .expect("r3");
+
+    // Terme exact rare : c'est le signal BM25 qui doit le faire remonter.
+    let hits = mem.recall_hybrid("ACME-42", 5).await.expect("hybrid");
+    assert!(
+        hits.iter().any(|r| r.id == acme),
+        "la recherche hybride doit retrouver le match exact ACME-42 via BM25"
+    );
+}
+
+#[tokio::test]
+async fn recall_hybrid_respects_isolation_and_validity() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    let n = now();
+    let expired = Validity {
+        valid_from: n - 100,
+        valid_until: Some(n - 10),
+    };
+    mem.remember_with("token ZEBRA expired", MemoryLayer::Semantic, expired)
+        .await
+        .expect("remember expired");
+
+    let hits = mem.recall_hybrid("ZEBRA", 5).await.expect("hybrid");
+    assert!(
+        hits.iter().all(|r| r.text != "token ZEBRA expired"),
+        "un souvenir expiré ne doit pas remonter, même par BM25"
+    );
+}
+
+#[tokio::test]
+async fn forget_removes_from_fts_mirror() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    let id = mem
+        .remember("WIDGET unique identifier", MemoryLayer::Semantic)
+        .await
+        .expect("remember");
+    mem.forget(&id).await.expect("forget");
+
+    let hits = mem.recall_hybrid("WIDGET", 5).await.expect("hybrid");
+    assert!(
+        hits.is_empty(),
+        "après forget, le miroir FTS ne doit plus matcher le souvenir"
+    );
+}
+
+#[tokio::test]
+async fn remember_batch_inserts_all_and_mirrors_fts() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    let texts = vec![
+        "first batched fact".to_string(),
+        "second batched fact".to_string(),
+        "invoice BATCH-99 reference".to_string(),
+    ];
+    let ids = mem
+        .remember_batch(&texts, MemoryLayer::Semantic)
+        .await
+        .expect("remember_batch");
+
+    assert_eq!(ids.len(), 3, "un id par texte, dans l'ordre");
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), 3, "les ids doivent être uniques");
+
+    let stats = mem.stats().await.expect("stats");
+    assert_eq!(stats.semantic, 3, "les 3 souvenirs du lot doivent être visibles");
+
+    // Le miroir FTS doit être peuplé : un terme exact du lot remonte par BM25.
+    let hits = mem.recall_hybrid("BATCH-99", 5).await.expect("hybrid");
+    assert!(
+        hits.iter().any(|r| r.id == ids[2]),
+        "le miroir FTS doit couvrir les souvenirs insérés par lot"
+    );
+}
+
+#[tokio::test]
+async fn remember_batch_empty_is_noop() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    let ids = mem
+        .remember_batch(&[], MemoryLayer::Semantic)
+        .await
+        .expect("remember_batch vide");
+    assert!(ids.is_empty(), "lot vide => aucun id");
+    assert_eq!(mem.stats().await.expect("stats").total(), 0);
+}
+
+#[tokio::test]
+async fn concurrent_remembers_serialize_without_error() {
+    // Les écritures sont transactionnelles sur une connexion partagée : le
+    // verrou writer du Store doit sérialiser les transactions concurrentes
+    // (sans lui, le second BEGIN imbriqué échouerait).
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    let batch = ["concurrent three".to_string(), "concurrent four".to_string()];
+    let (r1, r2, r3) = tokio::join!(
+        mem.remember("concurrent one", MemoryLayer::Semantic),
+        mem.remember("concurrent two", MemoryLayer::Semantic),
+        mem.remember_batch(&batch, MemoryLayer::Semantic),
+    );
+    r1.expect("remember 1");
+    r2.expect("remember 2");
+    r3.expect("batch");
+
+    assert_eq!(
+        mem.stats().await.expect("stats").semantic,
+        4,
+        "les 4 écritures concurrentes doivent toutes aboutir"
+    );
+}
+
+#[tokio::test]
 async fn isolation_hides_other_agents_items() {
     // Agent A mémorise dans une base, on copie son contenu dans la base de B
     // n'est pas possible (in-memory) : on vérifie plutôt que, partageant la
