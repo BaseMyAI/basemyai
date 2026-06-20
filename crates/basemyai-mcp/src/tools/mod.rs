@@ -51,7 +51,9 @@ pub(crate) fn validate_agent_id(agent_id: &str) -> Result<()> {
 /// [`McpError::Validation`] si la borne est dépassée.
 pub(crate) fn validate_text(text: &str) -> Result<()> {
     if text.is_empty() || text.chars().count() > MAX_TEXT_LEN {
-        return Err(McpError::Validation(format!("text must be 1..={MAX_TEXT_LEN} characters")));
+        return Err(McpError::Validation(format!(
+            "text must be 1..={MAX_TEXT_LEN} characters"
+        )));
     }
     Ok(())
 }

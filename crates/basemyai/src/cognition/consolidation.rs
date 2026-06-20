@@ -160,7 +160,12 @@ pub async fn apply_extraction(memory: &Memory, extraction: &Extraction) -> Resul
             report.facts_skipped += 1;
         } else {
             memory
-                .remember_with_source(fact, MemoryLayer::Semantic, Validity::since(now_unix()), SOURCE_CONSOLIDATION)
+                .remember_with_source(
+                    fact,
+                    MemoryLayer::Semantic,
+                    Validity::since(now_unix()),
+                    SOURCE_CONSOLIDATION,
+                )
                 .await?;
             report.facts_added += 1;
         }
@@ -298,7 +303,9 @@ fn build_prompt(episodes: &[String]) -> String {
     p.push_str("ÉPISODES :\n");
     for (i, e) in episodes.iter().enumerate() {
         let n = i + 1;
-        p.push_str(&format!("<<<EPISODE {n} {delim}>>>\n{e}\n<<<FIN_EPISODE {n} {delim}>>>\n"));
+        p.push_str(&format!(
+            "<<<EPISODE {n} {delim}>>>\n{e}\n<<<FIN_EPISODE {n} {delim}>>>\n"
+        ));
     }
     p
 }
@@ -361,10 +368,7 @@ mod tests {
         // le contenu de l'épisode, mais ne doit jamais correspondre à la
         // vraie balise de fermeture générée par build_prompt (qui porte
         // toujours le délimiteur UUID après le numéro d'épisode).
-        let real_closing_tags: Vec<&str> = prompt
-            .lines()
-            .filter(|l| l.starts_with("<<<FIN_EPISODE"))
-            .collect();
+        let real_closing_tags: Vec<&str> = prompt.lines().filter(|l| l.starts_with("<<<FIN_EPISODE")).collect();
         assert_eq!(real_closing_tags.len(), 1, "une seule vraie fermeture d'épisode");
         assert!(
             real_closing_tags[0].contains('-'),
@@ -373,6 +377,9 @@ mod tests {
         );
         // La tentative de falsification reste un simple texte dans le corps,
         // pas une balise structurelle reconnue par le parseur de prompt.
-        assert!(prompt.contains(&malicious), "le contenu de l'épisode est préservé tel quel, comme donnée");
+        assert!(
+            prompt.contains(&malicious),
+            "le contenu de l'épisode est préservé tel quel, comme donnée"
+        );
     }
 }

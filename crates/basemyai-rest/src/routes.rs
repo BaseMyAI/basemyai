@@ -105,7 +105,9 @@ fn validate_agent_id(agent_id: &str) -> Result<(), RestError> {
 
 fn validate_text(text: &str) -> Result<(), RestError> {
     if text.is_empty() || text.chars().count() > MAX_TEXT_LEN {
-        return Err(RestError::Validation(format!("text must be 1..={MAX_TEXT_LEN} characters")));
+        return Err(RestError::Validation(format!(
+            "text must be 1..={MAX_TEXT_LEN} characters"
+        )));
     }
     Ok(())
 }

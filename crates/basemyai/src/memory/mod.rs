@@ -180,7 +180,8 @@ impl Memory {
         layer: MemoryLayer,
         validity: Validity,
     ) -> Result<Vec<String>> {
-        self.remember_batch_with_source(texts, layer, validity, SOURCE_USER).await
+        self.remember_batch_with_source(texts, layer, validity, SOURCE_USER)
+            .await
     }
 
     /// Comme [`Memory::remember_batch_with`], mais trace explicitement la

@@ -78,7 +78,11 @@ impl RestError {
                 }
                 _ => {
                     tracing::error!(error = %e, "internal error in REST handler");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "internal error".to_string())
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "INTERNAL_ERROR",
+                        "internal error".to_string(),
+                    )
                 }
             },
         }

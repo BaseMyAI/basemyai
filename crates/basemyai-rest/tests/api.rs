@@ -340,11 +340,7 @@ async fn remember_rejects_agent_id_too_long() {
     let app = app();
     let agent_id = "a".repeat(129);
     let resp = app
-        .oneshot(post(
-            "/v1/remember",
-            &json!({"agent_id": agent_id, "text": "x"}),
-            true,
-        ))
+        .oneshot(post("/v1/remember", &json!({"agent_id": agent_id, "text": "x"}), true))
         .await
         .expect("oneshot");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

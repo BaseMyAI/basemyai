@@ -240,9 +240,9 @@ fn require_key() -> Result<basemyai_core::EncryptionKey, Box<dyn std::error::Err
 /// `basemyai setup --fetch` si le modèle est absent.
 #[cfg(all(feature = "crypto", feature = "embed"))]
 async fn load_embedder() -> Result<Box<dyn basemyai_core::Embedder>, Box<dyn std::error::Error>> {
-    let mp = basemyai::provision(false).await.map_err(|e| {
-        format!("{e}\nhint: run `basemyai setup --fetch` to provision the baseline model")
-    })?;
+    let mp = basemyai::provision(false)
+        .await
+        .map_err(|e| format!("{e}\nhint: run `basemyai setup --fetch` to provision the baseline model"))?;
     let embedder = basemyai_core::CandleEmbedder::load(&mp.model_path, mp.device)?;
     Ok(Box::new(embedder))
 }
@@ -259,10 +259,7 @@ async fn open_store(path: &std::path::Path) -> Result<basemyai_core::Store, Box<
 
 /// Ouvre une mémoire complète (store chiffré + embedder + isolation agent).
 #[cfg(all(feature = "crypto", feature = "embed"))]
-async fn open_memory(
-    path: &std::path::Path,
-    agent: &str,
-) -> Result<basemyai::Memory, Box<dyn std::error::Error>> {
+async fn open_memory(path: &std::path::Path, agent: &str) -> Result<basemyai::Memory, Box<dyn std::error::Error>> {
     let agent_id = basemyai::AgentId::new(agent).ok_or("agent id must not be empty")?;
     let store = open_store(path).await?;
     let embedder = load_embedder().await?;
@@ -271,13 +268,9 @@ async fn open_memory(
 
 /// Lit la table de métadonnées `bmai_meta`.
 #[cfg(all(feature = "crypto", feature = "embed"))]
-async fn read_meta(
-    store: &basemyai_core::Store,
-) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+async fn read_meta(store: &basemyai_core::Store) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
     let conn = store.connect();
-    let mut rows = conn
-        .query("SELECT key, value FROM bmai_meta ORDER BY key", ())
-        .await?;
+    let mut rows = conn.query("SELECT key, value FROM bmai_meta ORDER BY key", ()).await?;
     let mut out = Vec::new();
     while let Some(row) = rows.next().await? {
         let k: String = row.get(0)?;
@@ -288,9 +281,7 @@ async fn read_meta(
 }
 
 #[cfg(all(feature = "crypto", feature = "embed"))]
-async fn count_memories(
-    store: &basemyai_core::Store,
-) -> Result<i64, Box<dyn std::error::Error>> {
+async fn count_memories(store: &basemyai_core::Store) -> Result<i64, Box<dyn std::error::Error>> {
     let conn = store.connect();
     let mut rows = conn.query("SELECT COUNT(*) FROM memory", ()).await?;
     let total = match rows.next().await? {
@@ -308,7 +299,11 @@ async fn cmd_init(path: &std::path::Path) -> Result<(), Box<dyn std::error::Erro
     let store = open_store(path).await?;
     store.migrate(&basemyai::schema()).await?;
     println!("created encrypted .bmai container at {}", path.display());
-    println!("format_version={}, embedding_dim={}", basemyai::BMAI_FORMAT_VERSION, basemyai::EMBEDDING_DIM);
+    println!(
+        "format_version={}, embedding_dim={}",
+        basemyai::BMAI_FORMAT_VERSION,
+        basemyai::EMBEDDING_DIM
+    );
     Ok(())
 }
 
@@ -450,10 +445,7 @@ async fn cmd_llm_detect() -> Result<(), Box<dyn std::error::Error>> {
             .ram_mb
             .map(|r| format!("{r} MB"))
             .unwrap_or_else(|| "unknown".to_string());
-        println!(
-            "  - {} via {:?} @ {} (RAM ~{ram})",
-            o.model_id, o.backend, o.server_url
-        );
+        println!("  - {} via {:?} @ {} (RAM ~{ram})", o.model_id, o.backend, o.server_url);
     }
     if let Some(best) = basemyai::best_llm_option(&opts) {
         println!("best for this machine: {}", best.model_id);
@@ -478,5 +470,8 @@ async fn cmd_llm_suggest() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(all(feature = "crypto", feature = "embed")))]
 async fn execute(_cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    Err("basemyai CLI must be built with the `crypto` and `embed` features (they are in the default feature set)".into())
+    Err(
+        "basemyai CLI must be built with the `crypto` and `embed` features (they are in the default feature set)"
+            .into(),
+    )
 }
