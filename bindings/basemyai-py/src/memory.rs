@@ -2,21 +2,23 @@
 //! (coroutine asyncio) : le futur tokio Rust est piloté par l'event loop Python
 //! via `pyo3_async_runtimes`. Le moteur reste 100 % local, en process.
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
+#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
+#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
 use basemyai::AgentId;
 use basemyai::MemoryLayer;
 
+#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
+use basemyai_core::Store;
 #[cfg(all(feature = "crypto", feature = "embed"))]
-use basemyai_core::{CandleEmbedder, Device, Embedder, EncryptionKey, Store};
+use basemyai_core::{CandleEmbedder, Device, Embedder, EncryptionKey};
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
+#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
 use crate::errors::ValidationError;
 use crate::errors::to_pyerr;
 use crate::types::{AgentStats, Entity, Record};
@@ -89,6 +91,28 @@ impl Memory {
     fn open_in_memory(py: Python<'_>, agent_id: String) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
             let mem = basemyai::Memory::open_in_memory(&agent_id).await.map_err(to_pyerr)?;
+            Ok(Memory::wrap(mem))
+        })
+    }
+
+    /// Ouvre un fichier libSQL partagé avec l'embedder déterministe de test.
+    /// Test-only : vérifie l'isolation SQL réelle entre deux agents sans Candle.
+    #[cfg(feature = "test-util")]
+    #[staticmethod]
+    fn open_test_file(py: Python<'_>, path: String, agent_id: String) -> PyResult<Bound<'_, PyAny>> {
+        future_into_py(py, async move {
+            let agent =
+                AgentId::new(agent_id).ok_or_else(|| ValidationError::new_err("a valid agent_id is required"))?;
+            let store = Store::open(&PathBuf::from(path), None)
+                .await
+                .map_err(basemyai::MemoryError::from)
+                .map_err(to_pyerr)?;
+            store
+                .migrate(&basemyai::schema())
+                .await
+                .map_err(basemyai::MemoryError::from)
+                .map_err(to_pyerr)?;
+            let mem = basemyai::Memory::new(store, Box::new(basemyai::HashEmbedder::new()), agent);
             Ok(Memory::wrap(mem))
         })
     }

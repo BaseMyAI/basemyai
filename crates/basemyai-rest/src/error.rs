@@ -23,6 +23,16 @@ pub enum RestError {
     /// Erreur propagée depuis la couche mémoire.
     #[error(transparent)]
     Memory(#[from] basemyai::MemoryError),
+    /// Configuration invalide.
+    #[error("invalid REST configuration: {0}")]
+    Config(String),
+    /// Entrée hors des bornes documentées par l'OpenAPI (`agent_id`, `text`,
+    /// `query`, `k`, `max_depth`...).
+    #[error("validation error: {0}")]
+    Validation(String),
+    /// Quota d'appels dépassé pour cet agent (fenêtre glissante, Fix 3).
+    #[error("rate limit exceeded")]
+    RateLimited,
 }
 
 #[derive(Serialize)]
@@ -52,6 +62,13 @@ impl RestError {
                 "MISSING_AGENT",
                 "A valid agent_id is required.".to_string(),
             ),
+            Self::Config(message) => (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR", message.clone()),
+            Self::Validation(message) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", message.clone()),
+            Self::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "RATE_LIMITED",
+                "Rate limit exceeded for this agent.".to_string(),
+            ),
             Self::Memory(e) => match e {
                 M::MissingAgent => (StatusCode::BAD_REQUEST, "MISSING_AGENT", e.to_string()),
                 M::UnknownLayer(_) => (StatusCode::BAD_REQUEST, "UNKNOWN_LAYER", e.to_string()),
@@ -59,7 +76,10 @@ impl RestError {
                 M::Core(CoreError::Encryption) => {
                     (StatusCode::INTERNAL_SERVER_ERROR, "ENCRYPTION_REQUIRED", e.to_string())
                 }
-                _ => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", e.to_string()),
+                _ => {
+                    tracing::error!(error = %e, "internal error in REST handler");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "internal error".to_string())
+                }
             },
         }
     }

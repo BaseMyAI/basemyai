@@ -5,14 +5,16 @@
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
-    "build": "napi build --platform --release --features crypto,embed",
-    "build:debug": "napi build --platform --features embed",
-    "build:test": "napi build --platform --no-default-features --features test-util",
-    "test": "npm run build:test && jest",
-    "prepublishOnly": "napi build --platform --release --features crypto,embed"
+    "build": "napi build --platform --release --features crypto,embed --dts ../../target/basemyai-node-default.d.ts",
+    "build:debug": "napi build --platform --features embed --dts ../../target/basemyai-node-debug.d.ts",
+    "build:test": "napi build --platform --no-default-features --features test-util --dts ../../target/basemyai-node-test-util.d.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.examples.json",
+    "test": "npm run typecheck && npm run build:test && jest",
+    "prepublishOnly": "napi build --platform --release --features crypto,embed --dts ../../target/basemyai-node-default.d.ts"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.6.2",
+    "@types/node": "^20",
     "jest": "^29",
     "@types/jest": "^29",
     "ts-jest": "^29",

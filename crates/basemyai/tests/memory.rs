@@ -5,6 +5,7 @@ use basemyai::temporal::Validity;
 use basemyai::{AgentId, AgentStats, Memory, MemoryLayer};
 use basemyai_core::libsql;
 use basemyai_core::{Embedder, Result, Store};
+use std::path::PathBuf;
 
 const DIM: usize = 384;
 
@@ -49,6 +50,16 @@ fn agent(id: &str) -> AgentId {
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs()).expect("fits i64")
+}
+
+fn temp_db_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("basemyai-{name}-{}-{}.db", std::process::id(), now()))
+}
+
+async fn open_file_memory(path: &std::path::Path, agent_id: &str) -> Memory {
+    let store = Store::open(path, None).await.expect("open file store");
+    store.migrate(&basemyai::schema()).await.expect("migrate");
+    Memory::new(store, Box::new(FakeEmbedder), agent(agent_id))
 }
 
 #[tokio::test]
@@ -276,6 +287,29 @@ async fn isolation_hides_other_agents_items() {
 }
 
 #[tokio::test]
+async fn file_backed_same_store_isolates_agents() {
+    let path = temp_db_path("memory-isolation");
+    let mem_a = open_file_memory(&path, "agent-a").await;
+    let mem_b = open_file_memory(&path, "agent-b").await;
+
+    mem_a
+        .remember("secret of agent A", MemoryLayer::Semantic)
+        .await
+        .expect("A remembers");
+    mem_b
+        .remember("public note of agent B", MemoryLayer::Semantic)
+        .await
+        .expect("B remembers");
+
+    let hits_b = mem_b.recall("secret of agent A", 5).await.expect("B recalls");
+    assert!(
+        hits_b.iter().all(|r| r.text != "secret of agent A"),
+        "B ne doit pas voir les souvenirs de A"
+    );
+    assert_eq!(mem_b.stats().await.expect("B stats").total(), 1);
+}
+
+#[tokio::test]
 async fn temporal_excludes_expired_items() {
     let store = Store::open_in_memory().await.expect("open");
     let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
@@ -495,6 +529,40 @@ async fn stats_counts_per_layer() {
     assert_eq!(s.procedural, 1, "1 souvenir procedural");
     assert_eq!(s.short_term, 0, "0 souvenir short_term");
     assert_eq!(s.total(), 4, "total = 4");
+}
+
+#[tokio::test]
+async fn remember_rejects_text_over_max_len() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    let too_long = "x".repeat(basemyai::MAX_TEXT_LEN + 1);
+    let err = mem
+        .remember(&too_long, MemoryLayer::Semantic)
+        .await
+        .expect_err("un texte au-delà de MAX_TEXT_LEN doit être rejeté");
+    match err {
+        basemyai::MemoryError::TextTooLong { len, max } => {
+            assert_eq!(len, basemyai::MAX_TEXT_LEN + 1);
+            assert_eq!(max, basemyai::MAX_TEXT_LEN);
+        }
+        other => panic!("erreur attendue MemoryError::TextTooLong, obtenu {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn remember_accepts_text_at_exact_max_len() {
+    let store = Store::open_in_memory().await.expect("open");
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    let at_limit = "x".repeat(basemyai::MAX_TEXT_LEN);
+    mem.remember(&at_limit, MemoryLayer::Semantic)
+        .await
+        .expect("un texte exactement à la limite doit être accepté");
 }
 
 #[tokio::test]

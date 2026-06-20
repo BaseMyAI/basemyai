@@ -10,11 +10,11 @@ export declare class Memory {
   /** `agent_id` propriétaire de cette mémoire. */
   agent(): string
   /** Mémorise `text` dans une couche (défaut `semantic`). Résout vers l'UUID. */
-  remember(text: string, layer?: string | undefined | null): Promise<string>
+  remember(text: string, layer?: MemoryLayer | undefined | null): Promise<string>
   /** Recall temporel sémantique : résout vers un tableau de `Record`. */
   recall(query: string, k?: number | undefined | null): Promise<Array<Record>>
   /** Recall limité à une couche mémoire (`short_term`, `episodic`, `procedural`, `semantic`). */
-  recallByLayer(query: string, layer: string, k?: number | undefined | null): Promise<Array<Record>>
+  recallByLayer(query: string, layer: MemoryLayer, k?: number | undefined | null): Promise<Array<Record>>
   /**
    * Recall hybride : vecteur + BM25 (full-text) fusionnés par RRF. Résout vers
    * un tableau de `Record` (le `score` porte le score RRF fusionné).
@@ -33,6 +33,8 @@ export declare class Memory {
   /** Traverse le graphe depuis `start` : résout vers un tableau d'`Entity`. */
   recallGraph(start: string, maxDepth?: number | undefined | null): Promise<Array<Entity>>
 }
+
+export type MemoryLayer = "short_term" | "episodic" | "procedural" | "semantic"
 
 /** Statistiques d'un agent, par couche. */
 export interface AgentStats {
@@ -64,8 +66,7 @@ export interface MemoryOpenOptions {
 export interface Record {
   id: string
   text: string
-  /** `short_term` | `episodic` | `procedural` | `semantic`. */
-  layer: string
+  layer: MemoryLayer
   /** Similarité cosinus normalisée dans `[0, 1]` (`1` = identique). */
   score: number
 }

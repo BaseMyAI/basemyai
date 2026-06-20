@@ -149,12 +149,6 @@ components:
         version:
           type: string
           example: "0.1.0"
-        db_path:
-          type: string
-          example: "/home/user/.basemyai/memory.db"
-        uptime_seconds:
-          type: integer
-          minimum: 0
 
     RememberRequest:
       type: object
@@ -230,7 +224,8 @@ components:
           description: >
             UNAUTHORIZED, VALIDATION_ERROR, NOT_FOUND,
             PAYLOAD_TOO_LARGE, INTERNAL_ERROR, TIMEOUT,
-            UNKNOWN_LAYER, ENCRYPTION_REQUIRED, MISSING_AGENT.
+            UNKNOWN_LAYER, ENCRYPTION_REQUIRED, MISSING_AGENT,
+            RATE_LIMITED.
           example: "NOT_FOUND"
         message:
           type: string
@@ -330,6 +325,20 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
 
+    TooManyRequests:
+      description: Quota `remember` dépassé pour cet agent (fenêtre glissante).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/X-Request-Id"
+        X-Basemyai-Version:
+          $ref: "#/components/headers/X-Basemyai-Version"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: { code: "RATE_LIMITED", message: "Rate limit exceeded for this agent." }
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -371,6 +380,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
 
@@ -393,6 +403,38 @@ paths:
       responses:
         "200":
           description: Résultats du recall.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecallResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /recall_hybrid:
+    post:
+      operationId: recallHybrid
+      summary: Recherche hybride vectorielle + BM25 dans la mémoire d'un agent.
+      description: >
+        Exécute les signaux vectoriel et full-text, puis fusionne les rangs par
+        Reciprocal Rank Fusion. `score` porte le score RRF fusionné.
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecallRequest"
+      responses:
+        "200":
+          description: Résultats du recall hybride.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"

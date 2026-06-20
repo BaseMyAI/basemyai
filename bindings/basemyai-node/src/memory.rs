@@ -1,7 +1,7 @@
 //! Façade `Memory` exposée à Node. Les méthodes `async` deviennent des `Promise`
 //! JS, exécutées sur le runtime tokio interne de NAPI-RS. Moteur 100 % local.
 
-#[cfg(feature = "embed")]
+#[cfg(any(feature = "embed", feature = "test-util"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,8 +11,10 @@ use napi::{Error, Status};
 use napi_derive::napi;
 
 use basemyai::MemoryLayer;
+#[cfg(any(feature = "embed", feature = "test-util"))]
+use basemyai_core::Store;
 #[cfg(feature = "embed")]
-use basemyai_core::{CandleEmbedder, Device, EncryptionKey, Store};
+use basemyai_core::{CandleEmbedder, Device, EncryptionKey};
 
 use crate::errors::to_napi;
 use crate::types::{AgentStats, Entity, MemoryOpenOptions, Record};
@@ -190,6 +192,25 @@ impl Memory {
     #[napi(factory, js_name = "openInMemory")]
     pub async fn open_in_memory(agent_id: String) -> Result<Memory> {
         let mem = basemyai::Memory::open_in_memory(&agent_id).await.map_err(to_napi)?;
+        Ok(Memory { inner: Arc::new(mem) })
+    }
+
+    /// Ouvre un fichier libSQL partagé avec l'embedder déterministe de test.
+    /// Test-only : permet de vérifier l'isolation SQL réelle entre deux agents
+    /// sans compiler Candle ni embarquer de modèle.
+    #[napi(factory, js_name = "openTestFile")]
+    pub async fn open_test_file(path: String, agent_id: String) -> Result<Memory> {
+        let agent = basemyai::AgentId::new(agent_id).ok_or_else(|| to_napi(basemyai::MemoryError::MissingAgent))?;
+        let store = Store::open(&PathBuf::from(path), None)
+            .await
+            .map_err(basemyai::MemoryError::from)
+            .map_err(to_napi)?;
+        store
+            .migrate(&basemyai::schema())
+            .await
+            .map_err(basemyai::MemoryError::from)
+            .map_err(to_napi)?;
+        let mem = basemyai::Memory::new(store, Box::new(basemyai::HashEmbedder::new()), agent);
         Ok(Memory { inner: Arc::new(mem) })
     }
 }

@@ -9,7 +9,7 @@ import basemyai
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Basic BaseMyAI graph example.")
-    parser.add_argument("--db", default="basemyai-graph-example.db", help="Path to the local libSQL database.")
+    parser.add_argument("--db", default="basemyai-graph-example.bmai", help="Path to the local libSQL database.")
     parser.add_argument("--agent", default="agent-1", help="Agent id stored in this database.")
     parser.add_argument("--model-dir", required=True, help="Path to a local embedding model directory.")
     parser.add_argument("--device", default="auto", help="Device: auto, cpu, metal, cuda, or cuda:<index>.")

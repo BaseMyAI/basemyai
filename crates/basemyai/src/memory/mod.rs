@@ -20,7 +20,17 @@ use basemyai_core::{Embedder, Filter, Metric, Store, Value};
 use uuid::Uuid;
 
 use crate::temporal::Validity;
-use crate::{RRF_K, Ranking, Result, now_unix, rrf_fuse};
+use crate::{MemoryError, RRF_K, Ranking, Result, now_unix, rrf_fuse};
+
+/// Borne la taille d'un texte mémorisé (octets). Au-delà, un item démesuré
+/// saturerait le prompt de consolidation (`MAX_EPISODES` ne borne que le
+/// *nombre* d'épisodes, pas leur taille individuelle) — DoS de contexte.
+/// Cohérent avec la limite documentée côté REST (`openapi-sidecar.yaml`).
+pub const MAX_TEXT_LEN: usize = 65_536;
+
+/// Provenance par défaut d'un souvenir mémorisé directement par l'agent (par
+/// opposition à `"consolidation"`, faits promus par le pipeline LLM).
+const SOURCE_USER: &str = "user";
 
 /// Mémoire d'un agent : store (vecteur natif) + embedder, scellés par un
 /// [`AgentId`]. Le chiffrement est obligatoire (ADR-007).
@@ -113,12 +123,33 @@ impl Memory {
     /// jamais de souvenir visible par vecteur mais invisible en BM25, ou l'inverse.
     ///
     /// # Errors
-    /// Propage les erreurs d'embedding/stockage.
+    /// [`MemoryError::TextTooLong`] si `text` dépasse [`MAX_TEXT_LEN`].
+    /// Propage aussi les erreurs d'embedding/stockage.
     pub async fn remember_with(&self, text: &str, layer: MemoryLayer, validity: Validity) -> Result<String> {
+        self.remember_with_source(text, layer, validity, SOURCE_USER).await
+    }
+
+    /// Comme [`Memory::remember_with`], mais trace explicitement la `source`
+    /// du souvenir (`"user"` pour un appel direct de l'agent, `"consolidation"`
+    /// pour un fait promu par le pipeline LLM, ADR-018 / audit sécurité —
+    /// memory poisoning). `pub(crate)` : la provenance n'est pas (encore)
+    /// exposée à l'API publique de recall, seulement tracée en base.
+    ///
+    /// # Errors
+    /// [`MemoryError::TextTooLong`] si `text` dépasse [`MAX_TEXT_LEN`].
+    /// Propage aussi les erreurs d'embedding/stockage.
+    pub(crate) async fn remember_with_source(
+        &self,
+        text: &str,
+        layer: MemoryLayer,
+        validity: Validity,
+        source: &str,
+    ) -> Result<String> {
+        check_text_len(text)?;
         let vector = self.embedder.embed(text)?;
         let id = Uuid::new_v4().to_string();
         let txn = self.store.begin_write().await?;
-        insert_memory_row(&txn, &id, self.agent.as_str(), layer, text, validity, &vector).await?;
+        insert_memory_row(&txn, &id, self.agent.as_str(), layer, text, validity, &vector, source).await?;
         txn.commit().await?;
         Ok(id)
     }
@@ -139,21 +170,43 @@ impl Memory {
     /// l'ingestion initiale (import d'historique, seed de connaissances).
     ///
     /// # Errors
-    /// Propage les erreurs d'embedding/stockage.
+    /// [`MemoryError::TextTooLong`] si un texte du lot dépasse [`MAX_TEXT_LEN`]
+    /// (fail-fast : le premier texte trop long stoppe le lot, rien n'est inséré
+    /// puisque la validation précède l'embedding/la transaction).
+    /// Propage aussi les erreurs d'embedding/stockage.
     pub async fn remember_batch_with(
         &self,
         texts: &[String],
         layer: MemoryLayer,
         validity: Validity,
     ) -> Result<Vec<String>> {
+        self.remember_batch_with_source(texts, layer, validity, SOURCE_USER).await
+    }
+
+    /// Comme [`Memory::remember_batch_with`], mais trace explicitement la
+    /// `source` du lot (cf. [`Memory::remember_with_source`]).
+    ///
+    /// # Errors
+    /// [`MemoryError::TextTooLong`] si un texte du lot dépasse [`MAX_TEXT_LEN`].
+    /// Propage aussi les erreurs d'embedding/stockage.
+    pub(crate) async fn remember_batch_with_source(
+        &self,
+        texts: &[String],
+        layer: MemoryLayer,
+        validity: Validity,
+        source: &str,
+    ) -> Result<Vec<String>> {
         if texts.is_empty() {
             return Ok(Vec::new());
+        }
+        for text in texts {
+            check_text_len(text)?;
         }
         let vectors = self.embedder.embed_batch(texts)?;
         let ids: Vec<String> = texts.iter().map(|_| Uuid::new_v4().to_string()).collect();
         let txn = self.store.begin_write().await?;
         for ((text, vector), id) in texts.iter().zip(&vectors).zip(&ids) {
-            insert_memory_row(&txn, id, self.agent.as_str(), layer, text, validity, vector).await?;
+            insert_memory_row(&txn, id, self.agent.as_str(), layer, text, validity, vector, source).await?;
         }
         txn.commit().await?;
         Ok(ids)
@@ -657,9 +710,20 @@ fn storage(e: libsql::Error) -> crate::MemoryError {
     basemyai_core::CoreError::Storage(e.to_string()).into()
 }
 
+/// Rejette un texte dépassant [`MAX_TEXT_LEN`] (DoS de contexte, audit sécurité).
+fn check_text_len(text: &str) -> Result<()> {
+    let len = text.len();
+    if len > MAX_TEXT_LEN {
+        return Err(MemoryError::TextTooLong { len, max: MAX_TEXT_LEN });
+    }
+    Ok(())
+}
+
 /// Insère un souvenir (`memory` + miroir FTS, ADR-014) sur la connexion
 /// fournie — une [`basemyai_core::WriteTxn`] en pratique, pour que les deux
-/// écritures soient atomiques.
+/// écritures soient atomiques. `source` trace la provenance (`'user'` direct,
+/// `'consolidation'` promu par le pipeline LLM, ADR-018 / audit sécurité).
+#[allow(clippy::too_many_arguments)]
 async fn insert_memory_row(
     conn: &libsql::Connection,
     id: &str,
@@ -668,10 +732,11 @@ async fn insert_memory_row(
     text: &str,
     validity: Validity,
     vector: &[f32],
+    source: &str,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO memory (id, agent_id, layer, content, valid_from, valid_until, emb) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, vector(?7))",
+        "INSERT INTO memory (id, agent_id, layer, content, valid_from, valid_until, emb, source) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, vector(?7), ?8)",
         libsql::params![
             id,
             agent,
@@ -680,6 +745,7 @@ async fn insert_memory_row(
             validity.valid_from,
             validity.valid_until,
             to_vec_literal(vector),
+            source,
         ],
     )
     .await

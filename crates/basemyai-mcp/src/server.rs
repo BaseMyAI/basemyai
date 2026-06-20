@@ -83,6 +83,8 @@ impl McpServer {
     }
 
     async fn remember_impl(&self, p: RememberParams) -> Result<RememberResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
+        tools::validate_text(&p.text)?;
         let layer = tools::parse_layer(&p.layer)?;
         let mem = self.memory_for(&p.agent_id).await?;
         let id = mem.remember(&p.text, layer).await?;
@@ -90,6 +92,9 @@ impl McpServer {
     }
 
     async fn recall_impl(&self, p: RecallParams) -> Result<RecallResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
+        tools::validate_query(&p.query)?;
+        tools::validate_k(p.k)?;
         let mem = self.memory_for(&p.agent_id).await?;
         let records = mem.recall(&p.query, p.k).await?;
         let items: Vec<RecallItem> = records
@@ -109,6 +114,9 @@ impl McpServer {
     }
 
     async fn recall_hybrid_impl(&self, p: RecallParams) -> Result<RecallResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
+        tools::validate_query(&p.query)?;
+        tools::validate_k(p.k)?;
         let mem = self.memory_for(&p.agent_id).await?;
         let records = mem.recall_hybrid(&p.query, p.k).await?;
         // Ici `score` est le score RRF fusionné (pas la similarité cosinus).
@@ -126,6 +134,9 @@ impl McpServer {
     }
 
     async fn recall_graph_impl(&self, p: RecallGraphParams) -> Result<RecallGraphResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
+        tools::validate_start(&p.start)?;
+        tools::validate_max_depth(p.max_depth)?;
         let mem = self.memory_for(&p.agent_id).await?;
         let reached = mem.graph().traverse(&p.start, p.max_depth).await?;
         let entities: Vec<EntityItem> = reached

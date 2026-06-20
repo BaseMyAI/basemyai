@@ -105,4 +105,12 @@ Phase 1 (socle) ✅ et Phase 2 (Cognition) ✅ implémentées :
 - **Consolidation** épisodes→faits : `consolidate(memory, llm)`, idempotente, `LlmInference` injecté (ADR-012).
 - **LLM provision** : `KNOWN_MODELS` 20 modèles juin 2026, 8 backends détectés, `choose_llm()` hardware-aware (ADR-013).
 
-Reste ouvert : wiring consolidation dans `MaintenanceWorker` (nécessite `Arc<Memory>` + provider LLM dans la tâche) ; bindings PyO3/NAPI ; sidecar REST.
+Wiring consolidation dans `MaintenanceWorker` ✅ (`ConsolidationTask`, `maintenance/mod.rs`),
+bindings PyO3/NAPI ✅ (`bindings/basemyai-py`, `bindings/basemyai-node`), sidecar MCP ✅
+(`crates/basemyai-mcp`) et REST ✅ (`crates/basemyai-rest`) : tous implémentés et testés.
+
+**État réel : voir `docs/status.md` (source de vérité, 2026-06-20).** Le moteur (Phase 1 + 2)
+et les surfaces (MCP/REST/bindings) sont en place ; **rien n'est encore publié** (crates.io /
+npm / PyPI = 0). Plus gros trou V1 : **le CLI `basemyai-cli` (inexistant, M5)**. `StorageEngine`
+est amorcé mais minimal (contrat d'identité, pas trait d'opérations mémoire ; `Filter` toujours
+SQL-leaky). Hardening (M6 : bench KNN, stress test, pool, key rotation) non commencé.

@@ -5,6 +5,7 @@
 use basemyai::temporal::Validity;
 use basemyai::{AgentId, Graph};
 use basemyai_core::Store;
+use std::path::PathBuf;
 
 fn agent(id: &str) -> AgentId {
     AgentId::new(id).expect("non-empty agent id")
@@ -15,8 +16,18 @@ fn now() -> i64 {
     i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs()).expect("fits i64")
 }
 
+fn temp_db_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("basemyai-{name}-{}-{}.db", std::process::id(), now()))
+}
+
 async fn migrated_store() -> Store {
     let store = Store::open_in_memory().await.expect("open");
+    store.migrate(&basemyai::schema()).await.expect("migrate");
+    store
+}
+
+async fn migrated_file_store(path: &std::path::Path) -> Store {
+    let store = Store::open(path, None).await.expect("open file store");
     store.migrate(&basemyai::schema()).await.expect("migrate");
     store
 }
@@ -57,6 +68,50 @@ async fn isolation_hides_other_agents_edges() {
 
     let seen_by_b = gb.traverse("x", 3).await.expect("b traverse");
     assert!(seen_by_b.is_empty(), "B ne doit voir aucune entité/arête de A");
+}
+
+#[tokio::test]
+async fn agents_can_reuse_same_graph_ids_without_conflict() {
+    let store = migrated_store().await;
+    let ga = Graph::new(&store, agent("A"));
+    let gb = Graph::new(&store, agent("B"));
+
+    ga.add_entity("alice", "person", "Alice A").await.expect("alice A");
+    ga.add_entity("acme", "company", "Acme A").await.expect("acme A");
+    ga.add_edge("alice", "works_at", "acme", 1.0).await.expect("edge A");
+
+    gb.add_entity("alice", "person", "Alice B").await.expect("alice B");
+    gb.add_entity("acme", "company", "Acme B").await.expect("acme B");
+    gb.add_edge("alice", "works_at", "acme", 1.0).await.expect("edge B");
+
+    let seen_by_a = ga.traverse("alice", 1).await.expect("A traverse");
+    let seen_by_b = gb.traverse("alice", 1).await.expect("B traverse");
+
+    assert_eq!(seen_by_a[0].label, "Acme A");
+    assert_eq!(seen_by_b[0].label, "Acme B");
+}
+
+#[tokio::test]
+async fn file_backed_same_store_isolates_graph_agents() {
+    let path = temp_db_path("graph-isolation");
+    let store_a = migrated_file_store(&path).await;
+    let store_b = migrated_file_store(&path).await;
+    let ga = Graph::new(&store_a, agent("A"));
+    let gb = Graph::new(&store_b, agent("B"));
+
+    ga.add_entity("alice", "person", "Alice A").await.expect("alice A");
+    ga.add_entity("acme", "company", "Acme A").await.expect("acme A");
+    ga.add_edge("alice", "works_at", "acme", 1.0).await.expect("edge A");
+
+    gb.add_entity("alice", "person", "Alice B").await.expect("alice B");
+    gb.add_entity("acme", "company", "Acme B").await.expect("acme B");
+    gb.add_edge("alice", "works_at", "acme", 1.0).await.expect("edge B");
+
+    let seen_by_a = ga.traverse("alice", 1).await.expect("A traverse");
+    let seen_by_b = gb.traverse("alice", 1).await.expect("B traverse");
+
+    assert_eq!(seen_by_a[0].label, "Acme A");
+    assert_eq!(seen_by_b[0].label, "Acme B");
 }
 
 #[tokio::test]

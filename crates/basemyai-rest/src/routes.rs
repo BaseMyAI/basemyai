@@ -84,6 +84,64 @@ fn bearer_ok(headers: &axum::http::HeaderMap, api_key: &str) -> bool {
     token.as_bytes().ct_eq(api_key.as_bytes()).into()
 }
 
+// --- Bornes de validation (conformes à `openapi-sidecar.yaml`) -------------
+
+const MAX_AGENT_ID_LEN: usize = 128;
+const MAX_TEXT_LEN: usize = 65_536;
+const MAX_QUERY_LEN: usize = 4096;
+const MIN_K: usize = 1;
+const MAX_K: usize = 100;
+const MIN_DEPTH: u32 = 1;
+const MAX_DEPTH: u32 = 10;
+
+fn validate_agent_id(agent_id: &str) -> Result<(), RestError> {
+    if agent_id.is_empty() || agent_id.chars().count() > MAX_AGENT_ID_LEN {
+        return Err(RestError::Validation(format!(
+            "agent_id must be 1..={MAX_AGENT_ID_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_text(text: &str) -> Result<(), RestError> {
+    if text.is_empty() || text.chars().count() > MAX_TEXT_LEN {
+        return Err(RestError::Validation(format!("text must be 1..={MAX_TEXT_LEN} characters")));
+    }
+    Ok(())
+}
+
+fn validate_query(query: &str) -> Result<(), RestError> {
+    if query.is_empty() || query.chars().count() > MAX_QUERY_LEN {
+        return Err(RestError::Validation(format!(
+            "query must be 1..={MAX_QUERY_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_k(k: usize) -> Result<(), RestError> {
+    if !(MIN_K..=MAX_K).contains(&k) {
+        return Err(RestError::Validation(format!("k must be {MIN_K}..={MAX_K}")));
+    }
+    Ok(())
+}
+
+fn validate_max_depth(max_depth: u32) -> Result<(), RestError> {
+    if !(MIN_DEPTH..=MAX_DEPTH).contains(&max_depth) {
+        return Err(RestError::Validation(format!(
+            "max_depth must be {MIN_DEPTH}..={MAX_DEPTH}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_start(start: &str) -> Result<(), RestError> {
+    if start.is_empty() {
+        return Err(RestError::Validation("start must not be empty".to_string()));
+    }
+    Ok(())
+}
+
 // --- DTOs ------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -185,6 +243,11 @@ async fn remember(
     State(state): State<AppState>,
     Json(req): Json<RememberRequest>,
 ) -> Result<impl IntoResponse, RestError> {
+    validate_agent_id(&req.agent_id)?;
+    validate_text(&req.text)?;
+    if !state.check_remember_rate(&req.agent_id).await {
+        return Err(RestError::RateLimited);
+    }
     let mem = state.memory_for(&req.agent_id).await?;
     let layer = MemoryLayer::from_table(&req.layer)?;
     let validity = Validity {
@@ -196,6 +259,9 @@ async fn remember(
 }
 
 async fn recall(State(state): State<AppState>, Json(req): Json<RecallRequest>) -> Result<impl IntoResponse, RestError> {
+    validate_agent_id(&req.agent_id)?;
+    validate_query(&req.query)?;
+    validate_k(req.k)?;
     let mem = state.memory_for(&req.agent_id).await?;
     let records = match req.layer.as_deref() {
         Some(layer) => {
@@ -224,6 +290,9 @@ async fn recall_hybrid(
     State(state): State<AppState>,
     Json(req): Json<RecallRequest>,
 ) -> Result<impl IntoResponse, RestError> {
+    validate_agent_id(&req.agent_id)?;
+    validate_query(&req.query)?;
+    validate_k(req.k)?;
     let mem = state.memory_for(&req.agent_id).await?;
     // Hybride : vecteur + BM25 fusionnés (RRF). Le filtre `layer` ne s'applique
     // pas ici ; `score` porte le score RRF fusionné (ADR-014).
@@ -245,6 +314,9 @@ async fn recall_graph(
     State(state): State<AppState>,
     Json(req): Json<RecallGraphRequest>,
 ) -> Result<impl IntoResponse, RestError> {
+    validate_agent_id(&req.agent_id)?;
+    validate_start(&req.start)?;
+    validate_max_depth(req.max_depth)?;
     let mem = state.memory_for(&req.agent_id).await?;
     let reached = mem.graph().traverse(&req.start, req.max_depth).await?;
     let nodes: Vec<EntityDto> = reached

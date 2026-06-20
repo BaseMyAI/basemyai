@@ -37,6 +37,17 @@ pub enum MemoryError {
     /// ligne JSONL malformée.
     #[error("porting error: {0}")]
     Porting(String),
+
+    /// Texte à mémoriser au-delà de la limite de taille (DoS de contexte :
+    /// un item démesuré saturerait le prompt de consolidation, qui ne borne
+    /// que le *nombre* d'épisodes, pas leur taille individuelle).
+    #[error("text too long: {len} bytes (max {max})")]
+    TextTooLong {
+        /// Taille en octets du texte rejeté.
+        len: usize,
+        /// Limite autorisée en octets (`Memory::MAX_TEXT_LEN`).
+        max: usize,
+    },
 }
 
 /// Alias de résultat de la couche mémoire.
