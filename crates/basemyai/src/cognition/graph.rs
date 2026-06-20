@@ -68,10 +68,9 @@ impl Graph {
             .execute(
                 "INSERT INTO entity (id, agent_id, kind, label, valid_from, valid_until) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                 ON CONFLICT(id) DO UPDATE SET \
+                 ON CONFLICT(agent_id, id) DO UPDATE SET \
                    kind = excluded.kind, label = excluded.label, \
-                   valid_from = excluded.valid_from, valid_until = excluded.valid_until \
-                 WHERE entity.agent_id = excluded.agent_id",
+                   valid_from = excluded.valid_from, valid_until = excluded.valid_until",
                 libsql::params![
                     id,
                     self.agent.as_str(),
@@ -97,8 +96,7 @@ impl Graph {
             .execute(
                 "INSERT INTO edge (src, dst, agent_id, relation, weight, valid_from, valid_until) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL) \
-                 ON CONFLICT(src, dst, relation) DO UPDATE SET weight = excluded.weight \
-                 WHERE edge.agent_id = excluded.agent_id",
+                 ON CONFLICT(agent_id, src, dst, relation) DO UPDATE SET weight = excluded.weight",
                 libsql::params![src, dst, self.agent.as_str(), relation, weight, now],
             )
             .await

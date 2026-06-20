@@ -5,6 +5,8 @@ Construit la mémoire via ``open_in_memory`` (embedder déterministe, base
 coroutine asyncio pilotée par le runtime tokio interne.
 """
 
+import os
+
 import pytest
 from pathlib import Path
 
@@ -103,6 +105,61 @@ async def test_isolation_between_agents():
     await a.remember("secret of A", layer="semantic")
     hits_b = await b.recall("secret of A", k=5)
     assert hits_b == []
+
+
+@pytest.mark.asyncio
+async def test_same_store_isolates_memory_and_graph_by_agent(tmp_path: Path):
+    db_path = str(tmp_path / "shared.db")
+    a = await basemyai.Memory.open_test_file(db_path, "agent-a")
+    b = await basemyai.Memory.open_test_file(db_path, "agent-b")
+
+    await a.remember("secret of agent A", layer="semantic")
+    await b.remember("public note of agent B", layer="semantic")
+
+    hits_b = await b.recall("secret of agent A", k=5)
+    assert all(h.text != "secret of agent A" for h in hits_b)
+    stats_b = await b.stats()
+    assert stats_b.total == 1
+
+    await a.add_graph_entity("alice", "person", "Alice A")
+    await a.add_graph_entity("acme", "organization", "Acme A")
+    await a.add_graph_edge("alice", "works_at", "acme")
+
+    await b.add_graph_entity("alice", "person", "Alice B")
+    await b.add_graph_entity("acme", "organization", "Acme B")
+    await b.add_graph_edge("alice", "works_at", "acme")
+
+    seen_a = await a.recall_graph("alice", max_depth=1)
+    seen_b = await b.recall_graph("alice", max_depth=1)
+
+    assert [(e.id, e.kind, e.label, e.depth) for e in seen_a] == [("acme", "organization", "Acme A", 1)]
+    assert [(e.id, e.kind, e.label, e.depth) for e in seen_b] == [("acme", "organization", "Acme B", 1)]
+
+
+production_open_enabled = (
+    os.environ.get("BASEMYAI_RUN_PRODUCTION_OPEN") == "1"
+    and bool(os.environ.get("BASEMYAI_MODEL_PATH"))
+    and bool(os.environ.get("BASEMYAI_ENCRYPTION_KEY"))
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not production_open_enabled,
+    reason="set BASEMYAI_RUN_PRODUCTION_OPEN=1, BASEMYAI_MODEL_PATH and BASEMYAI_ENCRYPTION_KEY",
+)
+async def test_production_open_encrypted_file_with_local_model(tmp_path: Path):
+    mem = await basemyai.Memory.open(
+        path=str(tmp_path / "production.db"),
+        agent_id="python-production-open",
+        encryption_key=os.environ["BASEMYAI_ENCRYPTION_KEY"],
+        model_dir=os.environ["BASEMYAI_MODEL_PATH"],
+        consent_to_fetch=False,
+    )
+
+    await mem.remember("production open smoke test", layer="semantic")
+    stats = await mem.stats()
+    assert stats.total == 1
 
 
 @pytest.mark.asyncio

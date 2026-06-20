@@ -12,7 +12,7 @@ mod provider;
 mod routes;
 mod state;
 
-pub use config::Config;
+pub use config::{AgentPolicy, Config};
 pub use error::RestError;
 pub use provider::MemoryProvider;
 pub use routes::build_app;

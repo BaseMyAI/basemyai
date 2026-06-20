@@ -152,6 +152,98 @@ async fn consolidation_is_idempotent() {
     );
 }
 
+/// `source` distingue un fait promu par consolidation (`"consolidation"`)
+/// d'un souvenir mémorisé directement par l'agent (`"user"`) — audit
+/// sécurité (ADR-018), traçabilité de l'escalade de confiance `episodic →
+/// semantic`.
+#[tokio::test]
+async fn consolidated_facts_are_tagged_with_consolidation_source() {
+    let store = Store::open_in_memory().await.expect("open");
+    let conn = store.connect();
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    // Souvenir direct de l'agent : source = 'user'.
+    mem.remember("direct user memory", MemoryLayer::Semantic)
+        .await
+        .expect("direct remember");
+
+    mem.remember("Alice a rejoint Acme en mars", MemoryLayer::Episodic)
+        .await
+        .expect("episode");
+    consolidate(&mem, &FakeLlm).await.expect("consolidate");
+
+    let mut rows = conn
+        .query(
+            "SELECT source FROM memory WHERE agent_id = 'a' AND content = ?1",
+            basemyai_core::libsql::params!["direct user memory"],
+        )
+        .await
+        .expect("query user source");
+    let row = rows.next().await.expect("row").expect("une ligne");
+    let source: String = row.get(0).expect("source col");
+    assert_eq!(source, "user", "un remember direct doit porter source='user'");
+
+    let mut rows = conn
+        .query(
+            "SELECT source FROM memory WHERE agent_id = 'a' AND content = ?1",
+            basemyai_core::libsql::params!["Alice travaille chez Acme"],
+        )
+        .await
+        .expect("query consolidation source");
+    let row = rows.next().await.expect("row").expect("une ligne");
+    let source: String = row.get(0).expect("source col");
+    assert_eq!(
+        source, "consolidation",
+        "un fait promu par consolidation doit porter source='consolidation'"
+    );
+}
+
+/// Une reformulation très proche d'un fait déjà connu doit être détectée
+/// comme doublon par similarité sémantique, pas seulement par contenu exact.
+/// `HashEmbedder`/`FakeEmbedder` est une simple somme de bytes par position :
+/// ajouter un seul caractère en fin de chaîne ne déplace presque pas le
+/// vecteur résultant, donc la similarité cosinus avec l'original reste très
+/// proche de 1.
+#[tokio::test]
+async fn near_duplicate_fact_is_detected_via_semantic_similarity() {
+    let store = Store::open_in_memory().await.expect("open");
+    let conn = store.connect();
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+        .await
+        .expect("open memory");
+
+    // Pré-existant : quasi identique au fait canned renvoyé par `FakeLlm`
+    // ("Alice travaille chez Acme"), au caractère final près — pas le même
+    // contenu exact, donc le check par égalité seule laisserait passer le
+    // doublon.
+    mem.remember("Alice travaille chez Acme.", MemoryLayer::Semantic)
+        .await
+        .expect("seed fact");
+
+    mem.remember("Alice a rejoint Acme en mars", MemoryLayer::Episodic)
+        .await
+        .expect("episode");
+
+    let report = consolidate(&mem, &FakeLlm).await.expect("consolidate");
+    assert_eq!(
+        report.facts_added, 0,
+        "le fait quasi-identique déjà connu ne doit pas être promu une 2e fois"
+    );
+    assert_eq!(report.facts_skipped, 1, "il doit être compté comme doublon");
+
+    assert_eq!(
+        scalar_i64(
+            &conn,
+            "SELECT COUNT(*) FROM memory WHERE agent_id='a' AND layer='semantic'"
+        )
+        .await,
+        1,
+        "un seul fait sémantique doit subsister malgré la reformulation"
+    );
+}
+
 #[tokio::test]
 async fn no_episodes_is_a_noop() {
     let store = Store::open_in_memory().await.expect("open");

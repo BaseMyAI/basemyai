@@ -244,7 +244,7 @@ Getting started with BaseMyAI takes two steps: run `basemyai setup` once to prov
 from basemyai import Memory
 
 mem = await Memory.open(
-    path="./agent.db",
+    path="./agent.bmai",
     agent_id="assistant-42",
     encryption_key="…",
     model_dir="~/.basemyai/models/all-MiniLM-L6-v2",
@@ -255,6 +255,11 @@ await mem.remember(
     "The user is on the Pro plan.",
     layer="semantic",
 )
+
+await mem.add_graph_entity("alice", "person", "Alice")
+await mem.add_graph_entity("acme", "organization", "Acme")
+await mem.add_graph_edge("alice", "works_at", "acme")
+graph_hits = await mem.recall_graph("alice", max_depth=2)
 
 # Temporal RAG: relevant AND still valid, scoped to this agent.
 hits = await mem.recall("which plan is the user on?", k=5)
@@ -268,22 +273,33 @@ for h in hits:
 import { Memory } from "basemyai";
 
 const mem = await Memory.open({
-    path: "./agent.db",
+    path: "./agent.bmai",
     agentId: "assistant-42",
     encryptionKey: "…",
     modelPath: "~/.basemyai/models/all-MiniLM-L6-v2",
 });
 
 await mem.remember("The user prefers dark mode.", "procedural");
+await mem.addGraphEntity("alice", "person", "Alice");
+await mem.addGraphEntity("acme", "organization", "Acme");
+await mem.addGraphEdge("alice", "works_at", "acme");
+const graphHits = await mem.recallGraph("alice", 2);
+
 const hits = await mem.recall("ui preferences", 5);
 ```
+
+`open_in_memory` (Python) and `openInMemory` (Node) intentionally stay
+test-only. They are compiled only with the `test-util` feature, use an
+ephemeral unencrypted `:memory:` store plus a deterministic fake embedder, and
+are not part of the documented production SDK surface. Production code should
+use `Memory.open(...)` with an encrypted file store and a local model path.
 
 **Rust (native)**
 
 ```rust
 use basemyai::{Memory, MemoryLayer};
 
-let mem = Memory::open("./agent.db", "agent-42", &key, model_path).await?;
+let mem = Memory::open("./agent.bmai", "agent-42", &key, model_path).await?;
 mem.remember("User is on Pro plan.", MemoryLayer::Semantic, None).await?;
 let hits = mem.recall("billing plan", 5).await?;
 ```
@@ -353,6 +369,28 @@ basemyai setup
 
 There is **no silent download at first run**. The fetch happens only here, with your explicit consent. The embedder then receives an already-resolved model path and device — it never decides or downloads anything itself.
 
+<h4>Developer CLI</h4>
+
+The `basemyai` binary wraps the engine for scripting and inspection. Every
+command that opens a `.bmai` container requires the encryption key via the
+`BASEMYAI_DB_KEY` environment variable — no command ever opens a file in clear.
+
+```bash
+basemyai setup --fetch        # provision the baseline embedder (explicit consent)
+basemyai status               # detected hardware + persisted provisioning config
+basemyai init ./agent.bmai    # create an encrypted .bmai container
+basemyai inspect ./agent.bmai # container metadata + memory count
+basemyai verify ./agent.bmai  # validate container + expected format version
+basemyai migrate ./agent.bmai # apply pending schema migrations (idempotent)
+
+basemyai remember ./agent.bmai --agent assistant-42 --layer semantic "User is on Pro plan."
+basemyai recall   ./agent.bmai --agent assistant-42 "billing plan" -k 5 --hybrid
+basemyai stats    ./agent.bmai --agent assistant-42
+
+basemyai llm detect           # discover local LLM servers + best model
+basemyai llm suggest          # installable models matched to your hardware
+```
+
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;Quick look</h2>
 
 Store an episodic memory — what happened and when.
@@ -390,6 +428,21 @@ Traverse graph entities that have already been consolidated.
 
 ```python
 reachable = await mem.recall_graph("alice", max_depth=3)
+```
+
+Insert graph facts directly from SDKs when the caller already knows the
+entities and relation.
+
+```python
+await mem.add_graph_entity("alice", "person", "Alice")
+await mem.add_graph_entity("acme", "organization", "Acme")
+await mem.add_graph_edge("alice", "works_at", "acme")
+```
+
+```ts
+await mem.addGraphEntity("alice", "person", "Alice");
+await mem.addGraphEntity("acme", "organization", "Acme");
+await mem.addGraphEdge("alice", "works_at", "acme");
 ```
 
 Recall within one memory layer.

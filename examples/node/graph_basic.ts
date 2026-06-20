@@ -10,7 +10,7 @@ function requireEnv(name: string): string {
 
 async function main(): Promise<void> {
   const memory = await Memory.open({
-    path: process.env.BASEMYAI_DB_PATH ?? "basemyai.db",
+    path: process.env.BASEMYAI_DB_PATH ?? "basemyai.bmai",
     agentId: process.env.BASEMYAI_AGENT_ID ?? "node-example",
     encryptionKey: requireEnv("BASEMYAI_ENCRYPTION_KEY"),
     modelPath: requireEnv("BASEMYAI_MODEL_PATH"),

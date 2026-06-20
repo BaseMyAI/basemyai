@@ -143,6 +143,70 @@ async fn unknown_layer_is_rejected() {
 }
 
 #[tokio::test]
+async fn recall_k_out_of_bounds_is_rejected() {
+    let s = server();
+    let err = match s
+        .recall(Parameters(RecallParams {
+            agent_id: "a".to_string(),
+            query: "anything".to_string(),
+            k: 2_000_000_000,
+        }))
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("un k hors bornes doit être rejeté"),
+    };
+    assert!(err.message.contains('k'), "k hors bornes rejeté : {}", err.message);
+}
+
+#[tokio::test]
+async fn recall_graph_max_depth_out_of_bounds_is_rejected() {
+    let s = server();
+    let err = match s
+        .recall_graph(Parameters(RecallGraphParams {
+            agent_id: "a".to_string(),
+            start: "alice".to_string(),
+            max_depth: 100_000,
+        }))
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("un max_depth hors bornes doit être rejeté"),
+    };
+    assert!(
+        err.message.contains("max_depth"),
+        "max_depth hors bornes rejeté : {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn remember_text_too_long_is_rejected() {
+    let s = server();
+    let text = "x".repeat(65_537);
+    let err = match s.remember(remember("a", &text, "semantic")).await {
+        Err(e) => e,
+        Ok(_) => panic!("un text trop long doit être rejeté"),
+    };
+    assert!(err.message.contains("text"), "text trop long rejeté : {}", err.message);
+}
+
+#[tokio::test]
+async fn remember_agent_id_too_long_is_rejected() {
+    let s = server();
+    let agent_id = "a".repeat(129);
+    let err = match s.remember(remember(&agent_id, "x", "semantic")).await {
+        Err(e) => e,
+        Ok(_) => panic!("un agent_id trop long doit être rejeté"),
+    };
+    assert!(
+        err.message.contains("agent_id"),
+        "agent_id trop long rejeté : {}",
+        err.message
+    );
+}
+
+#[tokio::test]
 async fn recall_graph_on_empty_graph_is_ok() {
     let s = server();
     s.remember(remember("a", "seed episode", "episodic"))

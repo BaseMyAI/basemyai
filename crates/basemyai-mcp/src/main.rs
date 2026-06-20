@@ -49,9 +49,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let db_key =
         std::env::var("BASEMYAI_DB_KEY").map_err(|_| "BASEMYAI_DB_KEY is required (encryption is mandatory)")?;
 
-    // Chemin de la base partagée : ~/.basemyai/memory.db (isolation par agent au niveau SQL).
+    // Chemin de la base partagée : ~/.basemyai/memory.bmai (isolation par agent au niveau SQL).
     let home = dirs::home_dir().ok_or("cannot resolve home directory")?;
-    let db_path = home.join(".basemyai").join("memory.db");
+    let db_path = home.join(".basemyai").join("memory.bmai");
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }

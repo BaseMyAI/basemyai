@@ -22,6 +22,90 @@ use basemyai::MemoryLayer;
 
 use crate::error::{McpError, Result};
 
+/// Bornes de validation des entrées, alignées sur celles du sidecar REST
+/// (`crates/basemyai-rest/src/routes.rs`) et sur `openapi-sidecar.yaml`.
+pub(crate) const MAX_AGENT_ID_LEN: usize = 128;
+pub(crate) const MAX_TEXT_LEN: usize = 65_536;
+pub(crate) const MAX_QUERY_LEN: usize = 4096;
+pub(crate) const MIN_K: usize = 1;
+pub(crate) const MAX_K: usize = 100;
+pub(crate) const MIN_DEPTH: u32 = 1;
+pub(crate) const MAX_DEPTH: u32 = 10;
+
+/// Valide `agent_id` : non vide et borné à [`MAX_AGENT_ID_LEN`] caractères.
+///
+/// # Errors
+/// [`McpError::Validation`] si la borne est dépassée.
+pub(crate) fn validate_agent_id(agent_id: &str) -> Result<()> {
+    if agent_id.is_empty() || agent_id.chars().count() > MAX_AGENT_ID_LEN {
+        return Err(McpError::Validation(format!(
+            "agent_id must be 1..={MAX_AGENT_ID_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
+/// Valide `text` (`remember`) : non vide et borné à [`MAX_TEXT_LEN`] caractères.
+///
+/// # Errors
+/// [`McpError::Validation`] si la borne est dépassée.
+pub(crate) fn validate_text(text: &str) -> Result<()> {
+    if text.is_empty() || text.chars().count() > MAX_TEXT_LEN {
+        return Err(McpError::Validation(format!(
+            "text must be 1..={MAX_TEXT_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
+/// Valide `query` (`recall`/`recall_hybrid`) : non vide et borné à [`MAX_QUERY_LEN`] caractères.
+///
+/// # Errors
+/// [`McpError::Validation`] si la borne est dépassée.
+pub(crate) fn validate_query(query: &str) -> Result<()> {
+    if query.is_empty() || query.chars().count() > MAX_QUERY_LEN {
+        return Err(McpError::Validation(format!(
+            "query must be 1..={MAX_QUERY_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
+/// Valide `k` (`recall`/`recall_hybrid`) : borné à [`MIN_K`]..=[`MAX_K`].
+///
+/// # Errors
+/// [`McpError::Validation`] si la borne est dépassée.
+pub(crate) fn validate_k(k: usize) -> Result<()> {
+    if !(MIN_K..=MAX_K).contains(&k) {
+        return Err(McpError::Validation(format!("k must be {MIN_K}..={MAX_K}")));
+    }
+    Ok(())
+}
+
+/// Valide `max_depth` (`recall_graph`) : borné à [`MIN_DEPTH`]..=[`MAX_DEPTH`].
+///
+/// # Errors
+/// [`McpError::Validation`] si la borne est dépassée.
+pub(crate) fn validate_max_depth(max_depth: u32) -> Result<()> {
+    if !(MIN_DEPTH..=MAX_DEPTH).contains(&max_depth) {
+        return Err(McpError::Validation(format!(
+            "max_depth must be {MIN_DEPTH}..={MAX_DEPTH}"
+        )));
+    }
+    Ok(())
+}
+
+/// Valide `start` (`recall_graph`) : non vide.
+///
+/// # Errors
+/// [`McpError::Validation`] si vide.
+pub(crate) fn validate_start(start: &str) -> Result<()> {
+    if start.is_empty() {
+        return Err(McpError::Validation("start must not be empty".to_string()));
+    }
+    Ok(())
+}
+
 /// Schéma JSON d'un entier non négatif **sans `format`**.
 ///
 /// schemars émet `format: "uint"` / `"uint32"` pour `usize`/`u32`, formats que la

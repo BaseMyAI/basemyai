@@ -7,12 +7,13 @@ Example
 -------
 >>> import asyncio, basemyai
 >>> async def main():
-...     mem = await basemyai.Memory.open_in_memory("agent-1")
-...     mid = await mem.remember("the sky is blue", layer="semantic")
-...     hits = await mem.recall("the sky is blue", k=5)
-...     return [h.text for h in hits]
->>> asyncio.run(main())
-['the sky is blue']
+...     mem = await basemyai.Memory.open(
+...         path="./agent.bmai",
+...         agent_id="agent-1",
+...         encryption_key="change-me",
+...         model_dir="~/.basemyai/models/all-MiniLM-L6-v2",
+...     )
+...     return mem.agent()
 """
 
 from ._internal import (  # type: ignore[attr-defined]
