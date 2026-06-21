@@ -21,6 +21,7 @@ test-util = ["basemyai/test-util"]
 
 [dependencies]
 basemyai = { path = "../../crates/basemyai" }
+basemyai-core = { path = "../../crates/basemyai-core" }
 
 # NAPI-RS 3 — async feature : gestion du runtime tokio interne + Promise JS.
 # napi9 = Node-API version 9 (Node 18+).

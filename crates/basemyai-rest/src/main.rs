@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
 
-    use basemyai_core::{CandleEmbedder, Embedder, EncryptionKey};
+    use basemyai_core::{CandleEmbedder, Device, Embedder, EncryptionKey};
     use basemyai_rest::{AppState, Config, EncryptedFileProvider, build_app};
     use tokio::net::TcpListener;
 
@@ -27,31 +27,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Clé de chiffrement de la base (obligatoire — chiffrement au repos, ADR-007).
-    let db_key =
-        std::env::var("BASEMYAI_DB_KEY").map_err(|_| "BASEMYAI_DB_KEY is required (encryption is mandatory)")?;
+    let db_key = config
+        .db_key
+        .clone()
+        .ok_or("BASEMYAI_REST_DB_KEY or BASEMYAI_DB_KEY is required (encryption is mandatory)")?;
 
-    // Chemin de la base : ~/.basemyai/memory.db.
-    let home = dirs::home_dir().ok_or("cannot resolve home directory")?;
-    let db_path = home.join(".basemyai").join("memory.db");
+    let db_path = config.db_path.clone();
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Embedder : provisioning hardware-aware (fetch seulement si consenti).
-    let consent = std::env::var("BASEMYAI_FETCH").map(|v| v == "1").unwrap_or(false);
-    let mp = basemyai::provision(consent).await?;
-    let embedder: Arc<dyn Embedder> = Arc::new(CandleEmbedder::load(&mp.model_path, mp.device)?);
+    // Embedder : modèle local si fourni, sinon provisioning hardware-aware
+    // (fetch seulement si consenti).
+    let embedder: Arc<dyn Embedder> = if let Some(model_path) = config.model_path.clone() {
+        Arc::new(CandleEmbedder::load(&model_path, Device::Cpu)?)
+    } else {
+        let mp = basemyai::provision(config.consent_to_fetch).await?;
+        Arc::new(CandleEmbedder::load(&mp.model_path, mp.device)?)
+    };
 
     let provider = Arc::new(EncryptedFileProvider::new(
         db_path,
         EncryptionKey::new(db_key),
         embedder,
     ));
-    let port = config.port;
+    let addr = config.socket_addr();
     let app = build_app(AppState::new(provider, config));
 
-    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
-    eprintln!("basemyai-rest listening on http://127.0.0.1:{port}/v1");
+    let listener = TcpListener::bind(addr).await?;
+    eprintln!("basemyai-rest listening on http://{addr}/v1");
     axum::serve(listener, app).await?;
     Ok(())
 }

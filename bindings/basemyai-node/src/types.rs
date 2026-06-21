@@ -3,6 +3,16 @@
 
 use napi_derive::napi;
 
+/// Options de production pour ouvrir une mémoire persistée.
+#[napi(object)]
+pub struct MemoryOpenOptions {
+    pub path: String,
+    pub agent_id: String,
+    pub encryption_key: String,
+    pub model_path: Option<String>,
+    pub allow_model_download: Option<bool>,
+}
+
 /// Un souvenir retourné par `recall`.
 #[napi(object)]
 pub struct Record {

@@ -55,7 +55,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macOS retiré (multiplicateur ×10 sur les minutes Actions, plan gratuit).
+        # On garde Windows : il a déjà révélé un bug spécifique (teardown MCP).
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -91,7 +93,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Job le plus lourd (compile Candle). La compilation ML est portable :
+        # on la vérifie sur Linux uniquement pour économiser les minutes Actions.
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -116,7 +120,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS retiré (×10). Windows conservé : le quirk libsql-ffi `cp`/CMake
+        # documenté ci-dessous est spécifique à Windows.
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 

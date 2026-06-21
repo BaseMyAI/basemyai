@@ -2,13 +2,24 @@
 //! (coroutine asyncio) : le futur tokio Rust est piloté par l'event loop Python
 //! via `pyo3_async_runtimes`. Le moteur reste 100 % local, en process.
 
+#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 
+#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
+use basemyai::AgentId;
 use basemyai::MemoryLayer;
 
+#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
+use basemyai_core::Store;
+#[cfg(all(feature = "crypto", feature = "embed"))]
+use basemyai_core::{CandleEmbedder, Device, Embedder, EncryptionKey};
+
+#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
+use crate::errors::ValidationError;
 use crate::errors::to_pyerr;
 use crate::types::{AgentStats, Entity, Record};
 
@@ -30,6 +41,49 @@ impl Memory {
 
 #[pymethods]
 impl Memory {
+    /// Ouvre une mémoire persistante chiffrée avec l'embedder Candle local.
+    ///
+    /// Si `model_dir` est absent, le provisioning ne télécharge le modèle que si
+    /// `consent_to_fetch=True`. Par défaut, aucun accès réseau n'est déclenché.
+    #[cfg(all(feature = "crypto", feature = "embed"))]
+    #[staticmethod]
+    #[pyo3(signature = (path, agent_id, encryption_key, *, model_dir = None, device = "auto".to_string(), consent_to_fetch = false))]
+    fn open(
+        py: Python<'_>,
+        path: String,
+        agent_id: String,
+        encryption_key: String,
+        model_dir: Option<String>,
+        device: String,
+        consent_to_fetch: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        future_into_py(py, async move {
+            let agent =
+                AgentId::new(agent_id).ok_or_else(|| ValidationError::new_err("a valid agent_id is required"))?;
+            let parsed_device = parse_device(&device)?;
+
+            let (model_path, resolved_device) = if let Some(model_dir) = model_dir {
+                let resolved = parsed_device.unwrap_or_else(|| basemyai::detect_hardware().device);
+                (PathBuf::from(model_dir), resolved)
+            } else {
+                let provision = basemyai::provision(consent_to_fetch).await.map_err(to_pyerr)?;
+                (provision.model_path, parsed_device.unwrap_or(provision.device))
+            };
+
+            let embedder: Box<dyn Embedder> = Box::new(
+                CandleEmbedder::load(&model_path, resolved_device)
+                    .map_err(basemyai::MemoryError::from)
+                    .map_err(to_pyerr)?,
+            );
+            let store = Store::open(&PathBuf::from(path), Some(EncryptionKey::new(encryption_key)))
+                .await
+                .map_err(basemyai::MemoryError::from)
+                .map_err(to_pyerr)?;
+            let mem = basemyai::Memory::open(store, embedder, agent).await.map_err(to_pyerr)?;
+            Ok(Self { inner: Arc::new(mem) })
+        })
+    }
+
     /// Ouvre une mémoire **éphémère, non chiffrée** (`:memory:`) avec un embedder
     /// déterministe sans modèle. Réservé aux tests/spikes (pas de CMake/Candle).
     #[cfg(feature = "test-util")]
@@ -37,6 +91,28 @@ impl Memory {
     fn open_in_memory(py: Python<'_>, agent_id: String) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
             let mem = basemyai::Memory::open_in_memory(&agent_id).await.map_err(to_pyerr)?;
+            Ok(Memory::wrap(mem))
+        })
+    }
+
+    /// Ouvre un fichier libSQL partagé avec l'embedder déterministe de test.
+    /// Test-only : vérifie l'isolation SQL réelle entre deux agents sans Candle.
+    #[cfg(feature = "test-util")]
+    #[staticmethod]
+    fn open_test_file(py: Python<'_>, path: String, agent_id: String) -> PyResult<Bound<'_, PyAny>> {
+        future_into_py(py, async move {
+            let agent =
+                AgentId::new(agent_id).ok_or_else(|| ValidationError::new_err("a valid agent_id is required"))?;
+            let store = Store::open(&PathBuf::from(path), None)
+                .await
+                .map_err(basemyai::MemoryError::from)
+                .map_err(to_pyerr)?;
+            store
+                .migrate(&basemyai::schema())
+                .await
+                .map_err(basemyai::MemoryError::from)
+                .map_err(to_pyerr)?;
+            let mem = basemyai::Memory::new(store, Box::new(basemyai::HashEmbedder::new()), agent);
             Ok(Memory::wrap(mem))
         })
     }
@@ -62,6 +138,23 @@ impl Memory {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let records = inner.recall(&query, k).await.map_err(to_pyerr)?;
+            Ok(records.into_iter().map(Record::from).collect::<Vec<_>>())
+        })
+    }
+
+    /// Recall temporel sémantique filtré sur une couche unique.
+    #[pyo3(signature = (query, layer, k = 5))]
+    fn recall_by_layer<'p>(
+        &self,
+        py: Python<'p>,
+        query: String,
+        layer: String,
+        k: usize,
+    ) -> PyResult<Bound<'p, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let layer = MemoryLayer::from_table(&layer).map_err(to_pyerr)?;
+            let records = inner.recall_by_layer(&query, layer, k).await.map_err(to_pyerr)?;
             Ok(records.into_iter().map(Record::from).collect::<Vec<_>>())
         })
     }
@@ -114,6 +207,42 @@ impl Memory {
         })
     }
 
+    /// Ajoute ou met à jour une entité dans le graphe de cette mémoire.
+    fn add_graph_entity<'p>(
+        &self,
+        py: Python<'p>,
+        id: String,
+        kind: String,
+        label: String,
+    ) -> PyResult<Bound<'p, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            inner.graph().add_entity(&id, &kind, &label).await.map_err(to_pyerr)?;
+            Ok(())
+        })
+    }
+
+    /// Ajoute ou met à jour une relation orientée `src -> dst`.
+    #[pyo3(signature = (src, relation, dst, weight = 1.0))]
+    fn add_graph_edge<'p>(
+        &self,
+        py: Python<'p>,
+        src: String,
+        relation: String,
+        dst: String,
+        weight: f64,
+    ) -> PyResult<Bound<'p, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            inner
+                .graph()
+                .add_edge(&src, &relation, &dst, weight)
+                .await
+                .map_err(to_pyerr)?;
+            Ok(())
+        })
+    }
+
     /// Traverse le graphe entités/relations depuis `start` : rend `list[Entity]`.
     #[pyo3(signature = (start, max_depth = 2))]
     fn recall_graph<'p>(&self, py: Python<'p>, start: String, max_depth: u32) -> PyResult<Bound<'p, PyAny>> {
@@ -122,5 +251,27 @@ impl Memory {
             let reached = inner.graph().traverse(&start, max_depth).await.map_err(to_pyerr)?;
             Ok(reached.into_iter().map(Entity::from).collect::<Vec<_>>())
         })
+    }
+}
+
+#[cfg(all(feature = "crypto", feature = "embed"))]
+fn parse_device(value: &str) -> PyResult<Option<Device>> {
+    match value {
+        "auto" => Ok(None),
+        "cpu" => Ok(Some(Device::Cpu)),
+        "metal" => Ok(Some(Device::Metal)),
+        "cuda" => Ok(Some(Device::Cuda(0))),
+        s if s.starts_with("cuda:") => {
+            let index = s
+                .strip_prefix("cuda:")
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .ok_or_else(|| {
+                    ValidationError::new_err("device must be one of: auto, cpu, metal, cuda, cuda:<index>")
+                })?;
+            Ok(Some(Device::Cuda(index)))
+        }
+        _ => Err(ValidationError::new_err(
+            "device must be one of: auto, cpu, metal, cuda, cuda:<index>",
+        )),
     }
 }

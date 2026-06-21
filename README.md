@@ -93,6 +93,11 @@ BaseMyAI solves all three problems in a single Rust binary:
 - **Temporal** — every memory carries `valid_from` / `valid_until`; retrieval returns only what is *currently* true
 - **Multi-signal** — vector similarity + knowledge graph + Reciprocal Rank Fusion in one query
 
+BaseMyAI uses vectors, but it is **not another vector database**. It is an
+embedded memory database for agents: isolation, temporal truth, layers, graph,
+forgetting, and encryption are part of the product contract. See
+[BaseMyAI is not a vector DB](docs/not-a-vector-db.md).
+
 <h2><img height="20" src="./basemyai-branding/icons/contents.svg">&nbsp;&nbsp;Contents</h2>
 
 - [What is BaseMyAI?](#what-is-basemyai)
@@ -102,6 +107,7 @@ BaseMyAI solves all three problems in a single Rust binary:
 - [Phase 2 — Cognition](#phase-2--cognition)
 - [Temporal RAG](#temporal-rag)
 - [Encryption at rest](#encryption-at-rest)
+- [P1 public proofs](#p1-public-proofs)
 - [Getting started](#getting-started)
 - [Installation](#installation)
 - [Quick look](#quick-look)
@@ -125,6 +131,14 @@ BaseMyAI solves all three problems in a single Rust binary:
 - [x] Encryption at rest via libSQL `crypto` feature (key never stored, key never sent)
 - [x] Per-agent isolation enforced at the SQL level — cross-agent leakage is a security invariant
 - [x] Python SDK (PyO3 wheel), Node SDK (NAPI-RS prebuild), REST sidecar (axum), native Rust crate
+
+<h2><img height="20" src="./basemyai-branding/icons/tick.svg">&nbsp;&nbsp;P1 Public Proofs</h2>
+
+- [Benchmark harness: BaseMyAI local vs Mem0 + Qdrant local](docs/benchmarks/local-memory-vs-mem0-qdrant.md)
+- [Adversarial isolation test](crates/basemyai/tests/p1_isolation_adversarial.rs)
+- [Temporal replacement demo](crates/basemyai/examples/temporal_replacement.rs)
+- [Zero network after setup](docs/zero-network-after-setup.md)
+- [BaseMyAI is not a vector DB](docs/not-a-vector-db.md)
 
 <img width="100%" src="./basemyai-branding/img/basemyai-memory-engine.png.png" alt="BaseMyAI memory engine" />
 
@@ -243,22 +257,26 @@ Getting started with BaseMyAI takes two steps: run `basemyai setup` once to prov
 ```python
 from basemyai import Memory
 
-mem = Memory(
-    path="./agent.db",
+mem = await Memory.open(
+    path="./agent.bmai",
     agent_id="assistant-42",
     encryption_key="…",
-    model_path="~/.basemyai/models/all-MiniLM-L6-v2",
+    model_dir="~/.basemyai/models/all-MiniLM-L6-v2",
 )
 
-# Store a semantic fact, valid indefinitely until explicitly invalidated.
-mem.remember(
+# Store a semantic fact, valid until explicitly invalidated.
+await mem.remember(
     "The user is on the Pro plan.",
     layer="semantic",
-    valid_until=None,
 )
 
+await mem.add_graph_entity("alice", "person", "Alice")
+await mem.add_graph_entity("acme", "organization", "Acme")
+await mem.add_graph_edge("alice", "works_at", "acme")
+graph_hits = await mem.recall_graph("alice", max_depth=2)
+
 # Temporal RAG: relevant AND still valid, scoped to this agent.
-hits = mem.recall("which plan is the user on?", k=5)
+hits = await mem.recall("which plan is the user on?", k=5)
 for h in hits:
     print(h.text, h.score)
 ```
@@ -268,23 +286,34 @@ for h in hits:
 ```ts
 import { Memory } from "basemyai";
 
-const mem = new Memory({
-    path: "./agent.db",
+const mem = await Memory.open({
+    path: "./agent.bmai",
     agentId: "assistant-42",
     encryptionKey: "…",
-    modelPath: "…",
+    modelPath: "~/.basemyai/models/all-MiniLM-L6-v2",
 });
 
-await mem.remember("The user prefers dark mode.", { layer: "procedural" });
-const hits = await mem.recall("ui preferences", { k: 5 });
+await mem.remember("The user prefers dark mode.", "procedural");
+await mem.addGraphEntity("alice", "person", "Alice");
+await mem.addGraphEntity("acme", "organization", "Acme");
+await mem.addGraphEdge("alice", "works_at", "acme");
+const graphHits = await mem.recallGraph("alice", 2);
+
+const hits = await mem.recall("ui preferences", 5);
 ```
+
+`open_in_memory` (Python) and `openInMemory` (Node) intentionally stay
+test-only. They are compiled only with the `test-util` feature, use an
+ephemeral unencrypted `:memory:` store plus a deterministic fake embedder, and
+are not part of the documented production SDK surface. Production code should
+use `Memory.open(...)` with an encrypted file store and a local model path.
 
 **Rust (native)**
 
 ```rust
 use basemyai::{Memory, MemoryLayer};
 
-let mem = Memory::open("./agent.db", "agent-42", &key, model_path).await?;
+let mem = Memory::open("./agent.bmai", "agent-42", &key, model_path).await?;
 mem.remember("User is on Pro plan.", MemoryLayer::Semantic, None).await?;
 let hits = mem.recall("billing plan", 5).await?;
 ```
@@ -354,64 +383,91 @@ basemyai setup
 
 There is **no silent download at first run**. The fetch happens only here, with your explicit consent. The embedder then receives an already-resolved model path and device — it never decides or downloads anything itself.
 
+<h4>Developer CLI</h4>
+
+The `basemyai` binary wraps the engine for scripting and inspection. Every
+command that opens a `.bmai` container requires the encryption key via the
+`BASEMYAI_DB_KEY` environment variable — no command ever opens a file in clear.
+
+```bash
+basemyai setup --fetch        # provision the baseline embedder (explicit consent)
+basemyai status               # detected hardware + persisted provisioning config
+basemyai init ./agent.bmai    # create an encrypted .bmai container
+basemyai inspect ./agent.bmai # container metadata + memory count
+basemyai verify ./agent.bmai  # validate container + expected format version
+basemyai migrate ./agent.bmai # apply pending schema migrations (idempotent)
+
+basemyai remember ./agent.bmai --agent assistant-42 --layer semantic "User is on Pro plan."
+basemyai recall   ./agent.bmai --agent assistant-42 "billing plan" -k 5 --hybrid
+basemyai stats    ./agent.bmai --agent assistant-42
+
+basemyai llm detect           # discover local LLM servers + best model
+basemyai llm suggest          # installable models matched to your hardware
+```
+
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;Quick look</h2>
 
 Store an episodic memory — what happened and when.
 
 ```python
-mem.remember(
+await mem.remember(
     "User asked to refactor the auth module at 14:32.",
     layer="episodic",
-    valid_until="2025-12-31T00:00:00Z",
 )
 ```
 
 Store a procedural skill the agent learned.
 
 ```python
-mem.remember(
+await mem.remember(
     "To deploy: run `make release`, tag the commit, push to origin.",
     layer="procedural",
 )
 ```
 
-Multi-signal recall — fuses vector similarity and graph traversal automatically.
+Hybrid recall — fuses vector similarity and full-text search with RRF.
 
 ```python
-hits = mem.recall_multi(
-    query="how do I deploy?",
-    signals=["vector", "graph"],
-    k=10,
-)
+hits = await mem.recall_hybrid("how do I deploy?", k=10)
 ```
 
 Invalidate a fact that is no longer true.
 
 ```python
-mem.invalidate(record_id="semantic:abc123")
+await mem.invalidate("semantic:abc123")
 # valid_until is set to now() — future recalls skip this record
 ```
 
-Traverse the knowledge graph up to 3 hops.
+Traverse graph entities that have already been consolidated.
 
 ```python
-graph = mem.graph()
-graph.add_entity("project-x", "project", "Project X")
-graph.add_edge("alice", "owns", "project-x", weight=1.0)
-reachable = graph.traverse("alice", max_depth=3)
+reachable = await mem.recall_graph("alice", max_depth=3)
 ```
 
-Consolidate recent episodes into durable facts.
+Insert graph facts directly from SDKs when the caller already knows the
+entities and relation.
 
 ```python
-mem.consolidate(llm=my_local_llm)
-# reads last N episodes → extracts entities, relations, facts
-# writes to knowledge graph + semantic layer (idempotent)
+await mem.add_graph_entity("alice", "person", "Alice")
+await mem.add_graph_entity("acme", "organization", "Acme")
+await mem.add_graph_edge("alice", "works_at", "acme")
+```
+
+```ts
+await mem.addGraphEntity("alice", "person", "Alice");
+await mem.addGraphEntity("acme", "organization", "Acme");
+await mem.addGraphEdge("alice", "works_at", "acme");
+```
+
+Recall within one memory layer.
+
+```python
+procedures = await mem.recall_by_layer("how do I deploy?", "procedural", k=5)
 ```
 
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;Consumption surfaces</h2>
 
-The same Rust core, four ways to consume it:
+The same Rust core, five ways to consume it:
 
 | Surface | For | Crate consumed | Tech |
 |---|---|---|---|
@@ -419,6 +475,7 @@ The same Rust core, four ways to consume it:
 | **Node SDK** | JS / TS agent builders | `basemyai` | NAPI-RS + prebuild |
 | **REST sidecar** | Go, Ruby, any HTTP client | `basemyai` | Single self-contained binary (axum) |
 | **Native Rust crate** | Rust programs — e.g. ForgeMyAI | `basemyai-core` | Direct link, zero FFI overhead |
+| **CLI** (`basemyai`) | Scripting, ops, ad-hoc inspection, agent-as-tool (`--format json`) | `basemyai` | Single binary (clap) — see [CLI reference](docs/cli.md) |
 
 <h2><img height="20" src="./basemyai-branding/icons/community.svg">&nbsp;&nbsp;Community</h2>
 

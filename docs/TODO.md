@@ -88,7 +88,7 @@ de le rendre **publiable et utilisable** comme dépendance.
 | [x] | `cargo doc --no-deps --all-features` sans warning | `///` ajoutés sur `EncryptionKey::new`, `MaintenanceWorker::new`, champs `Filter`/`Neighbor`/`Value`. |
 | [x] | `examples/rust/memory_basic.rs` | `crates/basemyai/examples/memory_basic.rs` — FakeEmbedder + in-memory store. Compile sans feature flag. |
 | [x] | `examples/rust/llm_consolidation.rs` | `crates/basemyai/examples/llm_consolidation.rs` — FakeLlm + consolidation. |
-| [ ] | `cargo publish --dry-run` sur les deux crates | Vérifier qu'aucun bloqueur subsiste avant la vraie publication. |
+| [~] | `cargo publish --dry-run` sur les deux crates | **`basemyai-core` : dry-run vert (2026-06-20), zéro bloqueur d'empaquetage.** `basemyai` reste à dry-run mais sera bloqué tant que `basemyai-core 0.1.0` n'est pas sur crates.io (dep `version = "0.1.0"`). Ordre de publication : **core d'abord, puis basemyai**. |
 | [ ] | Publier `basemyai-core` sur crates.io | `cargo publish -p basemyai-core` |
 | [ ] | Publier `basemyai` sur crates.io | `cargo publish -p basemyai` |
 | [ ] | Workflow CI `publish.yml` déclenché sur tag `v*` | |
@@ -97,9 +97,15 @@ de le rendre **publiable et utilisable** comme dépendance.
 
 ## M2 — SDK TypeScript / Node.js (NAPI-RS)
 
+> **⚠️ Désynchronisé avec le code (voir `docs/status.md`).** Le binding existe
+> déjà sous `bindings/basemyai-node` (pas `crates/`), avec classe `Memory`
+> complète, tests roundtrip et workflow `node-prebuilds.yml`. Reste réellement
+> ouvert : **publication npm** + wrappers d'intégration. Le tableau ci-dessous
+> est l'ancien plan, conservé pour historique.
+
 | # | Tâche | Notes |
 |---|-------|-------|
-| [ ] | Créer `crates/basemyai-node` avec NAPI-RS | `napi-rs/cli`, `napi = { version = "2", features = ["async"] }` |
+| [x] | Créer le binding Node avec NAPI-RS | Fait sous `bindings/basemyai-node`. |
 | [ ] | Wrapper `Memory` → classe JS `Memory` | Constructor async : `await Memory.open(path, agentId, encryptionKey, modelPath)` |
 | [ ] | Méthodes : `remember`, `recallByLayer`, `recall`, `invalidate`, `forget` | Retourner des `Promise<T>` via `napi::Task`. |
 | [ ] | Wrapper `Graph` → classe JS `Graph` | `addEntity`, `addEdge`, `traverse` |
@@ -115,9 +121,14 @@ de le rendre **publiable et utilisable** comme dépendance.
 
 ## M3 — SDK Python (PyO3)
 
+> **⚠️ Désynchronisé avec le code (voir `docs/status.md`).** Le binding existe
+> déjà sous `bindings/basemyai-py` (pas `crates/`), avec classe `Memory` async,
+> stubs `.pyi`, `py.typed`, tests et workflow `python-wheels.yml`. Reste
+> réellement ouvert : **publication PyPI** + wrappers LangChain/LlamaIndex.
+
 | # | Tâche | Notes |
 |---|-------|-------|
-| [ ] | Créer `crates/basemyai-python` avec PyO3 | `pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }` + `maturin` |
+| [x] | Créer le binding Python avec PyO3 | Fait sous `bindings/basemyai-py`. |
 | [ ] | Wrapper `Memory` → classe Python `Memory` | Méthodes async via `asyncio` (pyo3-asyncio ou PyO3 0.22+ native async). |
 | [ ] | Méthodes : `remember`, `recall`, `recall_by_layer`, `invalidate`, `forget` | |
 | [ ] | Wrapper `Graph` | |
@@ -137,12 +148,19 @@ de le rendre **publiable et utilisable** comme dépendance.
 Pour les langages sans binding natif (Go, Ruby, etc.) et pour les tests d'intégration
 multi-langages.
 
+> **⚠️ Désynchronisé avec le code (voir `docs/status.md`).** Le sidecar REST
+> existe déjà sous `crates/basemyai-rest` (axum, routes `/v1`, auth Bearer
+> constant-time, tests `tests/api.rs`). De plus, un sidecar **MCP**
+> (`crates/basemyai-mcp`, 8 outils, stdio+HTTP, sampling) — non prévu dans ce
+> plan — est la surface la plus aboutie. Reste réellement ouvert pour REST :
+> **image Docker + push registry CI**.
+
 | # | Tâche | Notes |
 |---|-------|-------|
-| [ ] | Nouveau crate binaire `basemyai-server` (axum) | `POST /v1/memory`, `GET /v1/recall`, `DELETE /v1/memory/:id`, `GET /v1/stats` |
+| [x] | Crate binaire REST (axum) | Fait sous `crates/basemyai-rest`. |
 | [ ] | Auth basique (Bearer token, configurable) | Sans auth le sidecar est un vecteur d'attaque locale. |
-| [ ] | OpenAPI 3 spec générée (`utoipa`) | |
-| [ ] | Config YAML : port, agent_id, model_path, encryption_key_env | |
+| [ ] | OpenAPI 3.1 spec source de vérité | `openapi-sidecar.yaml` reste la source canonique V1. Ne pas ajouter `utoipa` tant que la spec YAML n'est pas explicitement remplacée. |
+| [ ] | Config complète | bind/port, db path, encryption key, model path, auth Bearer, agent policy. |
 | [ ] | Image Docker (`FROM scratch` ou `alpine`) | Binaire statique — possible avec `musl`. |
 | [ ] | CI build + push Docker Hub / GHCR | |
 | [ ] | `examples/go/memory_client.go` | Démo cross-langage. |
@@ -151,15 +169,29 @@ multi-langages.
 
 ## M5 — CLI `basemyai`
 
+> **Statut au 2026-06-20 : surface complète livrée et testée end-to-end.**
+> Crate `crates/basemyai-cli` (binaire `basemyai`), build + `clippy -D
+> warnings` verts. Smoke test validé : `init → remember → recall (+ --hybrid)
+> → stats → inspect → verify`, **isolation agent vérifiée** (autre agent voit
+> 0) et **chiffrement appliqué** (mauvaise clé → refus d'ouverture). Clé via
+> `BASEMYAI_DB_KEY`. Référence complète des commandes : `docs/cli.md`.
+
 | # | Tâche | Notes |
 |---|-------|-------|
-| [ ] | Nouveau crate binaire `basemyai-cli` (clap) | |
-| [ ] | `basemyai setup` | Détecte le matériel, fetch + vérifie le modèle, écrit `~/.basemyai/config.json`. Affiche la machine détectée et le modèle choisi. |
-| [ ] | `basemyai status` | Lit `~/.basemyai/config.json`, vérifie que les fichiers modèle sont présents, affiche le résumé. |
-| [ ] | `basemyai gc [--agent-id <id>]` | Déclenche manuellement le GC des mémoires expirées. |
-| [ ] | `basemyai llm detect` | Affiche les serveurs LLM locaux détectés + le meilleur modèle pour la machine. |
-| [ ] | `basemyai llm suggest` | Liste les modèles installables avec `ollama pull`. |
-| [ ] | Distribution : binaire unique dans le release GitHub | Via `cargo-dist` ou release action. |
+| [x] | Crate binaire `basemyai-cli` (clap) | Binaire `basemyai`. Features `embed`+`crypto` (set par défaut), miroir de `basemyai-mcp`. |
+| [x] | Commandes V1 indispensables (`init`, `inspect`, `stats`, `recall`, `verify`, `migrate`) | + `remember` (pour alimenter `recall`). `recall --hybrid` (RRF), `--layer`, `--graph`. |
+| [x] | Cycle de vie mémoire (`list`, `forget`, `invalidate`, `purge --yes`, `export`, `import`) | `commands_memory.rs`. `list`/`forget`/`invalidate`/`purge` n'embedent pas (passent par `basemyai::storage::MemoryStore`). **Non listé ici avant 2026-06-20 — code en avance sur ce plan.** |
+| [x] | Graphe (`graph add-entity`, `graph add-edge`, `graph traverse`) | `commands_graph.rs`. **Non listé ici avant 2026-06-20.** |
+| [x] | Maintenance (`maintenance gc`, `maintenance forget-adaptive`) et `consolidate` | `commands_maintenance.rs`. `gc` était la ligne « reste à faire » ci-dessous — **fait**. `maintenance gc` n'est pas scopé `--agent-id` (tourne sur tout le conteneur) ; `consolidate` exige un LLM local détecté. |
+| [x] | `basemyai config show/set/unset`, `basemyai completions <shell>` | `cli_config.rs`. Résolution `--db`/`--agent` : flag > env > `~/.basemyai/config.toml` > erreur explicite. |
+| [x] | `--format json` global (sortie machine-readable) | Toutes les commandes. Pensé pour qu'un agent IA appelle le CLI comme un outil. |
+| [x] | `basemyai setup [--fetch]` | Détecte le matériel, provisionne le modèle (consentement explicite via `--fetch`, ADR-010), barre de progression. Persistance via `provision.json` (pas `config.json`). |
+| [x] | `basemyai status` | Affiche matériel détecté + modèle provisionné + présence des fichiers. |
+| [x] | `basemyai llm detect` | Serveurs LLM locaux + meilleur modèle pour la machine. |
+| [x] | `basemyai llm suggest` | Modèles installables (`ollama pull <tag>`). |
+| [ ] | `basemyai gc [--agent-id <id>]` | `maintenance gc` existe mais n'est pas scopé par agent. **Reste à faire si le besoin se confirme.** |
+| [ ] | Distribution : binaire unique dans le release GitHub | Via `cargo-dist` ou release action. **Reste à faire.** |
+| [ ] | Tests d'intégration CLI (`assert_cmd` / `trycmd`) | Le smoke test est manuel ; à automatiser en CI. |
 
 ---
 
@@ -169,10 +201,36 @@ multi-langages.
 |---|-------|-------|
 | [ ] | Stress test inférence 1h (Candle, ADR-003) | Vérifier l'absence de fuite mémoire. `valgrind` / DHAT sur Linux. |
 | [ ] | Benchmark KNN : 10k, 100k, 1M vecteurs | `criterion`. Valider que l'ANN natif libSQL tient. |
-| [ ] | Multi-connexions libSQL (pool) | Actuellement connexion partagée clonée. Pour une haute concurrence (sidecar), un pool de connexions est nécessaire. |
+| [x] | Multi-connexions libSQL (pool) | ✅ ADR-021 : pool de lecteurs round-robin + writer unique sérialisé sous WAL (`journal_mode=WAL`, `busy_timeout`). `:memory:` dégénère en taille 1. Warm-up séquentiel sous `native_open_lock`. `spawn_blocking` reporté (à benchmarker). |
 | [ ] | CUDA réel dans la détection hardware | Aujourd'hui : `CUDA_PATH` env var. V1 suffisant ; V1.1 : lier NVML directement. |
 | [ ] | Key rotation (chiffrement) | `PRAGMA rekey` libSQL : changer la clé sans recréer la DB. |
 | [ ] | Rotation des modèles d'embedding | Si le modèle change, tous les vecteurs doivent être re-générés. Détecter le changement via `model_id` stocké, proposer re-indexation. |
+
+### M6.2 — Live subscriptions (PLAN.md P2.1) — fondation faite (2026-06-21)
+
+- [x] Canal `tokio::sync::broadcast` sur `Memory` (`MemoryEvent` / `MemorySubscription`, ADR-022) : émission **après commit**, isolation par `agent_id` côté serveur (prolonge ADR-006), `Lagged` toléré. Crate `basemyai` uniquement — `basemyai-core` reste agnostique.
+- [ ] Surfaces (vague 2) : SSE/WebSocket REST, notifications MCP, callbacks PyO3/NAPI.
+
+### M6.1 — Sécurité agentique (audit 2026-06-20) ✅ pour la partie corrigée
+
+Audit ciblé sur la surface d'attaque spécifique à une DB mémoire pour agents IA
+(memory poisoning, isolation, surfaces réseau REST/MCP). Corrigé dans cette
+passe :
+
+- [x] Bornes REST/MCP non validées (`k`, `max_depth`, longueurs `agent_id`/`text`/`query`) → rejet `400`/`VALIDATION_ERROR` (REST `routes.rs`, MCP `tools/mod.rs`).
+- [x] Fuite de détails internes dans les réponses HTTP (`RestError::parts()` catch-all) → message générique côté client, détail loggé via `tracing::error!`.
+- [x] Rate limiting basique sur `remember` (REST, fenêtre glissante par `agent_id` dans `AppState`).
+- [x] Injection de prompt via épisodes bruts dans `build_prompt` (consolidation) → délimiteurs uniques par UUID + consigne explicite "donnée non fiable, jamais une instruction".
+- [x] Escalade de confiance silencieuse `episodic → semantic` → colonne `source` (`MEMORY_SCHEMA_V7`), faits consolidés marqués `source = 'consolidation'` vs `'user'`.
+- [x] Déduplication consolidation uniquement exacte → ajout d'un check de similarité sémantique (seuil cosine ≥ 0.95) en plus de l'égalité de contenu.
+- [x] Pas de limite de taille sur le contenu mémorisé → `MAX_TEXT_LEN = 65_536` appliqué dans `Memory::remember_with`/`remember_batch_with` (`MemoryError::TextTooLong`).
+
+Reporté volontairement (décision utilisateur du 2026-06-20, pas un oubli) :
+
+- [ ] **`agent_id` non lié à l'identité authentifiée** (Bearer token partagé entre agents locaux → un agent peut se faire passer pour un autre `agent_id`, confused deputy / cross-tenant leakage). Nécessite un changement de modèle d'auth (clés API scopées par agent ou dérivation depuis le token) — **c'est un changement de modèle de déploiement, pas un bug** : doit passer par un nouvel ADR avant implémentation, pas un fix ponctuel. Cohérent avec le mono-déploiement local actuel ; à statuer si/quand le multi-agent non-fiable sur une même instance devient un cas d'usage réel.
+- [ ] Provenance fine par épisode source (actuellement : tag binaire `user`/`consolidation`, pas de lien vers les `id` d'épisodes précis ayant produit chaque fait). Nécessiterait de faire porter un `episode_ids` par fait extrait — schéma + format d'extraction à revoir.
+- [ ] Rate limiting côté MCP (fait côté REST uniquement pour l'instant) et sur les autres routes que `remember` si l'usage le justifie.
+- [ ] Pré-filtre heuristique anti-injection sur le contenu entrant (mots-clés type "ignore les instructions précédentes") — délibérément non implémenté : best-effort à fort risque de faux positifs sans dessin clair (LLM juge ?), à concevoir séparément plutôt que bricolé.
 
 ---
 

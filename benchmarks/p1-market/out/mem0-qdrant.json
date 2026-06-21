@@ -1,0 +1,25 @@
+{
+  "target": "mem0_qdrant",
+  "database_bytes": null,
+  "metrics": [
+    {
+      "operation": "remember",
+      "count": 10,
+      "mean_ms": 12072.252010000375,
+      "p50_ms": 10018.819700002496,
+      "p95_ms": 19485.855300001276,
+      "p99_ms": 19485.855300001276
+    },
+    {
+      "operation": "recall",
+      "count": 10,
+      "mean_ms": 6402.471289999085,
+      "p50_ms": 5450.442499997735,
+      "p95_ms": 8759.84900000185,
+      "p99_ms": 8759.84900000185
+    }
+  ],
+  "corpus_count": 10,
+  "k": 5,
+  "created_at_unix": 1781983831
+}

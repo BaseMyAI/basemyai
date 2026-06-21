@@ -9,6 +9,21 @@ use basemyai_core::Migration;
 
 /// Dimension des embeddings du baseline (`all-MiniLM-L6-v2`).
 pub const EMBEDDING_DIM: usize = 384;
+/// Version publique du conteneur `.bmai`.
+pub const BMAI_FORMAT_VERSION: u32 = 1;
+
+const BMAI_META_SCHEMA_V5: &str = "\
+CREATE TABLE IF NOT EXISTS bmai_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+INSERT OR IGNORE INTO bmai_meta (key, value) VALUES
+  ('format', 'basemyai-memory'),
+  ('format_version', '1'),
+  ('storage_engine', 'libsql'),
+  ('schema_family', 'agent-memory'),
+  ('embedding_dim', '384');
+";
 
 const MEMORY_SCHEMA_V1: &str = "\
 CREATE TABLE IF NOT EXISTS memory (
@@ -30,26 +45,64 @@ CREATE INDEX IF NOT EXISTS memory_idx ON memory(libsql_vector_idx(emb, 'metric=c
 /// core (test d'agnosticité préservé).
 const GRAPH_SCHEMA_V2: &str = "\
 CREATE TABLE IF NOT EXISTS entity (
-  id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
+  id TEXT NOT NULL,
   kind TEXT NOT NULL,
   label TEXT NOT NULL,
   valid_from INTEGER NOT NULL,
   valid_until INTEGER,
-  importance REAL NOT NULL DEFAULT 0
+  importance REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (agent_id, id)
 );
 CREATE INDEX IF NOT EXISTS entity_agent_idx ON entity(agent_id);
 
 CREATE TABLE IF NOT EXISTS edge (
+  agent_id TEXT NOT NULL,
   src TEXT NOT NULL,
   dst TEXT NOT NULL,
-  agent_id TEXT NOT NULL,
   relation TEXT NOT NULL,
   weight REAL NOT NULL DEFAULT 1,
   valid_from INTEGER NOT NULL,
   valid_until INTEGER,
-  PRIMARY KEY (src, dst, relation)
+  PRIMARY KEY (agent_id, src, dst, relation)
 );
+CREATE INDEX IF NOT EXISTS edge_src_idx ON edge(agent_id, src);
+";
+
+/// Répare les premières bases qui avaient des clés graphe globales au lieu de
+/// clés composites par agent. Sans ça, deux agents ne pouvaient pas partager le
+/// même identifiant logique (`alice`) ou la même relation (`alice -> acme`).
+const GRAPH_AGENT_SCOPED_KEYS_V6: &str = "\
+CREATE TABLE IF NOT EXISTS entity_v6 (
+  agent_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  valid_from INTEGER NOT NULL,
+  valid_until INTEGER,
+  importance REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (agent_id, id)
+);
+INSERT OR IGNORE INTO entity_v6 (agent_id, id, kind, label, valid_from, valid_until, importance)
+  SELECT agent_id, id, kind, label, valid_from, valid_until, importance FROM entity;
+DROP TABLE entity;
+ALTER TABLE entity_v6 RENAME TO entity;
+CREATE INDEX IF NOT EXISTS entity_agent_idx ON entity(agent_id);
+
+CREATE TABLE IF NOT EXISTS edge_v6 (
+  agent_id TEXT NOT NULL,
+  src TEXT NOT NULL,
+  dst TEXT NOT NULL,
+  relation TEXT NOT NULL,
+  weight REAL NOT NULL DEFAULT 1,
+  valid_from INTEGER NOT NULL,
+  valid_until INTEGER,
+  PRIMARY KEY (agent_id, src, dst, relation)
+);
+INSERT OR IGNORE INTO edge_v6 (agent_id, src, dst, relation, weight, valid_from, valid_until)
+  SELECT agent_id, src, dst, relation, weight, valid_from, valid_until FROM edge;
+DROP TABLE edge;
+ALTER TABLE edge_v6 RENAME TO edge;
 CREATE INDEX IF NOT EXISTS edge_src_idx ON edge(agent_id, src);
 ";
 
@@ -85,6 +138,18 @@ ALTER TABLE memory ADD COLUMN importance REAL NOT NULL DEFAULT 0;
 ALTER TABLE memory ADD COLUMN last_access INTEGER;
 ";
 
+/// Provenance des faits (ADR-018 / audit sécurité, memory poisoning).
+/// Distingue un souvenir mémorisé directement par l'agent (`'user'`, défaut)
+/// d'un fait **promu par consolidation LLM** (`'consolidation'`) : ce dernier
+/// a traversé une étape d'inférence sur du contenu potentiellement non fiable
+/// (les épisodes), donc une confiance différente — l'escalade `episodic →
+/// semantic` ne doit pas se faire silencieusement au même niveau de confiance
+/// qu'un fait direct. On **ajoute** une colonne, on ne réécrit jamais un
+/// schéma déjà appliqué (même pattern que `MEMORY_SCHEMA_V3`).
+const MEMORY_SCHEMA_V7: &str = "\
+ALTER TABLE memory ADD COLUMN source TEXT NOT NULL DEFAULT 'user';
+";
+
 /// Migrations de la couche mémoire + graphe, à passer à `Store::migrate`.
 #[must_use]
 pub fn schema() -> Vec<Migration> {
@@ -104,6 +169,18 @@ pub fn schema() -> Vec<Migration> {
         Migration {
             version: 4,
             up_sql: MEMORY_FTS_SCHEMA_V4,
+        },
+        Migration {
+            version: 5,
+            up_sql: BMAI_META_SCHEMA_V5,
+        },
+        Migration {
+            version: 6,
+            up_sql: GRAPH_AGENT_SCOPED_KEYS_V6,
+        },
+        Migration {
+            version: 7,
+            up_sql: MEMORY_SCHEMA_V7,
         },
     ]
 }

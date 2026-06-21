@@ -1,0 +1,3 @@
+basemyai
+mem0ai
+qdrant-client

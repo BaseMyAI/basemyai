@@ -5,17 +5,16 @@
  * interrogée par `remember`/`recall`/... (toutes des `Promise`).
  */
 export declare class Memory {
-  /**
-   * Ouvre une mémoire **éphémère, non chiffrée** (`:memory:`) avec un embedder
-   * déterministe sans modèle. Réservé aux tests/spikes (pas de CMake/Candle).
-   */
-  static openInMemory(agentId: string): Promise<Memory>
+  /** Ouvre une mémoire persistée de production, chiffrée, avec embedder Candle. */
+  static open(options: MemoryOpenOptions): Promise<Memory>
   /** `agent_id` propriétaire de cette mémoire. */
   agent(): string
   /** Mémorise `text` dans une couche (défaut `semantic`). Résout vers l'UUID. */
-  remember(text: string, layer?: string | undefined | null): Promise<string>
+  remember(text: string, layer?: MemoryLayer | undefined | null): Promise<string>
   /** Recall temporel sémantique : résout vers un tableau de `Record`. */
   recall(query: string, k?: number | undefined | null): Promise<Array<Record>>
+  /** Recall limité à une couche mémoire (`short_term`, `episodic`, `procedural`, `semantic`). */
+  recallByLayer(query: string, layer: MemoryLayer, k?: number | undefined | null): Promise<Array<Record>>
   /**
    * Recall hybride : vecteur + BM25 (full-text) fusionnés par RRF. Résout vers
    * un tableau de `Record` (le `score` porte le score RRF fusionné).
@@ -27,9 +26,15 @@ export declare class Memory {
   forget(id: string): Promise<void>
   /** Compte des souvenirs valides par couche : résout vers `AgentStats`. */
   stats(): Promise<AgentStats>
+  /** Insère ou met à jour une entité du graphe pour cet agent. */
+  addGraphEntity(id: string, kind: string, label: string): Promise<void>
+  /** Crée ou met à jour une relation orientée du graphe pour cet agent. */
+  addGraphEdge(src: string, relation: string, dst: string, weight?: number | undefined | null): Promise<void>
   /** Traverse le graphe depuis `start` : résout vers un tableau d'`Entity`. */
   recallGraph(start: string, maxDepth?: number | undefined | null): Promise<Array<Entity>>
 }
+
+export type MemoryLayer = "short_term" | "episodic" | "procedural" | "semantic"
 
 /** Statistiques d'un agent, par couche. */
 export interface AgentStats {
@@ -48,12 +53,20 @@ export interface Entity {
   depth: number
 }
 
+/** Options de production pour ouvrir une mémoire persistée. */
+export interface MemoryOpenOptions {
+  path: string
+  agentId: string
+  encryptionKey: string
+  modelPath?: string
+  allowModelDownload?: boolean
+}
+
 /** Un souvenir retourné par `recall`. */
 export interface Record {
   id: string
   text: string
-  /** `short_term` | `episodic` | `procedural` | `semantic`. */
-  layer: string
+  layer: MemoryLayer
   /** Similarité cosinus normalisée dans `[0, 1]` (`1` = identique). */
   score: number
 }

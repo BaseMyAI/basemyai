@@ -19,7 +19,7 @@ use rmcp::model::{
     CallToolRequestParams, ClientCapabilities, ClientInfo, CreateMessageRequestParams, CreateMessageResult, Role,
     SamplingMessage, SamplingMessageContent, object,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{RequestContext, RunningService};
 use rmcp::{ClientHandler, ErrorData, RoleClient, ServiceExt};
 use serde_json::{Value, json};
 
@@ -28,6 +28,17 @@ fn call(name: &'static str, args: Value) -> CallToolRequestParams {
     let mut p = CallToolRequestParams::new(name);
     p.arguments = Some(object(args));
     p
+}
+
+/// Teardown **propre** du couple client/serveur reliés par le duplex.
+///
+/// On annule le client (ce qui ferme le duplex), puis on **attend** la fin de la
+/// tâche serveur — son `waiting()` retourne dès que le flux est clos. On évite
+/// `JoinHandle::abort()` : aborter une tâche en plein I/O provoque, sous Windows,
+/// un `STATUS_ACCESS_VIOLATION` (0xC0000005) au moment du teardown du runtime.
+async fn shutdown(client: RunningService<RoleClient, SamplingClient>, server_task: tokio::task::JoinHandle<()>) {
+    client.cancel().await.expect("cancel client");
+    let _ = server_task.await;
 }
 
 /// Le JSON que notre faux client « LLM » renvoie pour toute requête de sampling.
@@ -127,8 +138,7 @@ async fn consolidate_borrows_client_llm_via_sampling() {
         "la consolidation par sampling doit avoir créé l'entité et la relation : {entities:?}"
     );
 
-    client.cancel().await.expect("cancel client");
-    server_task.abort();
+    shutdown(client, server_task).await;
 }
 
 #[tokio::test]
@@ -207,6 +217,5 @@ async fn consolidate_apply_persists_agent_extraction() {
         "le fait promu doit être rappelable : {items:?}"
     );
 
-    client.cancel().await.expect("cancel client");
-    server_task.abort();
+    shutdown(client, server_task).await;
 }

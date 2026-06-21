@@ -2,6 +2,7 @@
 //! `Embedder`) — testable en isolation via des doubles. Applique l'isolation
 //! par agent et le RAG temporel par-dessus.
 
+mod event;
 mod isolation;
 mod layer;
 mod porting;
@@ -9,25 +10,50 @@ pub(crate) mod schema;
 #[cfg(feature = "test-util")]
 mod testutil;
 
+pub use event::{MemoryEvent, MemoryEventKind, MemorySubscription};
 pub use isolation::AgentId;
 pub use layer::{AgentStats, MemoryLayer, Record};
 pub use porting::ImportReport;
 #[cfg(feature = "test-util")]
 pub use testutil::HashEmbedder;
 
-use basemyai_core::libsql;
-use basemyai_core::{Embedder, Filter, Metric, Store, Value};
+use basemyai_core::{Embedder, Metric, Store};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::temporal::Validity;
-use crate::{RRF_K, Ranking, Result, now_unix, rrf_fuse};
+use event::DEFAULT_EVENT_CAPACITY;
 
-/// Mémoire d'un agent : store (vecteur natif) + embedder, scellés par un
-/// [`AgentId`]. Le chiffrement est obligatoire (ADR-007).
+use crate::storage::{LibsqlMemoryStore, MemoryStore, NewMemory};
+use crate::temporal::Validity;
+use crate::{MemoryError, RRF_K, Ranking, Result, now_unix, rrf_fuse};
+
+/// Borne la taille d'un texte mémorisé (octets). Au-delà, un item démesuré
+/// saturerait le prompt de consolidation (`MAX_EPISODES` ne borne que le
+/// *nombre* d'épisodes, pas leur taille individuelle) — DoS de contexte.
+/// Cohérent avec la limite documentée côté REST (`openapi-sidecar.yaml`).
+pub const MAX_TEXT_LEN: usize = 65_536;
+
+/// Provenance par défaut d'un souvenir mémorisé directement par l'agent (par
+/// opposition à `"consolidation"`, faits promus par le pipeline LLM).
+const SOURCE_USER: &str = "user";
+
+/// Provenance des faits promus par consolidation (vs [`SOURCE_USER`]). Référence
+/// unique partagée avec `cognition::consolidation` : c'est elle qui distingue un
+/// événement [`MemoryEventKind::Consolidated`] d'un [`MemoryEventKind::Remembered`].
+pub(crate) const SOURCE_CONSOLIDATION: &str = "consolidation";
+
+/// Mémoire d'un agent : moteur de stockage (vecteur natif) + embedder,
+/// scellés par un [`AgentId`]. Le chiffrement est obligatoire (ADR-007).
 pub struct Memory {
-    store: Store,
+    engine: Arc<LibsqlMemoryStore>,
     embedder: Box<dyn Embedder>,
     agent: AgentId,
+    /// Diffuseur d'événements mémoire (abonnements temps réel). Émis **après**
+    /// commit d'une écriture. Bon marché à conserver/cloner. `send` sans abonné
+    /// renvoie `Err` — ignoré (best-effort, cf. [`event`]).
+    events: broadcast::Sender<MemoryEvent>,
 }
 
 impl Memory {
@@ -35,7 +61,13 @@ impl Memory {
     /// **sans** migrer le schéma (à utiliser quand le schéma est déjà en place).
     #[must_use]
     pub fn new(store: Store, embedder: Box<dyn Embedder>, agent: AgentId) -> Self {
-        Self { store, embedder, agent }
+        let (events, _) = broadcast::channel(DEFAULT_EVENT_CAPACITY);
+        Self {
+            engine: Arc::new(LibsqlMemoryStore::new(store)),
+            embedder,
+            agent,
+            events,
+        }
     }
 
     /// Ouvre une mémoire : vérifie le chiffrement, applique le schéma
@@ -52,7 +84,7 @@ impl Memory {
             return Err(crate::MemoryError::EncryptionRequired);
         }
         store.migrate(&schema::schema()).await?;
-        Ok(Self { store, embedder, agent })
+        Ok(Self::new(store, embedder, agent))
     }
 
     /// L'agent propriétaire de cette mémoire.
@@ -61,20 +93,55 @@ impl Memory {
         &self.agent
     }
 
-    /// Store sous-jacent. `pub(crate)` : la consolidation (même crate) lit les
-    /// épisodes et construit un `Graph` dessus, sans exposer le store au public.
-    pub(crate) fn store(&self) -> &Store {
-        &self.store
+    /// S'abonne au flux d'événements mémoire de **cet** agent (et d'une couche
+    /// donnée, si `layer` est fourni). L'abonnement renvoyé n'expose jamais le
+    /// canal brut : l'isolation par agent/couche est appliquée côté serveur dans
+    /// [`MemorySubscription::recv`], jamais déléguée à l'appelant.
+    ///
+    /// `agent_id` est capturé tel quel : un appelant qui passe l'identifiant
+    /// d'un autre agent ne reçoit que les événements de cet autre agent — il ne
+    /// peut pas remonter au-delà de ce que [`Memory`] émet, et chaque `Memory`
+    /// n'émet que pour son propre agent. La sécurité multi-tenant repose sur
+    /// l'isolation SQL en amont (ADR-006) ; ce filtre la prolonge au flux.
+    #[must_use]
+    pub fn watch(&self, agent_id: &str, layer: Option<MemoryLayer>) -> MemorySubscription {
+        MemorySubscription::new(self.events.subscribe(), agent_id.to_string(), layer)
     }
 
-    /// Façade graphe sur le **même** store, scellée par le **même** agent.
+    /// Émet un événement mémoire vers les abonnés. **Best-effort** : un `send`
+    /// sans récepteur vivant renvoie `Err` — attendu (personne n'écoute), jamais
+    /// propagé. À n'appeler **qu'après** commit de l'écriture concernée.
+    fn emit(&self, kind: MemoryEventKind, layer: MemoryLayer, id: &str) {
+        let _ = self.events.send(MemoryEvent {
+            agent_id: self.agent.as_str().to_string(),
+            kind,
+            layer,
+            id: id.to_string(),
+        });
+    }
+
+    /// Moteur de stockage sous-jacent, vu à travers le contrat [`MemoryStore`].
+    /// `pub(crate)` : la consolidation (même crate) lit les épisodes et
+    /// construit un `Graph` dessus, sans exposer le moteur au public.
+    pub(crate) fn engine(&self) -> Arc<dyn MemoryStore> {
+        Arc::clone(&self.engine) as Arc<dyn MemoryStore>
+    }
+
+    /// Moteur de stockage **concret**. `pub(crate)` : réservé à
+    /// `memory::porting` (export/import JSONL), qui a besoin de colonnes hors
+    /// du contrat sémantique [`MemoryStore`] (cf. [`LibsqlMemoryStore::store`]).
+    pub(crate) fn libsql_engine(&self) -> &LibsqlMemoryStore {
+        &self.engine
+    }
+
+    /// Façade graphe sur le **même** moteur, scellée par le **même** agent.
     ///
     /// Permet aux consommateurs externes (MCP, REST, bindings) de traverser le
-    /// graphe entités/relations (`recall_graph`) sans accéder au store, tout en
-    /// conservant l'isolation par agent au niveau SQL (ADR-006).
+    /// graphe entités/relations (`recall_graph`) sans accéder au moteur, tout
+    /// en conservant l'isolation par agent au niveau SQL (ADR-006).
     #[must_use]
     pub fn graph(&self) -> crate::Graph {
-        crate::Graph::new(&self.store, self.agent.clone())
+        crate::Graph::new(self.engine(), self.agent.clone())
     }
 
     /// Ouvre une mémoire **éphémère, non chiffrée** (`:memory:`) dotée d'un
@@ -113,13 +180,43 @@ impl Memory {
     /// jamais de souvenir visible par vecteur mais invisible en BM25, ou l'inverse.
     ///
     /// # Errors
-    /// Propage les erreurs d'embedding/stockage.
+    /// [`MemoryError::TextTooLong`] si `text` dépasse [`MAX_TEXT_LEN`].
+    /// Propage aussi les erreurs d'embedding/stockage.
     pub async fn remember_with(&self, text: &str, layer: MemoryLayer, validity: Validity) -> Result<String> {
+        self.remember_with_source(text, layer, validity, SOURCE_USER).await
+    }
+
+    /// Comme [`Memory::remember_with`], mais trace explicitement la `source`
+    /// du souvenir (`"user"` pour un appel direct de l'agent, `"consolidation"`
+    /// pour un fait promu par le pipeline LLM, ADR-018 / audit sécurité —
+    /// memory poisoning). `pub(crate)` : la provenance n'est pas (encore)
+    /// exposée à l'API publique de recall, seulement tracée en base.
+    ///
+    /// # Errors
+    /// [`MemoryError::TextTooLong`] si `text` dépasse [`MAX_TEXT_LEN`].
+    /// Propage aussi les erreurs d'embedding/stockage.
+    pub(crate) async fn remember_with_source(
+        &self,
+        text: &str,
+        layer: MemoryLayer,
+        validity: Validity,
+        source: &str,
+    ) -> Result<String> {
+        check_text_len(text)?;
         let vector = self.embedder.embed(text)?;
         let id = Uuid::new_v4().to_string();
-        let txn = self.store.begin_write().await?;
-        insert_memory_row(&txn, &id, self.agent.as_str(), layer, text, validity, &vector).await?;
-        txn.commit().await?;
+        self.engine
+            .put_memory(&id, &self.agent, layer, text, validity, &vector, source)
+            .await?;
+        // Émis après commit : un souvenir visible est annoncé, jamais l'inverse.
+        // Un fait promu par consolidation (`source = "consolidation"`) porte le
+        // genre `Consolidated` ; un souvenir direct, `Remembered`.
+        let kind = if source == SOURCE_CONSOLIDATION {
+            MemoryEventKind::Consolidated
+        } else {
+            MemoryEventKind::Remembered
+        };
+        self.emit(kind, layer, &id);
         Ok(id)
     }
 
@@ -139,90 +236,81 @@ impl Memory {
     /// l'ingestion initiale (import d'historique, seed de connaissances).
     ///
     /// # Errors
-    /// Propage les erreurs d'embedding/stockage.
+    /// [`MemoryError::TextTooLong`] si un texte du lot dépasse [`MAX_TEXT_LEN`]
+    /// (fail-fast : le premier texte trop long stoppe le lot, rien n'est inséré
+    /// puisque la validation précède l'embedding/la transaction).
+    /// Propage aussi les erreurs d'embedding/stockage.
     pub async fn remember_batch_with(
         &self,
         texts: &[String],
         layer: MemoryLayer,
         validity: Validity,
     ) -> Result<Vec<String>> {
+        self.remember_batch_with_source(texts, layer, validity, SOURCE_USER)
+            .await
+    }
+
+    /// Comme [`Memory::remember_batch_with`], mais trace explicitement la
+    /// `source` du lot (cf. [`Memory::remember_with_source`]).
+    ///
+    /// # Errors
+    /// [`MemoryError::TextTooLong`] si un texte du lot dépasse [`MAX_TEXT_LEN`].
+    /// Propage aussi les erreurs d'embedding/stockage.
+    pub(crate) async fn remember_batch_with_source(
+        &self,
+        texts: &[String],
+        layer: MemoryLayer,
+        validity: Validity,
+        source: &str,
+    ) -> Result<Vec<String>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        for text in texts {
+            check_text_len(text)?;
+        }
         let vectors = self.embedder.embed_batch(texts)?;
         let ids: Vec<String> = texts.iter().map(|_| Uuid::new_v4().to_string()).collect();
-        let txn = self.store.begin_write().await?;
-        for ((text, vector), id) in texts.iter().zip(&vectors).zip(&ids) {
-            insert_memory_row(&txn, id, self.agent.as_str(), layer, text, validity, vector).await?;
+        let items: Vec<NewMemory<'_>> = texts
+            .iter()
+            .zip(&vectors)
+            .zip(&ids)
+            .map(|((text, vector), id)| NewMemory {
+                id: id.clone(),
+                layer,
+                text,
+                validity,
+                vector,
+                source,
+            })
+            .collect();
+        self.engine.put_memory_batch(&self.agent, &items).await?;
+        // Émis après commit du lot : un événement par souvenir inséré.
+        let kind = if source == SOURCE_CONSOLIDATION {
+            MemoryEventKind::Consolidated
+        } else {
+            MemoryEventKind::Remembered
+        };
+        for id in &ids {
+            self.emit(kind, layer, id);
         }
-        txn.commit().await?;
         Ok(ids)
     }
 
     /// Recall temporel : pertinent ET valide, borné à cet agent.
     ///
-    /// Le filtre combine isolation (`agent_id = ?`) ET temporel
-    /// (`valid_from <= ? AND (valid_until IS NULL OR valid_until > ?)`) en un
-    /// seul [`Filter`] paramétré — le core ne connaît le sens d'aucun.
+    /// L'isolation (`agent_id`) et le filtre temporel sont appliqués par le
+    /// moteur de stockage ([`MemoryStore::recall_vector`]) — `Memory` ne
+    /// connaît plus le SQL, seulement le vecteur de requête et l'agent.
     ///
     /// # Errors
     /// Propage les erreurs d'embedding/recherche.
     pub async fn recall(&self, query: &str, k: usize) -> Result<Vec<Record>> {
         let qvec = self.embedder.embed(query)?;
         let now = now_unix();
-
-        let filter = Filter::new(
-            "agent_id = ? AND valid_from <= ? AND (valid_until IS NULL OR valid_until > ?)",
-            vec![
-                Value::Text(self.agent.as_str().to_string()),
-                Value::Integer(now),
-                Value::Integer(now),
-            ],
-        );
-
-        let neighbors = self.store.vector_knn("memory", &qvec, k, Some(&filter)).await?;
-
-        let conn = self.store.connect();
-        let mut out = Vec::with_capacity(neighbors.len());
-        for n in neighbors {
-            let mut rows = conn
-                .query(
-                    "SELECT content, layer FROM memory WHERE id = ?1",
-                    libsql::params![n.id.clone()],
-                )
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            if let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?
-            {
-                let content: String = row
-                    .get(0)
-                    .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-                let layer: String = row
-                    .get(1)
-                    .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-                out.push(Record {
-                    id: n.id,
-                    text: content,
-                    layer: MemoryLayer::from_table(&layer)?,
-                    score: n.distance,
-                });
-            }
-        }
-        if !out.is_empty() {
-            let now_access = now_unix();
-            for record in &out {
-                conn.execute(
-                    "UPDATE memory SET last_access = ?1 WHERE id = ?2",
-                    libsql::params![now_access, record.id.clone()],
-                )
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            }
-        }
-        Ok(out)
+        self.engine
+            .recall_vector(&self.agent, &qvec, k, None, Metric::Cosine, now)
+            .await
     }
 
     /// Recall sémantique temporel avec **métrique explicite** ([`Metric`]).
@@ -236,62 +324,9 @@ impl Memory {
     pub async fn recall_with_metric(&self, query: &str, k: usize, metric: Metric) -> Result<Vec<Record>> {
         let qvec = self.embedder.embed(query)?;
         let now = now_unix();
-
-        let filter = Filter::new(
-            "agent_id = ? AND valid_from <= ? AND (valid_until IS NULL OR valid_until > ?)",
-            vec![
-                Value::Text(self.agent.as_str().to_string()),
-                Value::Integer(now),
-                Value::Integer(now),
-            ],
-        );
-
-        let neighbors = self
-            .store
-            .vector_knn_metric("memory", &qvec, k, Some(&filter), metric)
-            .await?;
-
-        let conn = self.store.connect();
-        let mut out = Vec::with_capacity(neighbors.len());
-        for n in neighbors {
-            let mut rows = conn
-                .query(
-                    "SELECT content, layer FROM memory WHERE id = ?1",
-                    libsql::params![n.id.clone()],
-                )
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            if let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?
-            {
-                let content: String = row
-                    .get(0)
-                    .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-                let layer: String = row
-                    .get(1)
-                    .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-                out.push(Record {
-                    id: n.id,
-                    text: content,
-                    layer: MemoryLayer::from_table(&layer)?,
-                    score: n.distance,
-                });
-            }
-        }
-        if !out.is_empty() {
-            let now_access = now_unix();
-            for record in &out {
-                conn.execute(
-                    "UPDATE memory SET last_access = ?1 WHERE id = ?2",
-                    libsql::params![now_access, record.id.clone()],
-                )
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            }
-        }
-        Ok(out)
+        self.engine
+            .recall_vector(&self.agent, &qvec, k, None, metric, now)
+            .await
     }
 
     /// Recall **hybride** (ADR-014) : fusionne le classement **vectoriel** et le
@@ -309,8 +344,18 @@ impl Memory {
     pub async fn recall_hybrid(&self, query: &str, k: usize) -> Result<Vec<Record>> {
         // Sur-échantillonne chaque signal pour une fusion plus riche.
         let inner = k.saturating_mul(4).max(k);
-        let vector_ids = self.vector_ranking_ids(query, inner).await?;
-        let keyword_ids = self.keyword_ranking_ids(query, inner).await?;
+        let now = now_unix();
+        let qvec = self.embedder.embed(query)?;
+
+        let vector_ids = self.engine.vector_ranking_ids(&self.agent, &qvec, inner, now).await?;
+        let keyword_ids = match fts_match_expr(query) {
+            Some(match_expr) => {
+                self.engine
+                    .keyword_ranking_ids(&self.agent, &match_expr, inner, now)
+                    .await?
+            }
+            None => Vec::new(),
+        };
 
         let fused = rrf_fuse(
             &[
@@ -326,89 +371,23 @@ impl Memory {
             RRF_K,
         );
 
-        let conn = self.store.connect();
-        let mut out = Vec::with_capacity(k.min(fused.len()));
-        for f in fused.into_iter().take(k) {
-            let mut rows = conn
-                .query(
-                    "SELECT content, layer FROM memory WHERE id = ?1",
-                    libsql::params![f.id.clone()],
-                )
-                .await
-                .map_err(storage)?;
-            if let Some(row) = rows.next().await.map_err(storage)? {
-                let content: String = row.get(0).map_err(storage)?;
-                let layer: String = row.get(1).map_err(storage)?;
-                out.push(Record {
-                    id: f.id,
-                    text: content,
-                    layer: MemoryLayer::from_table(&layer)?,
-                    #[allow(clippy::cast_possible_truncation)]
-                    score: f.score as f32,
-                });
-            }
-        }
-        if !out.is_empty() {
-            let now_access = now_unix();
-            for record in &out {
-                conn.execute(
-                    "UPDATE memory SET last_access = ?1 WHERE id = ?2",
-                    libsql::params![now_access, record.id.clone()],
-                )
-                .await
-                .map_err(storage)?;
-            }
-        }
-        Ok(out)
-    }
+        let top_ids: Vec<String> = fused.iter().take(k).map(|f| f.id.clone()).collect();
+        #[allow(clippy::cast_possible_truncation)]
+        let scores: HashMap<&str, f32> = fused.iter().take(k).map(|f| (f.id.as_str(), f.score as f32)).collect();
 
-    /// Classement vectoriel (ids seuls, agent + validité), sans hydratation ni
-    /// `last_access` — brique de [`recall_hybrid`].
-    async fn vector_ranking_ids(&self, query: &str, k: usize) -> Result<Vec<String>> {
-        let qvec = self.embedder.embed(query)?;
-        let now = now_unix();
-        let filter = Filter::new(
-            "agent_id = ? AND valid_from <= ? AND (valid_until IS NULL OR valid_until > ?)",
-            vec![
-                Value::Text(self.agent.as_str().to_string()),
-                Value::Integer(now),
-                Value::Integer(now),
-            ],
-        );
-        let neighbors = self.store.vector_knn("memory", &qvec, k, Some(&filter)).await?;
-        Ok(neighbors.into_iter().map(|n| n.id).collect())
-    }
-
-    /// Classement BM25 (ids seuls, agent + validité) via FTS5 — brique de
-    /// [`recall_hybrid`]. La requête est tokenisée et chaque terme cité (literal)
-    /// pour éviter les erreurs de syntaxe MATCH ; fusion OR pour le rappel.
-    async fn keyword_ranking_ids(&self, query: &str, k: usize) -> Result<Vec<String>> {
-        let Some(match_expr) = fts_match_expr(query) else {
-            return Ok(Vec::new());
-        };
-        let now = now_unix();
-        let conn = self.store.connect();
-        let mut rows = conn
-            .query(
-                // FTS5 exige le nom réel de la table dans MATCH/bm25 (pas un alias).
-                "SELECT memory_fts.id FROM memory_fts JOIN memory m ON m.id = memory_fts.id \
-                 WHERE memory_fts MATCH ?1 AND memory_fts.agent_id = ?2 \
-                   AND m.valid_from <= ?3 AND (m.valid_until IS NULL OR m.valid_until > ?3) \
-                 ORDER BY bm25(memory_fts) LIMIT ?4",
-                libsql::params![
-                    match_expr,
-                    self.agent.as_str(),
-                    now,
-                    i64::try_from(k).unwrap_or(i64::MAX)
-                ],
-            )
-            .await
-            .map_err(storage)?;
-        let mut ids = Vec::new();
-        while let Some(row) = rows.next().await.map_err(storage)? {
-            ids.push(row.get::<String>(0).map_err(storage)?);
-        }
-        Ok(ids)
+        let hydrated = self.engine.hydrate(&self.agent, &top_ids, now).await?;
+        Ok(hydrated
+            .into_iter()
+            .map(|h| {
+                let score = scores.get(h.id.as_str()).copied().unwrap_or(0.0);
+                Record {
+                    id: h.id,
+                    text: h.text,
+                    layer: h.layer,
+                    score,
+                }
+            })
+            .collect())
     }
 
     /// Recall filtré sur une couche unique. Met à jour `last_access` sur chaque
@@ -419,60 +398,9 @@ impl Memory {
     pub async fn recall_by_layer(&self, query: &str, layer: MemoryLayer, k: usize) -> Result<Vec<Record>> {
         let qvec = self.embedder.embed(query)?;
         let now = now_unix();
-
-        let filter = Filter::new(
-            "agent_id = ? AND valid_from <= ? AND (valid_until IS NULL OR valid_until > ?) AND layer = ?",
-            vec![
-                Value::Text(self.agent.as_str().to_string()),
-                Value::Integer(now),
-                Value::Integer(now),
-                Value::Text(layer.table().to_string()),
-            ],
-        );
-
-        let neighbors = self.store.vector_knn("memory", &qvec, k, Some(&filter)).await?;
-
-        let conn = self.store.connect();
-        let mut out = Vec::with_capacity(neighbors.len());
-        for n in &neighbors {
-            let mut rows = conn
-                .query(
-                    "SELECT content, layer FROM memory WHERE id = ?1",
-                    libsql::params![n.id.clone()],
-                )
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            if let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?
-            {
-                let content: String = row
-                    .get(0)
-                    .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-                let layer_str: String = row
-                    .get(1)
-                    .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-                out.push(Record {
-                    id: n.id.clone(),
-                    text: content,
-                    layer: MemoryLayer::from_table(&layer_str)?,
-                    score: n.distance,
-                });
-            }
-        }
-        if !out.is_empty() {
-            let now_access = now_unix();
-            for record in &out {
-                conn.execute(
-                    "UPDATE memory SET last_access = ?1 WHERE id = ?2",
-                    libsql::params![now_access, record.id.clone()],
-                )
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            }
-        }
-        Ok(out)
+        self.engine
+            .recall_vector(&self.agent, &qvec, k, Some(layer), Metric::Cosine, now)
+            .await
     }
 
     /// Invalide un souvenir en fixant `valid_until = now()`. Il n'apparaît plus
@@ -481,14 +409,14 @@ impl Memory {
     /// # Errors
     /// Propage les erreurs de stockage.
     pub async fn invalidate(&self, id: &str) -> Result<()> {
-        let now = now_unix();
-        let conn = self.store.connect();
-        conn.execute(
-            "UPDATE memory SET valid_until = ?1 WHERE id = ?2 AND agent_id = ?3",
-            libsql::params![now, id, self.agent.as_str()],
-        )
-        .await
-        .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
+        // Capturer la couche AVANT l'invalidation : le souvenir reste en base
+        // (seul `valid_until` change), donc lisible. `None` ⇒ aucun souvenir de
+        // cet agent ⇒ no-op silencieux, aucun événement (pas de fuite cross-agent).
+        let layer = self.engine.layer_of(&self.agent, id).await?;
+        self.engine.invalidate(&self.agent, id, now_unix()).await?;
+        if let Some(layer) = layer {
+            self.emit(MemoryEventKind::Invalidated, layer, id);
+        }
         Ok(())
     }
 
@@ -498,20 +426,13 @@ impl Memory {
     /// # Errors
     /// Propage les erreurs de stockage.
     pub async fn forget(&self, id: &str) -> Result<()> {
-        let txn = self.store.begin_write().await?;
-        txn.execute(
-            "DELETE FROM memory WHERE id = ?1 AND agent_id = ?2",
-            libsql::params![id, self.agent.as_str()],
-        )
-        .await
-        .map_err(storage)?;
-        txn.execute(
-            "DELETE FROM memory_fts WHERE id = ?1 AND agent_id = ?2",
-            libsql::params![id, self.agent.as_str()],
-        )
-        .await
-        .map_err(storage)?;
-        txn.commit().await?;
+        // Capturer la couche AVANT l'effacement physique (après, la ligne a
+        // disparu). `None` ⇒ rien à effacer pour cet agent ⇒ aucun événement.
+        let layer = self.engine.layer_of(&self.agent, id).await?;
+        self.engine.forget(&self.agent, id).await?;
+        if let Some(layer) = layer {
+            self.emit(MemoryEventKind::Forgotten, layer, id);
+        }
         Ok(())
     }
 
@@ -523,19 +444,7 @@ impl Memory {
     /// # Errors
     /// Propage les erreurs de stockage.
     pub async fn purge_agent(&self) -> Result<()> {
-        let txn = self.store.begin_write().await?;
-        // Noms de tables en dur (jamais d'input) ; l'agent passe en paramètre lié.
-        // `memory_fts` (miroir BM25) est purgé avec le reste (ADR-014).
-        for table in ["memory", "entity", "edge", "memory_fts"] {
-            txn.execute(
-                &format!("DELETE FROM {table} WHERE agent_id = ?1"),
-                libsql::params![self.agent.as_str()],
-            )
-            .await
-            .map_err(storage)?;
-        }
-        txn.commit().await?;
-        Ok(())
+        self.engine.purge_agent(&self.agent).await
     }
 
     /// Statistiques des souvenirs valides de cet agent, par couche.
@@ -543,41 +452,7 @@ impl Memory {
     /// # Errors
     /// Propage les erreurs de stockage.
     pub async fn stats(&self) -> Result<AgentStats> {
-        let now = now_unix();
-        let conn = self.store.connect();
-        let mut rows = conn
-            .query(
-                "SELECT layer, COUNT(*) FROM memory \
-                 WHERE agent_id = ?1 AND valid_from <= ?2 \
-                   AND (valid_until IS NULL OR valid_until > ?2) \
-                 GROUP BY layer",
-                libsql::params![self.agent.as_str(), now],
-            )
-            .await
-            .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-
-        let mut stats = AgentStats::default();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?
-        {
-            let layer_str: String = row
-                .get(0)
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            let count: i64 = row
-                .get(1)
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            let n = usize::try_from(count).unwrap_or(0);
-            match layer_str.as_str() {
-                "short_term" => stats.short_term = n,
-                "episodic" => stats.episodic = n,
-                "procedural" => stats.procedural = n,
-                "semantic" => stats.semantic = n,
-                _ => {}
-            }
-        }
-        Ok(stats)
+        self.engine.agent_stats(&self.agent, now_unix()).await
     }
 
     /// Recall vectoriel limité aux souvenirs dont le contenu mentionne une entité
@@ -588,108 +463,16 @@ impl Memory {
     pub async fn search_graph(&self, query: &str, k: usize) -> Result<Vec<Record>> {
         let qvec = self.embedder.embed(query)?;
         let now = now_unix();
-
-        let filter = Filter::new(
-            "agent_id = ? AND valid_from <= ? AND (valid_until IS NULL OR valid_until > ?) \
-             AND EXISTS (\
-               SELECT 1 FROM entity \
-               WHERE entity.agent_id = ? \
-                 AND (entity.valid_until IS NULL OR entity.valid_until > ?) \
-                 AND instr(content, entity.label) > 0\
-             )",
-            vec![
-                Value::Text(self.agent.as_str().to_string()),
-                Value::Integer(now),
-                Value::Integer(now),
-                Value::Text(self.agent.as_str().to_string()),
-                Value::Integer(now),
-            ],
-        );
-
-        let neighbors = self.store.vector_knn("memory", &qvec, k, Some(&filter)).await?;
-
-        let conn = self.store.connect();
-        let mut out = Vec::with_capacity(neighbors.len());
-        for n in &neighbors {
-            let mut rows = conn
-                .query(
-                    "SELECT content, layer FROM memory WHERE id = ?1",
-                    libsql::params![n.id.clone()],
-                )
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            if let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?
-            {
-                let content: String = row
-                    .get(0)
-                    .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-                let layer_str: String = row
-                    .get(1)
-                    .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-                out.push(Record {
-                    id: n.id.clone(),
-                    text: content,
-                    layer: MemoryLayer::from_table(&layer_str)?,
-                    score: n.distance,
-                });
-            }
-        }
-        if !out.is_empty() {
-            let now_access = now_unix();
-            for record in &out {
-                conn.execute(
-                    "UPDATE memory SET last_access = ?1 WHERE id = ?2",
-                    libsql::params![now_access, record.id.clone()],
-                )
-                .await
-                .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
-            }
-        }
-        Ok(out)
+        self.engine.recall_graph_filtered(&self.agent, &qvec, k, now).await
     }
 }
 
-/// Mappe une erreur libSQL en [`MemoryError`] (via `CoreError::Storage`).
-fn storage(e: libsql::Error) -> crate::MemoryError {
-    basemyai_core::CoreError::Storage(e.to_string()).into()
-}
-
-/// Insère un souvenir (`memory` + miroir FTS, ADR-014) sur la connexion
-/// fournie — une [`basemyai_core::WriteTxn`] en pratique, pour que les deux
-/// écritures soient atomiques.
-async fn insert_memory_row(
-    conn: &libsql::Connection,
-    id: &str,
-    agent: &str,
-    layer: MemoryLayer,
-    text: &str,
-    validity: Validity,
-    vector: &[f32],
-) -> Result<()> {
-    conn.execute(
-        "INSERT INTO memory (id, agent_id, layer, content, valid_from, valid_until, emb) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, vector(?7))",
-        libsql::params![
-            id,
-            agent,
-            layer.table(),
-            text,
-            validity.valid_from,
-            validity.valid_until,
-            to_vec_literal(vector),
-        ],
-    )
-    .await
-    .map_err(storage)?;
-    conn.execute(
-        "INSERT INTO memory_fts (id, agent_id, content) VALUES (?1, ?2, ?3)",
-        libsql::params![id, agent, text],
-    )
-    .await
-    .map_err(storage)?;
+/// Rejette un texte dépassant [`MAX_TEXT_LEN`] (DoS de contexte, audit sécurité).
+fn check_text_len(text: &str) -> Result<()> {
+    let len = text.len();
+    if len > MAX_TEXT_LEN {
+        return Err(MemoryError::TextTooLong { len, max: MAX_TEXT_LEN });
+    }
     Ok(())
 }
 
@@ -708,18 +491,4 @@ fn fts_match_expr(query: &str) -> Option<String> {
     } else {
         Some(tokens.join(" OR "))
     }
-}
-
-/// Formate un vecteur en littéral SQL `[a,b,c]` consommé par `vector(?)`.
-fn to_vec_literal(v: &[f32]) -> String {
-    let mut s = String::with_capacity(v.len() * 8 + 2);
-    s.push('[');
-    for (i, x) in v.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        s.push_str(&x.to_string());
-    }
-    s.push(']');
-    s
 }

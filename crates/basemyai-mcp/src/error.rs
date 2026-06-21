@@ -19,6 +19,11 @@ pub enum McpError {
     #[error("invalid layer: {0}")]
     InvalidLayer(String),
 
+    /// Paramètre hors des bornes documentées (`agent_id`, `text`, `query`,
+    /// `k`, `max_depth`, `start`...).
+    #[error("validation error: {0}")]
+    Validation(String),
+
     /// Configuration invalide (port, clé API, TOML illisible).
     #[error("config error: {0}")]
     Config(String),
@@ -45,7 +50,9 @@ impl From<McpError> for rmcp::ErrorData {
         let msg = e.to_string();
         match e {
             // Entrées du client malformées → `invalid_params` (-32602).
-            McpError::InvalidAgentId | McpError::InvalidLayer(_) => Self::invalid_params(msg, None),
+            McpError::InvalidAgentId | McpError::InvalidLayer(_) | McpError::Validation(_) => {
+                Self::invalid_params(msg, None)
+            }
             // Auth → `invalid_request` (-32600).
             McpError::Unauthorized => Self::invalid_request(msg, None),
             // Défaillances internes (stockage, embedding, transport, config, sampling).

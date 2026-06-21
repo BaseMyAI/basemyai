@@ -15,8 +15,27 @@ use serde::{Deserialize, Serialize};
 
 use basemyai_core::libsql;
 
-use super::{Memory, MemoryLayer, storage, to_vec_literal};
+use super::{Memory, MemoryLayer};
 use crate::{MemoryError, Result, now_unix};
+
+/// Mappe une erreur libSQL en [`MemoryError`] (via `CoreError::Storage`).
+fn storage(e: libsql::Error) -> MemoryError {
+    basemyai_core::CoreError::Storage(e.to_string()).into()
+}
+
+/// Formate un vecteur en littéral SQL `[a,b,c]` consommé par `vector(?)`.
+fn to_vec_literal(v: &[f32]) -> String {
+    let mut s = String::with_capacity(v.len() * 8 + 2);
+    s.push('[');
+    for (i, x) in v.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&x.to_string());
+    }
+    s.push(']');
+    s
+}
 
 /// Identifiant de format de l'en-tête JSONL.
 const FORMAT: &str = "basemyai-export";
@@ -104,7 +123,7 @@ impl Memory {
     /// # Errors
     /// Propage les erreurs de stockage/sérialisation.
     pub async fn export_jsonl(&self) -> Result<String> {
-        let conn = self.store.connect();
+        let conn = self.libsql_engine().store().connect();
         let mut out = String::new();
 
         push_line(
@@ -283,7 +302,7 @@ impl Memory {
 
         // ── Écriture atomique ─────────────────────────────────────────────────
         let mut report = ImportReport::default();
-        let txn = self.store.begin_write().await?;
+        let txn = self.libsql_engine().store().begin_write().await?;
 
         for ((id, layer, content, valid_from, valid_until, importance, last_access), vector) in
             memories.iter().zip(&vectors)

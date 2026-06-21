@@ -4,6 +4,7 @@
 #![cfg(feature = "test-util")]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -12,7 +13,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use basemyai_rest::{AppState, Config, InMemoryProvider, build_app};
+use basemyai_rest::{AgentPolicy, AppState, Config, InMemoryProvider, build_app};
 
 const KEY: &str = "test-secret-key";
 
@@ -65,6 +66,57 @@ async fn missing_bearer_is_unauthorized() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     let body = json_body(resp).await;
     assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+}
+
+#[tokio::test]
+async fn dev_mode_allows_requests_without_bearer() {
+    let config = Config {
+        dev: true,
+        ..Config::default()
+    };
+    let app = build_app(AppState::new(Arc::new(InMemoryProvider::new()), config));
+
+    let resp = app
+        .oneshot(post(
+            "/v1/remember",
+            &json!({"agent_id": "a", "text": "dev mode fact"}),
+            false,
+        ))
+        .await
+        .expect("oneshot");
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn fixed_agent_policy_rejects_other_agents() {
+    let config = Config {
+        api_key: Some(KEY.to_string()),
+        agent_policy: AgentPolicy::Fixed("allowed".to_string()),
+        ..Config::default()
+    };
+    let app = build_app(AppState::new(Arc::new(InMemoryProvider::new()), config));
+
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/v1/remember",
+            &json!({"agent_id": "other", "text": "should fail"}),
+            true,
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let resp = app
+        .oneshot(post(
+            "/v1/remember",
+            &json!({"agent_id": "allowed", "text": "should pass"}),
+            true,
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::CREATED);
 }
 
 #[tokio::test]
@@ -236,4 +288,124 @@ async fn forget_agent_purges_all() {
     let resp = app.oneshot(get("/v1/agent/a/stats", true)).await.expect("stats");
     let body = json_body(resp).await;
     assert_eq!(body["total"], 0);
+}
+
+#[tokio::test]
+async fn recall_rejects_k_out_of_bounds() {
+    let app = app();
+    let resp = app
+        .oneshot(post(
+            "/v1/recall",
+            &json!({"agent_id": "a", "query": "anything", "k": 2_000_000_000_u64}),
+            true,
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn recall_graph_rejects_max_depth_out_of_bounds() {
+    let app = app();
+    let resp = app
+        .oneshot(post(
+            "/v1/recall_graph",
+            &json!({"agent_id": "a", "start": "alice", "max_depth": 100_000}),
+            true,
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn remember_rejects_text_too_long() {
+    let app = app();
+    let text = "x".repeat(65_537);
+    let resp = app
+        .oneshot(post("/v1/remember", &json!({"agent_id": "a", "text": text}), true))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn remember_rejects_agent_id_too_long() {
+    let app = app();
+    let agent_id = "a".repeat(129);
+    let resp = app
+        .oneshot(post("/v1/remember", &json!({"agent_id": agent_id, "text": "x"}), true))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn valid_recall_request_still_passes_validation() {
+    let app = app();
+    app.clone()
+        .oneshot(post(
+            "/v1/remember",
+            &json!({"agent_id": "a", "text": "the sky is blue", "layer": "semantic"}),
+            true,
+        ))
+        .await
+        .expect("remember");
+
+    let resp = app
+        .oneshot(post(
+            "/v1/recall",
+            &json!({"agent_id": "a", "query": "the sky is blue", "k": 5}),
+            true,
+        ))
+        .await
+        .expect("recall");
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn remember_is_rate_limited_per_agent() {
+    let config = Config {
+        api_key: Some(KEY.to_string()),
+        ..Config::default()
+    };
+    let app = build_app(AppState::with_rate_limit(
+        Arc::new(InMemoryProvider::new()),
+        config,
+        3,
+        Duration::from_secs(60),
+    ));
+
+    for i in 0..3 {
+        let resp = app
+            .clone()
+            .oneshot(post(
+                "/v1/remember",
+                &json!({"agent_id": "a", "text": format!("fact {i}")}),
+                true,
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CREATED, "call {i} should succeed");
+    }
+
+    let resp = app
+        .oneshot(post(
+            "/v1/remember",
+            &json!({"agent_id": "a", "text": "one too many"}),
+            true,
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
 }
