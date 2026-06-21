@@ -169,21 +169,27 @@ multi-langages.
 
 ## M5 — CLI `basemyai`
 
-> **Statut au 2026-06-20 : premier jet livré et testé end-to-end.** Crate
-> `crates/basemyai-cli` (binaire `basemyai`), build + `clippy -D warnings` verts.
-> Smoke test validé : `init → remember → recall (+ --hybrid) → stats → inspect →
-> verify`, **isolation agent vérifiée** (autre agent voit 0) et **chiffrement
-> appliqué** (mauvaise clé → refus d'ouverture). Clé via `BASEMYAI_DB_KEY`.
+> **Statut au 2026-06-20 : surface complète livrée et testée end-to-end.**
+> Crate `crates/basemyai-cli` (binaire `basemyai`), build + `clippy -D
+> warnings` verts. Smoke test validé : `init → remember → recall (+ --hybrid)
+> → stats → inspect → verify`, **isolation agent vérifiée** (autre agent voit
+> 0) et **chiffrement appliqué** (mauvaise clé → refus d'ouverture). Clé via
+> `BASEMYAI_DB_KEY`. Référence complète des commandes : `docs/cli.md`.
 
 | # | Tâche | Notes |
 |---|-------|-------|
 | [x] | Crate binaire `basemyai-cli` (clap) | Binaire `basemyai`. Features `embed`+`crypto` (set par défaut), miroir de `basemyai-mcp`. |
-| [x] | Commandes V1 indispensables (`init`, `inspect`, `stats`, `recall`, `verify`, `migrate`) | + `remember` (pour alimenter `recall`). `recall --hybrid` (RRF). |
+| [x] | Commandes V1 indispensables (`init`, `inspect`, `stats`, `recall`, `verify`, `migrate`) | + `remember` (pour alimenter `recall`). `recall --hybrid` (RRF), `--layer`, `--graph`. |
+| [x] | Cycle de vie mémoire (`list`, `forget`, `invalidate`, `purge --yes`, `export`, `import`) | `commands_memory.rs`. `list`/`forget`/`invalidate`/`purge` n'embedent pas (passent par `basemyai::storage::MemoryStore`). **Non listé ici avant 2026-06-20 — code en avance sur ce plan.** |
+| [x] | Graphe (`graph add-entity`, `graph add-edge`, `graph traverse`) | `commands_graph.rs`. **Non listé ici avant 2026-06-20.** |
+| [x] | Maintenance (`maintenance gc`, `maintenance forget-adaptive`) et `consolidate` | `commands_maintenance.rs`. `gc` était la ligne « reste à faire » ci-dessous — **fait**. `maintenance gc` n'est pas scopé `--agent-id` (tourne sur tout le conteneur) ; `consolidate` exige un LLM local détecté. |
+| [x] | `basemyai config show/set/unset`, `basemyai completions <shell>` | `cli_config.rs`. Résolution `--db`/`--agent` : flag > env > `~/.basemyai/config.toml` > erreur explicite. |
+| [x] | `--format json` global (sortie machine-readable) | Toutes les commandes. Pensé pour qu'un agent IA appelle le CLI comme un outil. |
 | [x] | `basemyai setup [--fetch]` | Détecte le matériel, provisionne le modèle (consentement explicite via `--fetch`, ADR-010), barre de progression. Persistance via `provision.json` (pas `config.json`). |
 | [x] | `basemyai status` | Affiche matériel détecté + modèle provisionné + présence des fichiers. |
 | [x] | `basemyai llm detect` | Serveurs LLM locaux + meilleur modèle pour la machine. |
 | [x] | `basemyai llm suggest` | Modèles installables (`ollama pull <tag>`). |
-| [ ] | `basemyai gc [--agent-id <id>]` | GC manuel des mémoires expirées. **Reste à faire.** |
+| [ ] | `basemyai gc [--agent-id <id>]` | `maintenance gc` existe mais n'est pas scopé par agent. **Reste à faire si le besoin se confirme.** |
 | [ ] | Distribution : binaire unique dans le release GitHub | Via `cargo-dist` ou release action. **Reste à faire.** |
 | [ ] | Tests d'intégration CLI (`assert_cmd` / `trycmd`) | Le smoke test est manuel ; à automatiser en CI. |
 
@@ -195,10 +201,15 @@ multi-langages.
 |---|-------|-------|
 | [ ] | Stress test inférence 1h (Candle, ADR-003) | Vérifier l'absence de fuite mémoire. `valgrind` / DHAT sur Linux. |
 | [ ] | Benchmark KNN : 10k, 100k, 1M vecteurs | `criterion`. Valider que l'ANN natif libSQL tient. |
-| [ ] | Multi-connexions libSQL (pool) | Actuellement connexion partagée clonée. Pour une haute concurrence (sidecar), un pool de connexions est nécessaire. |
+| [x] | Multi-connexions libSQL (pool) | ✅ ADR-021 : pool de lecteurs round-robin + writer unique sérialisé sous WAL (`journal_mode=WAL`, `busy_timeout`). `:memory:` dégénère en taille 1. Warm-up séquentiel sous `native_open_lock`. `spawn_blocking` reporté (à benchmarker). |
 | [ ] | CUDA réel dans la détection hardware | Aujourd'hui : `CUDA_PATH` env var. V1 suffisant ; V1.1 : lier NVML directement. |
 | [ ] | Key rotation (chiffrement) | `PRAGMA rekey` libSQL : changer la clé sans recréer la DB. |
 | [ ] | Rotation des modèles d'embedding | Si le modèle change, tous les vecteurs doivent être re-générés. Détecter le changement via `model_id` stocké, proposer re-indexation. |
+
+### M6.2 — Live subscriptions (PLAN.md P2.1) — fondation faite (2026-06-21)
+
+- [x] Canal `tokio::sync::broadcast` sur `Memory` (`MemoryEvent` / `MemorySubscription`, ADR-022) : émission **après commit**, isolation par `agent_id` côté serveur (prolonge ADR-006), `Lagged` toléré. Crate `basemyai` uniquement — `basemyai-core` reste agnostique.
+- [ ] Surfaces (vague 2) : SSE/WebSocket REST, notifications MCP, callbacks PyO3/NAPI.
 
 ### M6.1 — Sécurité agentique (audit 2026-06-20) ✅ pour la partie corrigée
 
