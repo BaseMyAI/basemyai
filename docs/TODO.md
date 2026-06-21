@@ -180,10 +180,12 @@ multi-langages.
 |---|-------|-------|
 | [x] | Crate binaire `basemyai-cli` (clap) | Binaire `basemyai`. Features `embed`+`crypto` (set par défaut), miroir de `basemyai-mcp`. |
 | [x] | Commandes V1 indispensables (`init`, `inspect`, `stats`, `recall`, `verify`, `migrate`) | + `remember` (pour alimenter `recall`). `recall --hybrid` (RRF), `--layer`, `--graph`. |
-| [x] | Cycle de vie mémoire (`list`, `forget`, `invalidate`, `purge --yes`, `export`, `import`) | `commands_memory.rs`. `list`/`forget`/`invalidate`/`purge` n'embedent pas (passent par `basemyai::storage::MemoryStore`). **Non listé ici avant 2026-06-20 — code en avance sur ce plan.** |
-| [x] | Graphe (`graph add-entity`, `graph add-edge`, `graph traverse`) | `commands_graph.rs`. **Non listé ici avant 2026-06-20.** |
-| [x] | Maintenance (`maintenance gc`, `maintenance forget-adaptive`) et `consolidate` | `commands_maintenance.rs`. `gc` était la ligne « reste à faire » ci-dessous — **fait**. `maintenance gc` n'est pas scopé `--agent-id` (tourne sur tout le conteneur) ; `consolidate` exige un LLM local détecté. |
-| [x] | `basemyai config show/set/unset`, `basemyai completions <shell>` | `cli_config.rs`. Résolution `--db`/`--agent` : flag > env > `~/.basemyai/config.toml` > erreur explicite. |
+| [x] | Cycle de vie mémoire (`list`, `forget`, `invalidate`, `purge --yes`, `export`, `import`) | `commands/memory.rs`. `list`/`forget`/`invalidate`/`purge` n'embedent pas (passent par `basemyai::storage::MemoryStore`). **Non listé ici avant 2026-06-20 — code en avance sur ce plan.** |
+| [x] | Graphe (`graph add-entity`, `graph add-edge`, `graph traverse`) | `commands/graph.rs`. **Non listé ici avant 2026-06-20.** |
+| [x] | Maintenance (`maintenance gc`, `maintenance forget-adaptive`) et `consolidate` | `commands/maintenance.rs`. `gc` était la ligne « reste à faire » ci-dessous — **fait**. `maintenance gc` n'est pas scopé `--agent-id` (tourne sur tout le conteneur) ; `consolidate` exige un LLM local détecté. |
+| [x] | `basemyai config show/set/unset`, `basemyai completions <shell>` | `commands/config.rs` + `persisted_config.rs`. Résolution `--db`/`--agent` : flag > env > `~/.basemyai/config.toml` > erreur explicite. |
+| [x] | Erreurs CLI centralisées, exit codes stables, JSON `{"error":{"code","message"}}` | `error.rs`/`exit.rs`/`output.rs`. Voir `docs/cli.md` §Exit codes & error shape. |
+| [x] | Tests d'intégration CLI (`assert_cmd`) | `tests/cli.rs`, 12 tests, commandes sans embedder. Pas encore en CI (aucun job `crypto`+`embed` combiné). |
 | [x] | `--format json` global (sortie machine-readable) | Toutes les commandes. Pensé pour qu'un agent IA appelle le CLI comme un outil. |
 | [x] | `basemyai setup [--fetch]` | Détecte le matériel, provisionne le modèle (consentement explicite via `--fetch`, ADR-010), barre de progression. Persistance via `provision.json` (pas `config.json`). |
 | [x] | `basemyai status` | Affiche matériel détecté + modèle provisionné + présence des fichiers. |

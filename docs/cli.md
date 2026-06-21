@@ -37,6 +37,46 @@ Encryption is mandatory (ADR-007): every command that opens a `.bmai` file
 requires the key via `BASEMYAI_DB_KEY`. There is no flag for the key and no
 way to open a file in plaintext.
 
+## Exit codes & error shape
+
+Stable, additive-only contract — a script can branch on these without parsing
+free-text messages. Defined in `crates/basemyai-cli/src/exit.rs` /
+`src/error.rs`; values never get reassigned, only added to.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Success. |
+| 1 | Generic/uncategorized error (storage, embedding, IO...). |
+| 2 | Invalid flag combination (e.g. `recall --hybrid --layer --graph` together), unknown `config` key. |
+| 3 | Encryption key missing or rejected (`BASEMYAI_DB_KEY`). |
+| 4 | `--db`/`--agent` not resolvable (no flag, no env var, no config entry). |
+| 5 | Invalid input at the business level (empty agent id, text too long...). |
+| 6 | Target already exists (`init` on an existing path). |
+| 7 | Destructive action refused without explicit confirmation (`purge` without `--yes`). |
+| 8 | Embedding model not provisioned — run `basemyai setup --fetch`. |
+| 9 | No local LLM backend detected — run `basemyai llm detect`. |
+| 10 | `verify`: container opens but doesn't match the expected `.bmai` format/version. |
+
+In `--format json`, every error is also printed on stderr as a single object
+with a stable `code` string (the same categories as the table above, e.g.
+`KEY_REQUIRED`, `NOT_CONFIGURED`, `INVALID_AGENT`, `ALREADY_EXISTS`,
+`CONFIRMATION_REQUIRED`, `MODEL_NOT_PROVISIONED`, `LLM_NOT_AVAILABLE`,
+`VERIFICATION_FAILED`) and a human `message` that **is not** part of the
+contract and may reword across releases:
+
+```json
+{"error":{"code":"KEY_REQUIRED","message":"BASEMYAI_DB_KEY is required (encryption at rest is mandatory)"}}
+```
+
+In `--format text` (default), errors print as `error: <message>` on stderr.
+
+Caveat: a *wrong* key (vs. an absent one) on an already-encrypted container
+isn't always distinguishable from generic storage corruption at this layer —
+libSQL surfaces it as a late, generic error on first query rather than a
+dedicated one. Only the "env var entirely unset" case reliably gets
+`KEY_REQUIRED`/exit 3; a wrong key will usually fall through to the generic
+exit code 1.
+
 ## Persistent config
 
 ```bash
@@ -150,5 +190,13 @@ basemyai --db ./agent.bmai --agent demo recall "UI preference" --hybrid | jq '.r
   agents in the container).
 - No published binary release (`cargo-dist` or equivalent) — build from
   source today.
-- No automated CLI integration tests in CI (`assert_cmd`/`trycmd`); coverage
-  today is a manual end-to-end smoke test. See `docs/TODO.md` M5.
+- `assert_cmd` integration tests exist (`crates/basemyai-cli/tests/cli.rs`,
+  `cargo test -p basemyai-cli`) for every command that doesn't need the
+  Candle embedder — `init`/`inspect`/`verify`/`migrate`/`list`/`forget`/
+  `invalidate`/`purge`/`graph`/`maintenance gc`, plus the key/agent/
+  confirmation/already-exists/not-configured error paths. **Not yet wired
+  into CI** (`.github/workflows/ci.yml` has no job building both `crypto`
+  and `embed` together, which the CLI's default features require) and
+  `remember`/`recall`/`stats`/`export`/`import`/`consolidate` are still
+  untested (they load the embedding model, unavailable offline in CI). See
+  `docs/TODO.md` M5.

@@ -1,10 +1,13 @@
 //! Commandes graphe entités/relations : `graph add-entity`, `graph add-edge`,
 //! `graph traverse`. Chacune appelle une méthode déjà existante de `basemyai::Graph`.
 
-use crate::output::Format;
-use crate::open_engine;
-use basemyai::Graph;
 use std::path::Path;
+
+use basemyai::Graph;
+
+use crate::context::open_engine;
+use crate::error::CliError;
+use crate::output::Format;
 
 pub(crate) async fn add_entity(
     path: &Path,
@@ -13,7 +16,7 @@ pub(crate) async fn add_entity(
     kind: &str,
     label: &str,
     format: Format,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CliError> {
     let (engine, agent_id) = open_engine(path, agent).await?;
     Graph::new(engine, agent_id).add_entity(id, kind, label).await?;
     format.print(
@@ -31,9 +34,11 @@ pub(crate) async fn add_edge(
     dst: &str,
     weight: f64,
     format: Format,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CliError> {
     let (engine, agent_id) = open_engine(path, agent).await?;
-    Graph::new(engine, agent_id).add_edge(src, relation, dst, weight).await?;
+    Graph::new(engine, agent_id)
+        .add_edge(src, relation, dst, weight)
+        .await?;
     format.print(
         || println!("edge '{src}' -[{relation}]-> '{dst}' (weight {weight}) upserted"),
         || serde_json::json!({ "src": src, "relation": relation, "dst": dst, "weight": weight }),
@@ -47,7 +52,7 @@ pub(crate) async fn traverse(
     start: &str,
     depth: u32,
     format: Format,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CliError> {
     let (engine, agent_id) = open_engine(path, agent).await?;
     let reached = Graph::new(engine, agent_id).traverse(start, depth).await?;
     format.print(
