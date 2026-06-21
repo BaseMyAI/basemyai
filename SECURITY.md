@@ -126,6 +126,19 @@ In `basemyai-core`, encryption is **optional** (`Store::open(path, key: Option<â
 
 Every memory row carries an `agent_id`. Every read and write is filtered by `agent_id` **at the SQL level** (ADR-006). A query without a valid `agent_id` fails; it never returns another agent's data. There is no "shared memory" mode in V1 â€” strict isolation is the only mode, and it is a security invariant.
 
+### Reproduce the Public Isolation Test
+
+Run the adversarial isolation proof locally:
+
+```bash
+cargo test -p basemyai --features test-util --test p1_isolation_adversarial
+```
+
+The test uses a shared local database, a hostile-looking `agent_id`, known
+foreign ids, hybrid BM25/vector recall, graph traversal, and scoped
+invalidate/forget attempts. Agent B must never read, invalidate, or delete
+Agent A's memory.
+
 ---
 
 ## Data Handling

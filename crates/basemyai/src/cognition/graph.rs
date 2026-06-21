@@ -10,9 +10,9 @@
 //! temps (`valid_until`, ADR-005). C'est du *sens* : ce module vit dans
 //! `basemyai`, jamais dans le core agnostique (ADR-001).
 
-use basemyai_core::libsql::{self, Connection};
-use basemyai_core::{CoreError, Store};
+use std::sync::Arc;
 
+use crate::storage::MemoryStore;
 use crate::temporal::Validity;
 use crate::{AgentId, Result, now_unix};
 
@@ -30,19 +30,16 @@ pub struct Reached {
 /// fichier libSQL de la mémoire, scellés par `agent`. Toute lecture/écriture est
 /// bornée à `agent_id` au niveau SQL.
 pub struct Graph {
-    conn: Connection,
+    engine: Arc<dyn MemoryStore>,
     agent: AgentId,
 }
 
 impl Graph {
-    /// Construit une façade graphe sur le store d'une mémoire déjà migrée
+    /// Construit une façade graphe sur le moteur d'une mémoire déjà migrée
     /// (le schéma graphe est posé par `schema` en version 2).
     #[must_use]
-    pub fn new(store: &Store, agent: AgentId) -> Self {
-        Self {
-            conn: store.connect(),
-            agent,
-        }
+    pub fn new(engine: Arc<dyn MemoryStore>, agent: AgentId) -> Self {
+        Self { engine, agent }
     }
 
     /// L'agent propriétaire de ce graphe.
@@ -64,25 +61,9 @@ impl Graph {
     /// # Errors
     /// [`MemoryError::Core`](crate::MemoryError::Core) en cas d'échec SQL.
     pub async fn add_entity_with(&self, id: &str, kind: &str, label: &str, validity: Validity) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT INTO entity (id, agent_id, kind, label, valid_from, valid_until) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                 ON CONFLICT(agent_id, id) DO UPDATE SET \
-                   kind = excluded.kind, label = excluded.label, \
-                   valid_from = excluded.valid_from, valid_until = excluded.valid_until",
-                libsql::params![
-                    id,
-                    self.agent.as_str(),
-                    kind,
-                    label,
-                    validity.valid_from,
-                    validity.valid_until,
-                ],
-            )
+        self.engine
+            .graph_upsert_entity(&self.agent, id, kind, label, validity)
             .await
-            .map_err(storage)?;
-        Ok(())
     }
 
     /// Crée (ou met à jour le poids d') une relation orientée `src → dst`,
@@ -92,16 +73,9 @@ impl Graph {
     /// [`MemoryError::Core`](crate::MemoryError::Core) en cas d'échec SQL.
     pub async fn add_edge(&self, src: &str, relation: &str, dst: &str, weight: f64) -> Result<()> {
         let now = now_unix();
-        self.conn
-            .execute(
-                "INSERT INTO edge (src, dst, agent_id, relation, weight, valid_from, valid_until) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL) \
-                 ON CONFLICT(agent_id, src, dst, relation) DO UPDATE SET weight = excluded.weight",
-                libsql::params![src, dst, self.agent.as_str(), relation, weight, now],
-            )
+        self.engine
+            .graph_upsert_edge(&self.agent, src, relation, dst, weight, now)
             .await
-            .map_err(storage)?;
-        Ok(())
     }
 
     /// Traversée multi-sauts depuis `start` en suivant les arêtes orientées, par
@@ -116,48 +90,6 @@ impl Graph {
     /// [`MemoryError::Core`](crate::MemoryError::Core) en cas d'échec SQL.
     pub async fn traverse(&self, start: &str, max_depth: u32) -> Result<Vec<Reached>> {
         let now = now_unix();
-        let sql = "\
-            WITH RECURSIVE reach(node, depth) AS ( \
-                SELECT ?1, 0 \
-                UNION \
-                SELECT e.dst, r.depth + 1 \
-                FROM edge e JOIN reach r ON e.src = r.node \
-                WHERE e.agent_id = ?2 \
-                  AND (e.valid_until IS NULL OR e.valid_until > ?3) \
-                  AND r.depth < ?4 \
-            ) \
-            SELECT e.id, e.kind, e.label, MIN(r.depth) AS d \
-            FROM reach r \
-            JOIN entity e ON e.id = r.node \
-            WHERE r.node <> ?1 \
-              AND e.agent_id = ?2 \
-              AND (e.valid_until IS NULL OR e.valid_until > ?3) \
-            GROUP BY e.id, e.kind, e.label \
-            ORDER BY d, e.id";
-
-        let mut rows = self
-            .conn
-            .query(
-                sql,
-                libsql::params![start, self.agent.as_str(), now, i64::from(max_depth)],
-            )
-            .await
-            .map_err(storage)?;
-
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(storage)? {
-            let depth: i64 = row.get(3).map_err(storage)?;
-            out.push(Reached {
-                id: row.get::<String>(0).map_err(storage)?,
-                kind: row.get::<String>(1).map_err(storage)?,
-                label: row.get::<String>(2).map_err(storage)?,
-                depth: u32::try_from(depth).unwrap_or(u32::MAX),
-            });
-        }
-        Ok(out)
+        self.engine.graph_traverse(&self.agent, start, max_depth, now).await
     }
-}
-
-fn storage(e: libsql::Error) -> crate::MemoryError {
-    CoreError::Storage(e.to_string()).into()
 }

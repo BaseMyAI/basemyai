@@ -31,8 +31,8 @@ prêt prod ». La colonne Notes le précise systématiquement.
 |---|---|---|---|
 | `Store` libSQL async (open, migrate, txn) | ✅ | `crates/basemyai-core/src/storage/store.rs` ; tests `tests/store.rs`, `tests/libsql_smoke.rs` | Backend ADR-011. Connexion partagée clonée (pas de pool — voir M6). |
 | Recherche vectorielle native (`vector_knn`, cosine, `F32_BLOB`) | ✅ | `storage/store.rs`, `storage/vector.rs` ; `tests/store.rs` | In-DB, pas d'extension. Oversampling ×n pour métriques non-cosine. |
-| `Filter` paramétré (fragment SQL + valeurs liées) | ✅ | `storage/vector.rs` (`Filter`, `Value`, `Neighbor`) | Anti-injection ADR-006. **Reste une abstraction SQL-leaky** (la recherche stratégique recommande de la cacher derrière `StorageEngine` — non fait). |
-| `StorageEngine` trait + `EngineCapabilities` | 🟡 | `storage/engine.rs` (`StorageEngine`, `EngineCapabilities`, `EngineKind::Libsql`) | **Existe mais minimal et embryonnaire.** C'est un contrat d'identité/capacités (`capabilities()`), PAS le trait d'opérations mémoire (`put_memory`, `recall_vector`…) que la recherche stratégique décrit. Pas encore utilisé pour confiner libSQL. |
+| `Filter` paramétré (fragment SQL + valeurs liées) | ✅ | `storage/vector.rs` (`Filter`, `Value`, `Neighbor`) | Anti-injection ADR-006. Confiné depuis ADR-020 à `basemyai::storage::LibsqlMemoryStore` — plus aucun consommateur de `basemyai` (memory/cognition) ne le manipule directement. |
+| `StorageEngine` trait + `EngineCapabilities` | ✅ | `storage/engine.rs` (`StorageEngine`, `EngineCapabilities`, `EngineKind::Libsql`) ; `basemyai::storage::{MemoryStore, LibsqlMemoryStore}` (ADR-020) ; `tests/storage_contract.rs` | Contrat d'identité/capacités (core, inchangé) **+** contrat d'opérations mémoire (`put_memory`, `recall_vector`, `graph_upsert_entity`…) dans `basemyai` (ADR-020, suivi ADR-019). Tests de contrat pilotés par le trait. Reste hors périmètre : `memory/porting.rs` (export/import bas niveau) et `maintenance/{gc,forgetting}` (raison documentée dans ADR-020). |
 | Chiffrement au repos (feature `crypto`) | ✅ | `storage/store.rs` (`is_encrypted`, `EncryptionKey`) ; job CI `crypto` | Optionnel au core, obligatoire dans `basemyai`. Exige CMake. |
 | FTS5 / full-text (mécanisme) | ✅ | utilisé via `Store::connect()` dans `basemyai` ; schéma `memory_fts` | Le core expose la connexion ; le schéma FTS vit dans `basemyai`. |
 | Migrations (`Migration`, `migrate`) | ✅ | `storage/store.rs` ; `tests/store.rs` | Versionnées, idempotentes. |
@@ -120,10 +120,14 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 
 | Feature | Statut | Preuve (vérifiée) | Notes |
 |---|---|---|---|
-| Crate `basemyai-cli` (clap) | ✅ | `crates/basemyai-cli/` (binaire `basemyai`) dans `Cargo.toml` members ; build + `clippy --workspace --all-targets -D warnings` verts (2026-06-20) | Features `embed`+`crypto` (défaut), miroir `basemyai-mcp`. Clé via `BASEMYAI_DB_KEY`. |
+| Crate `basemyai-cli` (clap) | ✅ | `crates/basemyai-cli/` (binaire `basemyai`) dans `Cargo.toml` members ; build + `clippy --workspace --all-targets -D warnings` verts (2026-06-20) | Features `embed`+`crypto` (défaut), miroir `basemyai-mcp`. Clé via `BASEMYAI_DB_KEY`. Référence complète : `docs/cli.md`. |
 | Commandes V1 indispensables (`init`, `inspect`, `stats`, `recall`, `verify`, `migrate`) | ✅ | smoke test end-to-end : init→remember→recall(+`--hybrid`)→stats→inspect→verify ; isolation agent vérifiée ; mauvaise clé → refus | Couvre exactement les *indispensables V1* de la recherche stratégique. + `remember`. |
+| Cycle de vie mémoire complet (`list`, `forget`, `invalidate`, `purge --yes`, `export`, `import`) | ✅ | `commands_memory.rs` | `list`/`forget`/`invalidate`/`purge` passent par `basemyai::storage::MemoryStore` directement (pas de chargement Candle pour des mutations sans embedding). **Non listé dans `TODO.md` M5** — code plus avancé que le plan. |
+| Graphe (`graph add-entity`, `graph add-edge`, `graph traverse`) | ✅ | `commands_graph.rs` | Miroir CLI de `basemyai::Graph`. **Non listé dans `TODO.md` M5.** |
+| Maintenance one-shot (`maintenance gc`, `maintenance forget-adaptive`) et `consolidate` | ✅ | `commands_maintenance.rs` | `gc` était listé comme restant — **fait**. `consolidate` exige un LLM local détecté (`llm detect`). **`maintenance gc` n'est pas scopé par agent** (tourne sur tout le conteneur) — pas de `--agent-id` comme envisagé dans `TODO.md`. |
+| `config show/set/unset`, `completions` | ✅ | `cli_config.rs`, `main.rs` | Résolution `--db`/`--agent` : flag > env (`BASEMYAI_DB_PATH`/`BASEMYAI_AGENT`) > `~/.basemyai/config.toml` > erreur explicite. `--format json` sur toutes les commandes (agent-as-tool). |
 | `setup [--fetch]`, `status`, `llm detect`, `llm suggest` | ✅ | `src/main.rs` ; testé contre modèle provisionné + détection LLM locale | `setup` respecte le consentement explicite (ADR-010). Persistance via `provision.json`. |
-| `gc`, distribution binaire (cargo-dist), tests CLI automatisés | 🟡 | — | Reste ouvert (M5). Smoke test manuel, pas encore en CI. |
+| Distribution binaire (cargo-dist), tests CLI automatisés | 🟡 | — | Reste ouvert (M5). Smoke test manuel, pas encore en CI (`assert_cmd`/`trycmd`). |
 
 ---
 
@@ -144,7 +148,7 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 |---|---|---|---|
 | Isolation agent (adversarial) | ✅ | `tests/contracts.rs`, `tests/memory.rs` | Indispensable V1 couvert. |
 | Validité temporelle | ✅ | `tests/contracts.rs` (`validity_*`), `temporal.rs` | Horloge implicite `now_unix`. |
-| Anti-injection SQL | 🟡 | `Filter` paramétré + `AgentId` newtype ; `tests/contracts.rs` | Mécanisme en place. **Pas de test adversarial d'injection dédié** isolé (la recherche stratégique le liste comme contrat à écrire — item 6). |
+| Anti-injection SQL / isolation adversariale | ✅ | `Filter` paramétré + `AgentId` newtype ; `tests/contracts.rs` ; `tests/p1_isolation_adversarial.rs` | Le test adversarial dédié réclamé par la recherche stratégique (item 6) existe désormais : `agent_id` hostile façon `"agent-b' OR '1'='1"`, texte/requêtes FTS hostiles, ids connus d'un autre agent — vecteur, hybride BM25, invalidate/forget/traverse scopés vérifiés. Documenté publiquement dans `SECURITY.md` (commande `cargo test -p basemyai --features test-util --test p1_isolation_adversarial`). |
 | Migration idempotente | ✅ | `tests/store.rs`, `tests/format.rs` | |
 | Format / metadata | ✅ | `tests/format.rs` | |
 | Encryption required (product-level) | ✅ | `tests/contracts.rs` | |
@@ -178,6 +182,22 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Mémoire partagée inter-agents | ⏸️ | — | V2 (ADR-006). |
 | Key rotation (`PRAGMA rekey`) | 📋 | — | M6 ouvert. |
 | Pool de connexions libSQL | 📋 | — | M6 ouvert (connexion partagée clonée aujourd'hui). |
+
+---
+
+## 11. Preuves publiques P1 (différenciation marché)
+
+Artefacts ajoutés pour étayer publiquement le positionnement « base mémoire
+agent locale, pas une base vectorielle de plus », liés depuis `README.md`
+(§ P1 Public Proofs) et `SECURITY.md`.
+
+| Artefact | Statut | Preuve | Notes |
+|---|---|---|---|
+| `docs/not-a-vector-db.md` | ✅ | doc de positionnement | Comparaison face Qdrant/Chroma/LanceDB/pgvector/FAISS, Mem0/LangMem, Graphiti. |
+| `docs/zero-network-after-setup.md` | ✅ | doc + commande de preuve manuelle (proxy invalide) | Renvoie au test `provision_without_consent_fails_when_model_absent`. **CI dédiée pas encore ajoutée** (job `zero-network-after-setup` proposé, pas câblé). |
+| Test adversarial d'isolation (`tests/p1_isolation_adversarial.rs`) | ✅ | voir §8 | Ferme le gap « pas de test d'injection dédié » de la recherche stratégique. |
+| Démo remplacement temporel (`crates/basemyai/examples/temporal_replacement.rs` + `examples/node/temporal_replacement.ts` + `examples/python/temporal_replacement.py`) | ✅ | trois langages, même scénario (invalidate ancien fait → nouveau fait seul rappelé) | Pas encore dans une suite d'exemples testée en CI (risque de dérive si l'API SDK bouge). |
+| Benchmark concurrentiel BaseMyAI vs Mem0+Qdrant (`benchmarks/p1-market/`, `docs/benchmarks/local-memory-vs-mem0-qdrant.md`) | 🟡 | harnais Python (`run.py`/`summarize.py`/`docker-compose.qdrant.yml`) | **Harnais ajouté, aucun chiffre publié.** Distinct du bench KNN scalabilité (10k/100k/1M, M6 §8) — celui-ci compare au marché, pas la scalabilité interne. Critères de publication documentés (hardware, versions, cold/warm) mais résultats `out/*.json` pas encore générés/commités. |
 
 ---
 
@@ -215,20 +235,25 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
    2 transports, auth, audit, sampling) alors que `TODO.md` ne mentionne que REST
    en M4. Le plan documentaire n'a jamais intégré MCP.
 
-6. **`StorageEngine` : « à définir sur papier » vs déjà codé (partiellement).**
-   La recherche stratégique (item 4/5) demandait de définir `StorageEngine` et
-   `EngineCapabilities` *avant code*. Le code les contient déjà
-   (`storage/engine.rs`) — **mais sous forme minimale** : c'est un contrat
-   d'identité/capacités, pas le trait d'opérations mémoire
-   (`put_memory`/`recall_vector`/…) décrit dans la recherche. Et `Filter` reste
-   une abstraction SQL-leaky exposée, contrairement à la cible. Donc 🟡, pas ✅.
+6. **`StorageEngine` : suivi ADR-019 fait (ADR-020, 2026-06-20).** Le trait
+   d'opérations mémoire (`put_memory`/`recall_vector`/`graph_upsert_entity`/…)
+   décrit par la recherche existe désormais : `basemyai::storage::MemoryStore`
+   + `LibsqlMemoryStore`, avec tests de contrat
+   (`crates/basemyai/tests/storage_contract.rs`). `Filter`/`Value` ne fuient
+   plus dans `memory/mod.rs` ni `cognition/{graph,consolidation}.rs` — confinés
+   à `LibsqlMemoryStore`. Restent volontairement hors périmètre (raison
+   documentée ADR-020) : `memory/porting.rs` (export/import bas niveau) et
+   `maintenance/{gc,forgetting}` (signature `MaintenanceTask::run` du core
+   agnostique). Donc ✅ pour le gap documenté, avec deux zones résiduelles
+   connues et assumées.
 
 7. **« indispensables V1 » de la recherche stratégique — état réel.**
    Présents et testés : `.bmai`, libSQL chiffré, `remember/recall/invalidate/forget/stats`,
    couches, `valid_from/until`, isolation `agent_id`, embedding explicite,
-   MCP **et** REST. **Manquants :** le **CLI** (`init/inspect/stats/recall/verify/migrate`)
-   et un **test d'injection SQL adversarial dédié**. Le CLI est le plus gros écart
-   entre « indispensable V1 » documenté et code réel.
+   MCP **et** REST. **Mis à jour 2026-06-20 :** le **CLI** et le **test
+   d'injection SQL adversarial dédié** — les deux derniers manquants listés
+   ici — sont désormais livrés (CLI §6, test §8/§11). Reste un écart
+   « indispensable V1 » documenté vs code réel : aucun, sur ce point précis.
 
 ---
 
@@ -238,14 +263,24 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
   avancé que ce que CLAUDE.md et TODO.md laissent croire.
 - **Surfaces d'intégration : largement en place** (MCP ✅, REST ✅, bindings Node
   🟡, Python 🟡) **mais rien n'est publié** (crates.io / npm / PyPI = 0).
-- **CLI (M5) : premier jet livré** (2026-06-20) — `basemyai-cli` couvre les
-  commandes indispensables V1 (`init/inspect/stats/recall/verify/migrate` +
-  `setup/status/llm`), testé end-to-end. Restent : `gc`, distribution binaire,
-  tests CLI en CI.
+- **CLI (M5) : surface complète livrée** (2026-06-20) — `basemyai-cli` couvre
+  les indispensables V1 (`init/inspect/stats/recall/verify/migrate`) **et**
+  le cycle de vie complet (`list/forget/invalidate/purge/export/import`), le
+  graphe (`graph add-entity/add-edge/traverse`), la maintenance
+  (`maintenance gc/forget-adaptive`, `consolidate`), `config`, `completions`.
+  Référence : `docs/cli.md`. Restent : distribution binaire (cargo-dist),
+  tests CLI automatisés en CI (`TODO.md` M5 sous-documente cette surface —
+  à mettre à jour).
 - **Publication : `basemyai-core` dry-run vert** (zéro bloqueur d'empaquetage) ;
   reste à publier dans l'ordre core→basemyai, puis npm/PyPI. Toujours **0 publié**.
-- **`StorageEngine` : amorcé mais minimal** ; le refactor « cacher libSQL derrière
-  un trait d'opérations mémoire » n'est pas fait (`Filter` toujours exposé).
+- **`StorageEngine` : ✅ fait (ADR-020, 2026-06-20)** — `basemyai::storage::MemoryStore`
+  cache désormais `Filter`/SQL derrière un trait d'opérations mémoire, avec
+  tests de contrat. Zones résiduelles assumées : `memory/porting.rs`,
+  `maintenance/{gc,forgetting}`.
+- **Preuves publiques P1 : ✅ ajoutées** (§11) — positionnement « pas une
+  vector DB », zéro réseau après setup, test d'isolation adversarial, démos
+  de remplacement temporel (Rust/Node/Python). Benchmark concurrentiel vs
+  Mem0+Qdrant : harnais prêt, **chiffres pas encore publiés**.
 - **Studio, Tauri, backend natif, Turso, sync, multi-modèles : ⏸️ correctement
   reportés** (V1.5 / V2), pas de dette cachée.
 - **Hardening (M6) : 📋 non commencé** — pas de bench KNN, pas de stress test

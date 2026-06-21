@@ -1,6 +1,6 @@
 [package]
 name        = "basemyai-cli"
-description = "Developer CLI for the BaseMyAI agent memory database (init, inspect, recall, verify, migrate, setup)."
+description = "Developer CLI for the BaseMyAI agent memory database (init, remember, recall, list, forget, export/import, graph, maintenance, consolidate, setup)."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -25,10 +25,14 @@ crypto  = ["basemyai/crypto"]
 basemyai      = { path = "../basemyai" }
 basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
 
-clap = { version = "4", features = ["derive"] }
-tokio.workspace   = true
-dirs.workspace    = true
-tracing.workspace = true
+clap          = { version = "4", features = ["derive"] }
+clap_complete = "4"
+tokio.workspace      = true
+dirs.workspace       = true
+tracing.workspace    = true
+serde.workspace      = true
+serde_json.workspace = true
+toml.workspace       = true
 
 [lints]
 workspace = true

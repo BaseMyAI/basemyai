@@ -1,0 +1,500 @@
+{"id": "m0001", "text": "Diego prefers short, direct answers with no filler.", "query": "how should I answer Diego"}
+{"id": "m0002", "text": "Alice is working on a REST sidecar.", "query": "what project is Alice building"}
+{"id": "m0003", "text": "Ivan's billing plan is Pro.", "query": "what is Ivan's billing plan"}
+{"id": "m0004", "text": "Hana prefers local-first tools with no cloud dependency.", "query": "what is Hana's privacy preference"}
+{"id": "m0005", "text": "Elena wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Elena want"}
+{"id": "m0006", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0007", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0008", "text": "Diego wants a temporal memory demo with invalidated facts.", "query": "what demo does Diego want"}
+{"id": "m0009", "text": "The release for Rosa's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Rosa's team"}
+{"id": "m0010", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0011", "text": "Chen is based in Seoul and works remotely.", "query": "where is Chen based"}
+{"id": "m0012", "text": "Noor uses libSQL as part of their stack.", "query": "what tool does Noor use"}
+{"id": "m0013", "text": "Alice's meeting with the a local-first code assistant team is scheduled for next week.", "query": "when is Alice's next meeting"}
+{"id": "m0014", "text": "Gus reported a bug in the Mem0 integration.", "query": "who reported the Mem0 bug"}
+{"id": "m0015", "text": "Quinn asked for the encryption key rotation policy.", "query": "what did Quinn ask about"}
+{"id": "m0016", "text": "Tao wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0017", "text": "Alice reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0018", "text": "Rosa's favorite city to work from is Tokyo.", "query": "where does Rosa like to work from"}
+{"id": "m0019", "text": "Rosa flagged that PyO3 needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0020", "text": "Hana is the point of contact for questions about a consolidation pipeline.", "query": "who is the contact for a consolidation pipeline"}
+{"id": "m0021", "text": "Sami prefers short, direct answers with no filler.", "query": "how should I answer Sami"}
+{"id": "m0022", "text": "Ivan is working on an MCP server.", "query": "what project is Ivan building"}
+{"id": "m0023", "text": "Alice's billing plan is Pro.", "query": "what is Alice's billing plan"}
+{"id": "m0024", "text": "Noor prefers local-first tools with no cloud dependency.", "query": "what is Noor's privacy preference"}
+{"id": "m0025", "text": "Kira wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Kira want"}
+{"id": "m0026", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0027", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0028", "text": "Ivan wants a temporal memory demo with invalidated facts.", "query": "what demo does Ivan want"}
+{"id": "m0029", "text": "The release for Elena's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Elena's team"}
+{"id": "m0030", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0031", "text": "Gus is based in Montreal and works remotely.", "query": "where is Gus based"}
+{"id": "m0032", "text": "Diego uses Candle as part of their stack.", "query": "what tool does Diego use"}
+{"id": "m0033", "text": "Mara's meeting with the a local-first code assistant team is scheduled for next week.", "query": "when is Mara's next meeting"}
+{"id": "m0034", "text": "Liam reported a bug in the Tokio integration.", "query": "who reported the Tokio bug"}
+{"id": "m0035", "text": "Tao asked for the encryption key rotation policy.", "query": "what did Tao ask about"}
+{"id": "m0036", "text": "Ivan wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0037", "text": "Bob reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0038", "text": "Omar's favorite city to work from is Helsinki.", "query": "where does Omar like to work from"}
+{"id": "m0039", "text": "Diego flagged that PyO3 needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0040", "text": "Chen is the point of contact for questions about an encrypted storage layer.", "query": "who is the contact for an encrypted storage layer"}
+{"id": "m0041", "text": "Jules prefers short, direct answers with no filler.", "query": "how should I answer Jules"}
+{"id": "m0042", "text": "Tao is working on a benchmark harness.", "query": "what project is Tao building"}
+{"id": "m0043", "text": "Sami's billing plan is Pro.", "query": "what is Sami's billing plan"}
+{"id": "m0044", "text": "Chen prefers local-first tools with no cloud dependency.", "query": "what is Chen's privacy preference"}
+{"id": "m0045", "text": "Bob wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Bob want"}
+{"id": "m0046", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0047", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0048", "text": "Hana wants a temporal memory demo with invalidated facts.", "query": "what demo does Hana want"}
+{"id": "m0049", "text": "The release for Jules's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Jules's team"}
+{"id": "m0050", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0051", "text": "Chen is based in Tokyo and works remotely.", "query": "where is Chen based"}
+{"id": "m0052", "text": "Diego uses PyO3 as part of their stack.", "query": "what tool does Diego use"}
+{"id": "m0053", "text": "Ivan's meeting with the a consolidation pipeline team is scheduled for next week.", "query": "when is Ivan's next meeting"}
+{"id": "m0054", "text": "Liam reported a bug in the Qdrant integration.", "query": "who reported the Qdrant bug"}
+{"id": "m0055", "text": "Liam asked for the encryption key rotation policy.", "query": "what did Liam ask about"}
+{"id": "m0056", "text": "Liam wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0057", "text": "Gus reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0058", "text": "Ivan's favorite city to work from is Berlin.", "query": "where does Ivan like to work from"}
+{"id": "m0059", "text": "Tao flagged that Qdrant needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0060", "text": "Rosa is the point of contact for questions about a REST sidecar.", "query": "who is the contact for a REST sidecar"}
+{"id": "m0061", "text": "Hana prefers short, direct answers with no filler.", "query": "how should I answer Hana"}
+{"id": "m0062", "text": "Farah is working on a consolidation pipeline.", "query": "what project is Farah building"}
+{"id": "m0063", "text": "Mara's billing plan is Team.", "query": "what is Mara's billing plan"}
+{"id": "m0064", "text": "Rosa prefers local-first tools with no cloud dependency.", "query": "what is Rosa's privacy preference"}
+{"id": "m0065", "text": "Hana wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Hana want"}
+{"id": "m0066", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0067", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0068", "text": "Kira wants a temporal memory demo with invalidated facts.", "query": "what demo does Kira want"}
+{"id": "m0069", "text": "The release for Bob's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Bob's team"}
+{"id": "m0070", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0071", "text": "Hana is based in Lisbon and works remotely.", "query": "where is Hana based"}
+{"id": "m0072", "text": "Kira uses PyO3 as part of their stack.", "query": "what tool does Kira use"}
+{"id": "m0073", "text": "Ivan's meeting with the a local-first code assistant team is scheduled for next week.", "query": "when is Ivan's next meeting"}
+{"id": "m0074", "text": "Gus reported a bug in the Turso integration.", "query": "who reported the Turso bug"}
+{"id": "m0075", "text": "Kira asked for the encryption key rotation policy.", "query": "what did Kira ask about"}
+{"id": "m0076", "text": "Gus wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0077", "text": "Priya reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0078", "text": "Mara's favorite city to work from is Buenos Aires.", "query": "where does Mara like to work from"}
+{"id": "m0079", "text": "Elena flagged that Ollama needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0080", "text": "Elena is the point of contact for questions about a billing dashboard.", "query": "who is the contact for a billing dashboard"}
+{"id": "m0081", "text": "Rosa prefers short, direct answers with no filler.", "query": "how should I answer Rosa"}
+{"id": "m0082", "text": "Rosa is working on a CLI for agent memory.", "query": "what project is Rosa building"}
+{"id": "m0083", "text": "Sami's billing plan is Enterprise.", "query": "what is Sami's billing plan"}
+{"id": "m0084", "text": "Sami prefers local-first tools with no cloud dependency.", "query": "what is Sami's privacy preference"}
+{"id": "m0085", "text": "Mara wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Mara want"}
+{"id": "m0086", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0087", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0088", "text": "Liam wants a temporal memory demo with invalidated facts.", "query": "what demo does Liam want"}
+{"id": "m0089", "text": "The release for Hana's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Hana's team"}
+{"id": "m0090", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0091", "text": "Elena is based in Helsinki and works remotely.", "query": "where is Elena based"}
+{"id": "m0092", "text": "Priya uses Candle as part of their stack.", "query": "what tool does Priya use"}
+{"id": "m0093", "text": "Bob's meeting with the a local-first code assistant team is scheduled for next week.", "query": "when is Bob's next meeting"}
+{"id": "m0094", "text": "Elena reported a bug in the Qdrant integration.", "query": "who reported the Qdrant bug"}
+{"id": "m0095", "text": "Noor asked for the encryption key rotation policy.", "query": "what did Noor ask about"}
+{"id": "m0096", "text": "Tao wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0097", "text": "Chen reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0098", "text": "Mara's favorite city to work from is Singapore.", "query": "where does Mara like to work from"}
+{"id": "m0099", "text": "Tao flagged that Docker needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0100", "text": "Quinn is the point of contact for questions about a CLI for agent memory.", "query": "who is the contact for a CLI for agent memory"}
+{"id": "m0101", "text": "Rosa prefers short, direct answers with no filler.", "query": "how should I answer Rosa"}
+{"id": "m0102", "text": "Alice is working on a Node binding.", "query": "what project is Alice building"}
+{"id": "m0103", "text": "Diego's billing plan is Team.", "query": "what is Diego's billing plan"}
+{"id": "m0104", "text": "Kira prefers local-first tools with no cloud dependency.", "query": "what is Kira's privacy preference"}
+{"id": "m0105", "text": "Diego wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Diego want"}
+{"id": "m0106", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0107", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0108", "text": "Jules wants a temporal memory demo with invalidated facts.", "query": "what demo does Jules want"}
+{"id": "m0109", "text": "The release for Noor's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Noor's team"}
+{"id": "m0110", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0111", "text": "Farah is based in Buenos Aires and works remotely.", "query": "where is Farah based"}
+{"id": "m0112", "text": "Alice uses Ollama as part of their stack.", "query": "what tool does Alice use"}
+{"id": "m0113", "text": "Quinn's meeting with the an MCP server team is scheduled for next week.", "query": "when is Quinn's next meeting"}
+{"id": "m0114", "text": "Farah reported a bug in the SQLite integration.", "query": "who reported the SQLite bug"}
+{"id": "m0115", "text": "Diego asked for the encryption key rotation policy.", "query": "what did Diego ask about"}
+{"id": "m0116", "text": "Jules wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0117", "text": "Quinn reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0118", "text": "Tao's favorite city to work from is Tokyo.", "query": "where does Tao like to work from"}
+{"id": "m0119", "text": "Elena flagged that Tokio needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0120", "text": "Farah is the point of contact for questions about an encrypted storage layer.", "query": "who is the contact for an encrypted storage layer"}
+{"id": "m0121", "text": "Quinn prefers short, direct answers with no filler.", "query": "how should I answer Quinn"}
+{"id": "m0122", "text": "Alice is working on a Python SDK.", "query": "what project is Alice building"}
+{"id": "m0123", "text": "Kira's billing plan is Enterprise.", "query": "what is Kira's billing plan"}
+{"id": "m0124", "text": "Alice prefers local-first tools with no cloud dependency.", "query": "what is Alice's privacy preference"}
+{"id": "m0125", "text": "Diego wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Diego want"}
+{"id": "m0126", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0127", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0128", "text": "Liam wants a temporal memory demo with invalidated facts.", "query": "what demo does Liam want"}
+{"id": "m0129", "text": "The release for Jules's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Jules's team"}
+{"id": "m0130", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0131", "text": "Hana is based in Lisbon and works remotely.", "query": "where is Hana based"}
+{"id": "m0132", "text": "Hana uses Turso as part of their stack.", "query": "what tool does Hana use"}
+{"id": "m0133", "text": "Chen's meeting with the a local-first code assistant team is scheduled for next week.", "query": "when is Chen's next meeting"}
+{"id": "m0134", "text": "Priya reported a bug in the Candle integration.", "query": "who reported the Candle bug"}
+{"id": "m0135", "text": "Rosa asked for the encryption key rotation policy.", "query": "what did Rosa ask about"}
+{"id": "m0136", "text": "Elena wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0137", "text": "Elena reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0138", "text": "Priya's favorite city to work from is Helsinki.", "query": "where does Priya like to work from"}
+{"id": "m0139", "text": "Farah flagged that Ollama needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0140", "text": "Quinn is the point of contact for questions about a Python SDK.", "query": "who is the contact for a Python SDK"}
+{"id": "m0141", "text": "Noor prefers short, direct answers with no filler.", "query": "how should I answer Noor"}
+{"id": "m0142", "text": "Gus is working on an encrypted storage layer.", "query": "what project is Gus building"}
+{"id": "m0143", "text": "Gus's billing plan is Team.", "query": "what is Gus's billing plan"}
+{"id": "m0144", "text": "Mara prefers local-first tools with no cloud dependency.", "query": "what is Mara's privacy preference"}
+{"id": "m0145", "text": "Liam wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Liam want"}
+{"id": "m0146", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0147", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0148", "text": "Omar wants a temporal memory demo with invalidated facts.", "query": "what demo does Omar want"}
+{"id": "m0149", "text": "The release for Quinn's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Quinn's team"}
+{"id": "m0150", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0151", "text": "Omar is based in Berlin and works remotely.", "query": "where is Omar based"}
+{"id": "m0152", "text": "Hana uses Mem0 as part of their stack.", "query": "what tool does Hana use"}
+{"id": "m0153", "text": "Chen's meeting with the a benchmark harness team is scheduled for next week.", "query": "when is Chen's next meeting"}
+{"id": "m0154", "text": "Alice reported a bug in the Turso integration.", "query": "who reported the Turso bug"}
+{"id": "m0155", "text": "Rosa asked for the encryption key rotation policy.", "query": "what did Rosa ask about"}
+{"id": "m0156", "text": "Hana wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0157", "text": "Sami reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0158", "text": "Hana's favorite city to work from is Lisbon.", "query": "where does Hana like to work from"}
+{"id": "m0159", "text": "Chen flagged that libSQL needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0160", "text": "Hana is the point of contact for questions about a local-first code assistant.", "query": "who is the contact for a local-first code assistant"}
+{"id": "m0161", "text": "Bob prefers short, direct answers with no filler.", "query": "how should I answer Bob"}
+{"id": "m0162", "text": "Kira is working on a local-first code assistant.", "query": "what project is Kira building"}
+{"id": "m0163", "text": "Quinn's billing plan is Pro.", "query": "what is Quinn's billing plan"}
+{"id": "m0164", "text": "Ivan prefers local-first tools with no cloud dependency.", "query": "what is Ivan's privacy preference"}
+{"id": "m0165", "text": "Priya wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Priya want"}
+{"id": "m0166", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0167", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0168", "text": "Gus wants a temporal memory demo with invalidated facts.", "query": "what demo does Gus want"}
+{"id": "m0169", "text": "The release for Rosa's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Rosa's team"}
+{"id": "m0170", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0171", "text": "Elena is based in Seoul and works remotely.", "query": "where is Elena based"}
+{"id": "m0172", "text": "Sami uses Docker as part of their stack.", "query": "what tool does Sami use"}
+{"id": "m0173", "text": "Hana's meeting with the an MCP server team is scheduled for next week.", "query": "when is Hana's next meeting"}
+{"id": "m0174", "text": "Priya reported a bug in the PyO3 integration.", "query": "who reported the PyO3 bug"}
+{"id": "m0175", "text": "Gus asked for the encryption key rotation policy.", "query": "what did Gus ask about"}
+{"id": "m0176", "text": "Diego wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0177", "text": "Diego reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0178", "text": "Noor's favorite city to work from is Montreal.", "query": "where does Noor like to work from"}
+{"id": "m0179", "text": "Noor flagged that PyO3 needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0180", "text": "Omar is the point of contact for questions about a REST sidecar.", "query": "who is the contact for a REST sidecar"}
+{"id": "m0181", "text": "Bob prefers short, direct answers with no filler.", "query": "how should I answer Bob"}
+{"id": "m0182", "text": "Diego is working on a Rust memory engine.", "query": "what project is Diego building"}
+{"id": "m0183", "text": "Mara's billing plan is Team.", "query": "what is Mara's billing plan"}
+{"id": "m0184", "text": "Diego prefers local-first tools with no cloud dependency.", "query": "what is Diego's privacy preference"}
+{"id": "m0185", "text": "Hana wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Hana want"}
+{"id": "m0186", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0187", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0188", "text": "Gus wants a temporal memory demo with invalidated facts.", "query": "what demo does Gus want"}
+{"id": "m0189", "text": "The release for Gus's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Gus's team"}
+{"id": "m0190", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0191", "text": "Rosa is based in Buenos Aires and works remotely.", "query": "where is Rosa based"}
+{"id": "m0192", "text": "Elena uses PyO3 as part of their stack.", "query": "what tool does Elena use"}
+{"id": "m0193", "text": "Farah's meeting with the a CLI for agent memory team is scheduled for next week.", "query": "when is Farah's next meeting"}
+{"id": "m0194", "text": "Omar reported a bug in the Mem0 integration.", "query": "who reported the Mem0 bug"}
+{"id": "m0195", "text": "Chen asked for the encryption key rotation policy.", "query": "what did Chen ask about"}
+{"id": "m0196", "text": "Omar wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0197", "text": "Rosa reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0198", "text": "Diego's favorite city to work from is Lisbon.", "query": "where does Diego like to work from"}
+{"id": "m0199", "text": "Rosa flagged that libSQL needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0200", "text": "Chen is the point of contact for questions about an MCP server.", "query": "who is the contact for an MCP server"}
+{"id": "m0201", "text": "Hana prefers short, direct answers with no filler.", "query": "how should I answer Hana"}
+{"id": "m0202", "text": "Farah is working on a graph traversal tool.", "query": "what project is Farah building"}
+{"id": "m0203", "text": "Priya's billing plan is Enterprise.", "query": "what is Priya's billing plan"}
+{"id": "m0204", "text": "Gus prefers local-first tools with no cloud dependency.", "query": "what is Gus's privacy preference"}
+{"id": "m0205", "text": "Mara wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Mara want"}
+{"id": "m0206", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0207", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0208", "text": "Bob wants a temporal memory demo with invalidated facts.", "query": "what demo does Bob want"}
+{"id": "m0209", "text": "The release for Farah's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Farah's team"}
+{"id": "m0210", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0211", "text": "Mara is based in Lisbon and works remotely.", "query": "where is Mara based"}
+{"id": "m0212", "text": "Mara uses Ollama as part of their stack.", "query": "what tool does Mara use"}
+{"id": "m0213", "text": "Omar's meeting with the a CLI for agent memory team is scheduled for next week.", "query": "when is Omar's next meeting"}
+{"id": "m0214", "text": "Noor reported a bug in the SQLite integration.", "query": "who reported the SQLite bug"}
+{"id": "m0215", "text": "Priya asked for the encryption key rotation policy.", "query": "what did Priya ask about"}
+{"id": "m0216", "text": "Elena wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0217", "text": "Gus reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0218", "text": "Jules's favorite city to work from is Tokyo.", "query": "where does Jules like to work from"}
+{"id": "m0219", "text": "Bob flagged that Turso needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0220", "text": "Rosa is the point of contact for questions about a Rust memory engine.", "query": "who is the contact for a Rust memory engine"}
+{"id": "m0221", "text": "Kira prefers short, direct answers with no filler.", "query": "how should I answer Kira"}
+{"id": "m0222", "text": "Bob is working on a Rust memory engine.", "query": "what project is Bob building"}
+{"id": "m0223", "text": "Sami's billing plan is Enterprise.", "query": "what is Sami's billing plan"}
+{"id": "m0224", "text": "Quinn prefers local-first tools with no cloud dependency.", "query": "what is Quinn's privacy preference"}
+{"id": "m0225", "text": "Quinn wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Quinn want"}
+{"id": "m0226", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0227", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0228", "text": "Farah wants a temporal memory demo with invalidated facts.", "query": "what demo does Farah want"}
+{"id": "m0229", "text": "The release for Bob's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Bob's team"}
+{"id": "m0230", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0231", "text": "Quinn is based in Berlin and works remotely.", "query": "where is Quinn based"}
+{"id": "m0232", "text": "Farah uses Candle as part of their stack.", "query": "what tool does Farah use"}
+{"id": "m0233", "text": "Tao's meeting with the a local-first code assistant team is scheduled for next week.", "query": "when is Tao's next meeting"}
+{"id": "m0234", "text": "Hana reported a bug in the PyO3 integration.", "query": "who reported the PyO3 bug"}
+{"id": "m0235", "text": "Diego asked for the encryption key rotation policy.", "query": "what did Diego ask about"}
+{"id": "m0236", "text": "Sami wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0237", "text": "Hana reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0238", "text": "Sami's favorite city to work from is Seoul.", "query": "where does Sami like to work from"}
+{"id": "m0239", "text": "Bob flagged that Turso needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0240", "text": "Chen is the point of contact for questions about a graph traversal tool.", "query": "who is the contact for a graph traversal tool"}
+{"id": "m0241", "text": "Sami prefers short, direct answers with no filler.", "query": "how should I answer Sami"}
+{"id": "m0242", "text": "Sami is working on an encrypted storage layer.", "query": "what project is Sami building"}
+{"id": "m0243", "text": "Kira's billing plan is Team.", "query": "what is Kira's billing plan"}
+{"id": "m0244", "text": "Gus prefers local-first tools with no cloud dependency.", "query": "what is Gus's privacy preference"}
+{"id": "m0245", "text": "Kira wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Kira want"}
+{"id": "m0246", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0247", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0248", "text": "Hana wants a temporal memory demo with invalidated facts.", "query": "what demo does Hana want"}
+{"id": "m0249", "text": "The release for Ivan's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Ivan's team"}
+{"id": "m0250", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0251", "text": "Mara is based in Austin and works remotely.", "query": "where is Mara based"}
+{"id": "m0252", "text": "Jules uses Docker as part of their stack.", "query": "what tool does Jules use"}
+{"id": "m0253", "text": "Kira's meeting with the an MCP server team is scheduled for next week.", "query": "when is Kira's next meeting"}
+{"id": "m0254", "text": "Chen reported a bug in the libSQL integration.", "query": "who reported the libSQL bug"}
+{"id": "m0255", "text": "Omar asked for the encryption key rotation policy.", "query": "what did Omar ask about"}
+{"id": "m0256", "text": "Tao wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0257", "text": "Sami reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0258", "text": "Diego's favorite city to work from is Berlin.", "query": "where does Diego like to work from"}
+{"id": "m0259", "text": "Rosa flagged that Mem0 needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0260", "text": "Quinn is the point of contact for questions about a CLI for agent memory.", "query": "who is the contact for a CLI for agent memory"}
+{"id": "m0261", "text": "Elena prefers short, direct answers with no filler.", "query": "how should I answer Elena"}
+{"id": "m0262", "text": "Liam is working on a local-first code assistant.", "query": "what project is Liam building"}
+{"id": "m0263", "text": "Hana's billing plan is Team.", "query": "what is Hana's billing plan"}
+{"id": "m0264", "text": "Jules prefers local-first tools with no cloud dependency.", "query": "what is Jules's privacy preference"}
+{"id": "m0265", "text": "Farah wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Farah want"}
+{"id": "m0266", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0267", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0268", "text": "Omar wants a temporal memory demo with invalidated facts.", "query": "what demo does Omar want"}
+{"id": "m0269", "text": "The release for Rosa's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Rosa's team"}
+{"id": "m0270", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0271", "text": "Jules is based in Seoul and works remotely.", "query": "where is Jules based"}
+{"id": "m0272", "text": "Quinn uses libSQL as part of their stack.", "query": "what tool does Quinn use"}
+{"id": "m0273", "text": "Rosa's meeting with the a CLI for agent memory team is scheduled for next week.", "query": "when is Rosa's next meeting"}
+{"id": "m0274", "text": "Diego reported a bug in the Qdrant integration.", "query": "who reported the Qdrant bug"}
+{"id": "m0275", "text": "Ivan asked for the encryption key rotation policy.", "query": "what did Ivan ask about"}
+{"id": "m0276", "text": "Diego wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0277", "text": "Diego reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0278", "text": "Rosa's favorite city to work from is Austin.", "query": "where does Rosa like to work from"}
+{"id": "m0279", "text": "Ivan flagged that Ollama needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0280", "text": "Tao is the point of contact for questions about a billing dashboard.", "query": "who is the contact for a billing dashboard"}
+{"id": "m0281", "text": "Kira prefers short, direct answers with no filler.", "query": "how should I answer Kira"}
+{"id": "m0282", "text": "Gus is working on a Node binding.", "query": "what project is Gus building"}
+{"id": "m0283", "text": "Ivan's billing plan is Enterprise.", "query": "what is Ivan's billing plan"}
+{"id": "m0284", "text": "Ivan prefers local-first tools with no cloud dependency.", "query": "what is Ivan's privacy preference"}
+{"id": "m0285", "text": "Bob wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Bob want"}
+{"id": "m0286", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0287", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0288", "text": "Chen wants a temporal memory demo with invalidated facts.", "query": "what demo does Chen want"}
+{"id": "m0289", "text": "The release for Noor's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Noor's team"}
+{"id": "m0290", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0291", "text": "Ivan is based in Lisbon and works remotely.", "query": "where is Ivan based"}
+{"id": "m0292", "text": "Alice uses Tokio as part of their stack.", "query": "what tool does Alice use"}
+{"id": "m0293", "text": "Elena's meeting with the a Node binding team is scheduled for next week.", "query": "when is Elena's next meeting"}
+{"id": "m0294", "text": "Ivan reported a bug in the Qdrant integration.", "query": "who reported the Qdrant bug"}
+{"id": "m0295", "text": "Omar asked for the encryption key rotation policy.", "query": "what did Omar ask about"}
+{"id": "m0296", "text": "Rosa wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0297", "text": "Noor reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0298", "text": "Rosa's favorite city to work from is Lisbon.", "query": "where does Rosa like to work from"}
+{"id": "m0299", "text": "Diego flagged that Candle needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0300", "text": "Elena is the point of contact for questions about an encrypted storage layer.", "query": "who is the contact for an encrypted storage layer"}
+{"id": "m0301", "text": "Bob prefers short, direct answers with no filler.", "query": "how should I answer Bob"}
+{"id": "m0302", "text": "Liam is working on a Python SDK.", "query": "what project is Liam building"}
+{"id": "m0303", "text": "Rosa's billing plan is Pro.", "query": "what is Rosa's billing plan"}
+{"id": "m0304", "text": "Noor prefers local-first tools with no cloud dependency.", "query": "what is Noor's privacy preference"}
+{"id": "m0305", "text": "Elena wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Elena want"}
+{"id": "m0306", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0307", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0308", "text": "Bob wants a temporal memory demo with invalidated facts.", "query": "what demo does Bob want"}
+{"id": "m0309", "text": "The release for Jules's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Jules's team"}
+{"id": "m0310", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0311", "text": "Liam is based in Lisbon and works remotely.", "query": "where is Liam based"}
+{"id": "m0312", "text": "Liam uses Mem0 as part of their stack.", "query": "what tool does Liam use"}
+{"id": "m0313", "text": "Hana's meeting with the a Node binding team is scheduled for next week.", "query": "when is Hana's next meeting"}
+{"id": "m0314", "text": "Diego reported a bug in the Tokio integration.", "query": "who reported the Tokio bug"}
+{"id": "m0315", "text": "Rosa asked for the encryption key rotation policy.", "query": "what did Rosa ask about"}
+{"id": "m0316", "text": "Noor wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0317", "text": "Tao reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0318", "text": "Elena's favorite city to work from is Tokyo.", "query": "where does Elena like to work from"}
+{"id": "m0319", "text": "Farah flagged that Qdrant needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0320", "text": "Noor is the point of contact for questions about a Rust memory engine.", "query": "who is the contact for a Rust memory engine"}
+{"id": "m0321", "text": "Farah prefers short, direct answers with no filler.", "query": "how should I answer Farah"}
+{"id": "m0322", "text": "Kira is working on an MCP server.", "query": "what project is Kira building"}
+{"id": "m0323", "text": "Noor's billing plan is Pro.", "query": "what is Noor's billing plan"}
+{"id": "m0324", "text": "Ivan prefers local-first tools with no cloud dependency.", "query": "what is Ivan's privacy preference"}
+{"id": "m0325", "text": "Farah wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Farah want"}
+{"id": "m0326", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0327", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0328", "text": "Diego wants a temporal memory demo with invalidated facts.", "query": "what demo does Diego want"}
+{"id": "m0329", "text": "The release for Mara's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Mara's team"}
+{"id": "m0330", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0331", "text": "Bob is based in Buenos Aires and works remotely.", "query": "where is Bob based"}
+{"id": "m0332", "text": "Hana uses Mem0 as part of their stack.", "query": "what tool does Hana use"}
+{"id": "m0333", "text": "Omar's meeting with the a benchmark harness team is scheduled for next week.", "query": "when is Omar's next meeting"}
+{"id": "m0334", "text": "Jules reported a bug in the Mem0 integration.", "query": "who reported the Mem0 bug"}
+{"id": "m0335", "text": "Hana asked for the encryption key rotation policy.", "query": "what did Hana ask about"}
+{"id": "m0336", "text": "Alice wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0337", "text": "Gus reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0338", "text": "Mara's favorite city to work from is Montreal.", "query": "where does Mara like to work from"}
+{"id": "m0339", "text": "Ivan flagged that Candle needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0340", "text": "Ivan is the point of contact for questions about a benchmark harness.", "query": "who is the contact for a benchmark harness"}
+{"id": "m0341", "text": "Quinn prefers short, direct answers with no filler.", "query": "how should I answer Quinn"}
+{"id": "m0342", "text": "Mara is working on a Node binding.", "query": "what project is Mara building"}
+{"id": "m0343", "text": "Rosa's billing plan is Team.", "query": "what is Rosa's billing plan"}
+{"id": "m0344", "text": "Alice prefers local-first tools with no cloud dependency.", "query": "what is Alice's privacy preference"}
+{"id": "m0345", "text": "Diego wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Diego want"}
+{"id": "m0346", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0347", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0348", "text": "Ivan wants a temporal memory demo with invalidated facts.", "query": "what demo does Ivan want"}
+{"id": "m0349", "text": "The release for Farah's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Farah's team"}
+{"id": "m0350", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0351", "text": "Sami is based in Nairobi and works remotely.", "query": "where is Sami based"}
+{"id": "m0352", "text": "Bob uses Candle as part of their stack.", "query": "what tool does Bob use"}
+{"id": "m0353", "text": "Tao's meeting with the a graph traversal tool team is scheduled for next week.", "query": "when is Tao's next meeting"}
+{"id": "m0354", "text": "Liam reported a bug in the Tokio integration.", "query": "who reported the Tokio bug"}
+{"id": "m0355", "text": "Noor asked for the encryption key rotation policy.", "query": "what did Noor ask about"}
+{"id": "m0356", "text": "Tao wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0357", "text": "Quinn reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0358", "text": "Diego's favorite city to work from is Singapore.", "query": "where does Diego like to work from"}
+{"id": "m0359", "text": "Sami flagged that Mem0 needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0360", "text": "Ivan is the point of contact for questions about a Rust memory engine.", "query": "who is the contact for a Rust memory engine"}
+{"id": "m0361", "text": "Noor prefers short, direct answers with no filler.", "query": "how should I answer Noor"}
+{"id": "m0362", "text": "Alice is working on an encrypted storage layer.", "query": "what project is Alice building"}
+{"id": "m0363", "text": "Rosa's billing plan is Pro.", "query": "what is Rosa's billing plan"}
+{"id": "m0364", "text": "Liam prefers local-first tools with no cloud dependency.", "query": "what is Liam's privacy preference"}
+{"id": "m0365", "text": "Noor wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Noor want"}
+{"id": "m0366", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0367", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0368", "text": "Chen wants a temporal memory demo with invalidated facts.", "query": "what demo does Chen want"}
+{"id": "m0369", "text": "The release for Kira's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Kira's team"}
+{"id": "m0370", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0371", "text": "Tao is based in Montreal and works remotely.", "query": "where is Tao based"}
+{"id": "m0372", "text": "Diego uses Ollama as part of their stack.", "query": "what tool does Diego use"}
+{"id": "m0373", "text": "Quinn's meeting with the a CLI for agent memory team is scheduled for next week.", "query": "when is Quinn's next meeting"}
+{"id": "m0374", "text": "Noor reported a bug in the Tokio integration.", "query": "who reported the Tokio bug"}
+{"id": "m0375", "text": "Mara asked for the encryption key rotation policy.", "query": "what did Mara ask about"}
+{"id": "m0376", "text": "Jules wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0377", "text": "Rosa reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0378", "text": "Elena's favorite city to work from is Tokyo.", "query": "where does Elena like to work from"}
+{"id": "m0379", "text": "Noor flagged that PyO3 needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0380", "text": "Farah is the point of contact for questions about a Python SDK.", "query": "who is the contact for a Python SDK"}
+{"id": "m0381", "text": "Sami prefers short, direct answers with no filler.", "query": "how should I answer Sami"}
+{"id": "m0382", "text": "Jules is working on a graph traversal tool.", "query": "what project is Jules building"}
+{"id": "m0383", "text": "Rosa's billing plan is Free.", "query": "what is Rosa's billing plan"}
+{"id": "m0384", "text": "Jules prefers local-first tools with no cloud dependency.", "query": "what is Jules's privacy preference"}
+{"id": "m0385", "text": "Jules wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Jules want"}
+{"id": "m0386", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0387", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0388", "text": "Gus wants a temporal memory demo with invalidated facts.", "query": "what demo does Gus want"}
+{"id": "m0389", "text": "The release for Noor's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Noor's team"}
+{"id": "m0390", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0391", "text": "Sami is based in Seoul and works remotely.", "query": "where is Sami based"}
+{"id": "m0392", "text": "Kira uses Docker as part of their stack.", "query": "what tool does Kira use"}
+{"id": "m0393", "text": "Omar's meeting with the a consolidation pipeline team is scheduled for next week.", "query": "when is Omar's next meeting"}
+{"id": "m0394", "text": "Gus reported a bug in the SQLite integration.", "query": "who reported the SQLite bug"}
+{"id": "m0395", "text": "Priya asked for the encryption key rotation policy.", "query": "what did Priya ask about"}
+{"id": "m0396", "text": "Farah wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0397", "text": "Chen reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0398", "text": "Jules's favorite city to work from is Helsinki.", "query": "where does Jules like to work from"}
+{"id": "m0399", "text": "Tao flagged that Tokio needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0400", "text": "Chen is the point of contact for questions about an MCP server.", "query": "who is the contact for an MCP server"}
+{"id": "m0401", "text": "Hana prefers short, direct answers with no filler.", "query": "how should I answer Hana"}
+{"id": "m0402", "text": "Jules is working on a billing dashboard.", "query": "what project is Jules building"}
+{"id": "m0403", "text": "Gus's billing plan is Pro.", "query": "what is Gus's billing plan"}
+{"id": "m0404", "text": "Alice prefers local-first tools with no cloud dependency.", "query": "what is Alice's privacy preference"}
+{"id": "m0405", "text": "Bob wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Bob want"}
+{"id": "m0406", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0407", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0408", "text": "Hana wants a temporal memory demo with invalidated facts.", "query": "what demo does Hana want"}
+{"id": "m0409", "text": "The release for Priya's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Priya's team"}
+{"id": "m0410", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0411", "text": "Tao is based in Berlin and works remotely.", "query": "where is Tao based"}
+{"id": "m0412", "text": "Omar uses PyO3 as part of their stack.", "query": "what tool does Omar use"}
+{"id": "m0413", "text": "Sami's meeting with the a billing dashboard team is scheduled for next week.", "query": "when is Sami's next meeting"}
+{"id": "m0414", "text": "Mara reported a bug in the Docker integration.", "query": "who reported the Docker bug"}
+{"id": "m0415", "text": "Mara asked for the encryption key rotation policy.", "query": "what did Mara ask about"}
+{"id": "m0416", "text": "Hana wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0417", "text": "Elena reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0418", "text": "Alice's favorite city to work from is Berlin.", "query": "where does Alice like to work from"}
+{"id": "m0419", "text": "Noor flagged that Mem0 needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0420", "text": "Farah is the point of contact for questions about an MCP server.", "query": "who is the contact for an MCP server"}
+{"id": "m0421", "text": "Quinn prefers short, direct answers with no filler.", "query": "how should I answer Quinn"}
+{"id": "m0422", "text": "Omar is working on a Rust memory engine.", "query": "what project is Omar building"}
+{"id": "m0423", "text": "Rosa's billing plan is Pro.", "query": "what is Rosa's billing plan"}
+{"id": "m0424", "text": "Diego prefers local-first tools with no cloud dependency.", "query": "what is Diego's privacy preference"}
+{"id": "m0425", "text": "Omar wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Omar want"}
+{"id": "m0426", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0427", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0428", "text": "Elena wants a temporal memory demo with invalidated facts.", "query": "what demo does Elena want"}
+{"id": "m0429", "text": "The release for Omar's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Omar's team"}
+{"id": "m0430", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0431", "text": "Quinn is based in Helsinki and works remotely.", "query": "where is Quinn based"}
+{"id": "m0432", "text": "Tao uses Tokio as part of their stack.", "query": "what tool does Tao use"}
+{"id": "m0433", "text": "Omar's meeting with the a Python SDK team is scheduled for next week.", "query": "when is Omar's next meeting"}
+{"id": "m0434", "text": "Quinn reported a bug in the PyO3 integration.", "query": "who reported the PyO3 bug"}
+{"id": "m0435", "text": "Rosa asked for the encryption key rotation policy.", "query": "what did Rosa ask about"}
+{"id": "m0436", "text": "Omar wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0437", "text": "Farah reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0438", "text": "Priya's favorite city to work from is Buenos Aires.", "query": "where does Priya like to work from"}
+{"id": "m0439", "text": "Ivan flagged that Mem0 needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0440", "text": "Ivan is the point of contact for questions about an MCP server.", "query": "who is the contact for an MCP server"}
+{"id": "m0441", "text": "Quinn prefers short, direct answers with no filler.", "query": "how should I answer Quinn"}
+{"id": "m0442", "text": "Priya is working on a Node binding.", "query": "what project is Priya building"}
+{"id": "m0443", "text": "Hana's billing plan is Team.", "query": "what is Hana's billing plan"}
+{"id": "m0444", "text": "Omar prefers local-first tools with no cloud dependency.", "query": "what is Omar's privacy preference"}
+{"id": "m0445", "text": "Chen wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Chen want"}
+{"id": "m0446", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0447", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0448", "text": "Jules wants a temporal memory demo with invalidated facts.", "query": "what demo does Jules want"}
+{"id": "m0449", "text": "The release for Hana's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Hana's team"}
+{"id": "m0450", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0451", "text": "Ivan is based in Montreal and works remotely.", "query": "where is Ivan based"}
+{"id": "m0452", "text": "Kira uses SQLite as part of their stack.", "query": "what tool does Kira use"}
+{"id": "m0453", "text": "Chen's meeting with the a vector search prototype team is scheduled for next week.", "query": "when is Chen's next meeting"}
+{"id": "m0454", "text": "Elena reported a bug in the Mem0 integration.", "query": "who reported the Mem0 bug"}
+{"id": "m0455", "text": "Mara asked for the encryption key rotation policy.", "query": "what did Mara ask about"}
+{"id": "m0456", "text": "Elena wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0457", "text": "Gus reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0458", "text": "Chen's favorite city to work from is Singapore.", "query": "where does Chen like to work from"}
+{"id": "m0459", "text": "Noor flagged that Tokio needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0460", "text": "Rosa is the point of contact for questions about a consolidation pipeline.", "query": "who is the contact for a consolidation pipeline"}
+{"id": "m0461", "text": "Noor prefers short, direct answers with no filler.", "query": "how should I answer Noor"}
+{"id": "m0462", "text": "Bob is working on a billing dashboard.", "query": "what project is Bob building"}
+{"id": "m0463", "text": "Noor's billing plan is Enterprise.", "query": "what is Noor's billing plan"}
+{"id": "m0464", "text": "Sami prefers local-first tools with no cloud dependency.", "query": "what is Sami's privacy preference"}
+{"id": "m0465", "text": "Alice wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Alice want"}
+{"id": "m0466", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0467", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0468", "text": "Sami wants a temporal memory demo with invalidated facts.", "query": "what demo does Sami want"}
+{"id": "m0469", "text": "The release for Mara's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Mara's team"}
+{"id": "m0470", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0471", "text": "Priya is based in Lisbon and works remotely.", "query": "where is Priya based"}
+{"id": "m0472", "text": "Liam uses Ollama as part of their stack.", "query": "what tool does Liam use"}
+{"id": "m0473", "text": "Mara's meeting with the a graph traversal tool team is scheduled for next week.", "query": "when is Mara's next meeting"}
+{"id": "m0474", "text": "Rosa reported a bug in the SQLite integration.", "query": "who reported the SQLite bug"}
+{"id": "m0475", "text": "Tao asked for the encryption key rotation policy.", "query": "what did Tao ask about"}
+{"id": "m0476", "text": "Hana wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0477", "text": "Priya reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0478", "text": "Hana's favorite city to work from is Nairobi.", "query": "where does Hana like to work from"}
+{"id": "m0479", "text": "Noor flagged that Docker needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0480", "text": "Alice is the point of contact for questions about a graph traversal tool.", "query": "who is the contact for a graph traversal tool"}
+{"id": "m0481", "text": "Kira prefers short, direct answers with no filler.", "query": "how should I answer Kira"}
+{"id": "m0482", "text": "Mara is working on a REST sidecar.", "query": "what project is Mara building"}
+{"id": "m0483", "text": "Farah's billing plan is Enterprise.", "query": "what is Farah's billing plan"}
+{"id": "m0484", "text": "Elena prefers local-first tools with no cloud dependency.", "query": "what is Elena's privacy preference"}
+{"id": "m0485", "text": "Tao wants benchmarks comparing BaseMyAI against Mem0 and Qdrant.", "query": "what benchmark does Tao want"}
+{"id": "m0486", "text": "Agents must never read another agent's memory.", "query": "what is the cross-agent isolation invariant"}
+{"id": "m0487", "text": "BaseMyAI stores vectors inside libSQL, not an external vector database.", "query": "where does BaseMyAI store vectors"}
+{"id": "m0488", "text": "Rosa wants a temporal memory demo with invalidated facts.", "query": "what demo does Rosa want"}
+{"id": "m0489", "text": "The release for Alice's team requires Python wheels and Node prebuilds.", "query": "what does the release require for Alice's team"}
+{"id": "m0490", "text": "The CLI must support init, inspect, stats, recall, verify, and migrate.", "query": "what subcommands must the cli support"}
+{"id": "m0491", "text": "Mara is based in Seoul and works remotely.", "query": "where is Mara based"}
+{"id": "m0492", "text": "Sami uses libSQL as part of their stack.", "query": "what tool does Sami use"}
+{"id": "m0493", "text": "Chen's meeting with the a Node binding team is scheduled for next week.", "query": "when is Chen's next meeting"}
+{"id": "m0494", "text": "Noor reported a bug in the Qdrant integration.", "query": "who reported the Qdrant bug"}
+{"id": "m0495", "text": "Omar asked for the encryption key rotation policy.", "query": "what did Omar ask about"}
+{"id": "m0496", "text": "Farah wants the benchmark corpus to be at least 500 items.", "query": "how large should the benchmark corpus be"}
+{"id": "m0497", "text": "Bob reviewed the ADR about the storage engine trait.", "query": "who reviewed the storage engine ADR"}
+{"id": "m0498", "text": "Ivan's favorite city to work from is Singapore.", "query": "where does Ivan like to work from"}
+{"id": "m0499", "text": "Kira flagged that Mem0 needs a version bump before release.", "query": "what needs a version bump before release"}
+{"id": "m0500", "text": "Omar is the point of contact for questions about a benchmark harness.", "query": "who is the contact for a benchmark harness"}

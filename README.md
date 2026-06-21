@@ -93,6 +93,11 @@ BaseMyAI solves all three problems in a single Rust binary:
 - **Temporal** — every memory carries `valid_from` / `valid_until`; retrieval returns only what is *currently* true
 - **Multi-signal** — vector similarity + knowledge graph + Reciprocal Rank Fusion in one query
 
+BaseMyAI uses vectors, but it is **not another vector database**. It is an
+embedded memory database for agents: isolation, temporal truth, layers, graph,
+forgetting, and encryption are part of the product contract. See
+[BaseMyAI is not a vector DB](docs/not-a-vector-db.md).
+
 <h2><img height="20" src="./basemyai-branding/icons/contents.svg">&nbsp;&nbsp;Contents</h2>
 
 - [What is BaseMyAI?](#what-is-basemyai)
@@ -102,6 +107,7 @@ BaseMyAI solves all three problems in a single Rust binary:
 - [Phase 2 — Cognition](#phase-2--cognition)
 - [Temporal RAG](#temporal-rag)
 - [Encryption at rest](#encryption-at-rest)
+- [P1 public proofs](#p1-public-proofs)
 - [Getting started](#getting-started)
 - [Installation](#installation)
 - [Quick look](#quick-look)
@@ -125,6 +131,14 @@ BaseMyAI solves all three problems in a single Rust binary:
 - [x] Encryption at rest via libSQL `crypto` feature (key never stored, key never sent)
 - [x] Per-agent isolation enforced at the SQL level — cross-agent leakage is a security invariant
 - [x] Python SDK (PyO3 wheel), Node SDK (NAPI-RS prebuild), REST sidecar (axum), native Rust crate
+
+<h2><img height="20" src="./basemyai-branding/icons/tick.svg">&nbsp;&nbsp;P1 Public Proofs</h2>
+
+- [Benchmark harness: BaseMyAI local vs Mem0 + Qdrant local](docs/benchmarks/local-memory-vs-mem0-qdrant.md)
+- [Adversarial isolation test](crates/basemyai/tests/p1_isolation_adversarial.rs)
+- [Temporal replacement demo](crates/basemyai/examples/temporal_replacement.rs)
+- [Zero network after setup](docs/zero-network-after-setup.md)
+- [BaseMyAI is not a vector DB](docs/not-a-vector-db.md)
 
 <img width="100%" src="./basemyai-branding/img/basemyai-memory-engine.png.png" alt="BaseMyAI memory engine" />
 
@@ -453,7 +467,7 @@ procedures = await mem.recall_by_layer("how do I deploy?", "procedural", k=5)
 
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;Consumption surfaces</h2>
 
-The same Rust core, four ways to consume it:
+The same Rust core, five ways to consume it:
 
 | Surface | For | Crate consumed | Tech |
 |---|---|---|---|
@@ -461,6 +475,7 @@ The same Rust core, four ways to consume it:
 | **Node SDK** | JS / TS agent builders | `basemyai` | NAPI-RS + prebuild |
 | **REST sidecar** | Go, Ruby, any HTTP client | `basemyai` | Single self-contained binary (axum) |
 | **Native Rust crate** | Rust programs — e.g. ForgeMyAI | `basemyai-core` | Direct link, zero FFI overhead |
+| **CLI** (`basemyai`) | Scripting, ops, ad-hoc inspection, agent-as-tool (`--format json`) | `basemyai` | Single binary (clap) — see [CLI reference](docs/cli.md) |
 
 <h2><img height="20" src="./basemyai-branding/icons/community.svg">&nbsp;&nbsp;Community</h2>
 

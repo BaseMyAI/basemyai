@@ -10,6 +10,7 @@ Cargo.lock
 *.db-wal
 *.sqlite
 *.sqlite3
+*.bmai
 
 # ── Modèles ML (Candle / GGUF / HuggingFace) ─────────────────────────────────
 # Ces fichiers peuvent peser plusieurs Go — ne jamais committer
@@ -20,6 +21,7 @@ Cargo.lock
 *.pt
 *.onnx
 models/
+.models/
 .cache/
 
 # ── Bindings Python (PyO3 / maturin) ─────────────────────────────────────────

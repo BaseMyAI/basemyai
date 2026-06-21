@@ -110,7 +110,10 @@ bindings PyO3/NAPI ✅ (`bindings/basemyai-py`, `bindings/basemyai-node`), sidec
 (`crates/basemyai-mcp`) et REST ✅ (`crates/basemyai-rest`) : tous implémentés et testés.
 
 **État réel : voir `docs/status.md` (source de vérité, 2026-06-20).** Le moteur (Phase 1 + 2)
-et les surfaces (MCP/REST/bindings) sont en place ; **rien n'est encore publié** (crates.io /
-npm / PyPI = 0). Plus gros trou V1 : **le CLI `basemyai-cli` (inexistant, M5)**. `StorageEngine`
-est amorcé mais minimal (contrat d'identité, pas trait d'opérations mémoire ; `Filter` toujours
-SQL-leaky). Hardening (M6 : bench KNN, stress test, pool, key rotation) non commencé.
+et les surfaces (MCP/REST/bindings/CLI) sont en place ; **rien n'est encore publié** (crates.io /
+npm / PyPI = 0, pas de binaire CLI distribué). CLI `basemyai-cli` ✅ : cycle de vie mémoire complet
+(`remember/recall/list/forget/invalidate/purge/export/import`), graphe, maintenance (`gc`/
+`forget-adaptive`/`consolidate`), `config`, `completions` — voir `docs/cli.md`. Reste ouvert (M5) :
+distribution binaire (cargo-dist), tests CLI en CI. `StorageEngine` : trait d'opérations mémoire
+`basemyai::storage::MemoryStore` + `LibsqlMemoryStore` fait (ADR-020, 2026-06-20), `Filter` confiné,
+tests de contrat ajoutés. Hardening (M6 : bench KNN, stress test, pool, key rotation) non commencé.

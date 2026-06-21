@@ -1,0 +1,12 @@
+# `RUST_TEST_THREADS=1` : les suites d'intégration ouvrent chacune plusieurs
+# `Store` natifs libSQL (`:memory:`) en parallèle (un par `#[tokio::test]`, dans
+# le même binaire). À haute concurrence de threads, ça déclenche une rare race
+# native côté libSQL 0.9.30 (`STATUS_ACCESS_VIOLATION`, observée sous Windows,
+# non reproductible avec un seul thread de test). Confirmé : ni sérialiser
+# l'ouverture (`basemyai_core::storage::store::native_open_lock`) ni sérialiser
+# le corps de chaque test (verrou applicatif) ne suffit — la race est ailleurs
+# dans le runtime natif de la dépendance, hors de notre contrôle. Le coût (tests
+# séquentiels au lieu de parallèles dans un même binaire) est négligeable : la
+# suite complète tourne en quelques secondes.
+[env]
+RUST_TEST_THREADS = "1"

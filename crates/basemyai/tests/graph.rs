@@ -2,13 +2,23 @@
 //! par CTE récursive, isolation par agent, exclusion temporelle, terminaison sur
 //! cycle.
 
+use basemyai::storage::{LibsqlMemoryStore, MemoryStore};
 use basemyai::temporal::Validity;
 use basemyai::{AgentId, Graph};
 use basemyai_core::Store;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn agent(id: &str) -> AgentId {
     AgentId::new(id).expect("non-empty agent id")
+}
+
+/// Enveloppe un `Store` dans le moteur de stockage partagé par les `Graph` de
+/// test. Cloner l'`Arc` (pas le `Store`) permet à plusieurs `Graph` de
+/// pointer sur la même connexion sous-jacente, comme `Memory::graph()` le
+/// fait en production.
+fn engine_on(store: Store) -> Arc<dyn MemoryStore> {
+    Arc::new(LibsqlMemoryStore::new(store))
 }
 
 fn now() -> i64 {
@@ -34,8 +44,8 @@ async fn migrated_file_store(path: &std::path::Path) -> Store {
 
 #[tokio::test]
 async fn traverses_multiple_hops() {
-    let store = migrated_store().await;
-    let g = Graph::new(&store, agent("a"));
+    let engine = engine_on(migrated_store().await);
+    let g = Graph::new(engine, agent("a"));
 
     // Alice → (employeur) Acme → (a_racheté) Beta
     g.add_entity("alice", "person", "Alice").await.expect("alice");
@@ -57,9 +67,9 @@ async fn traverses_multiple_hops() {
 
 #[tokio::test]
 async fn isolation_hides_other_agents_edges() {
-    let store = migrated_store().await;
-    let ga = Graph::new(&store, agent("A"));
-    let gb = Graph::new(&store, agent("B"));
+    let engine = engine_on(migrated_store().await);
+    let ga = Graph::new(Arc::clone(&engine), agent("A"));
+    let gb = Graph::new(Arc::clone(&engine), agent("B"));
 
     // Même base : A construit un chemin, B ne doit rien voir.
     ga.add_entity("x", "thing", "X").await.expect("x");
@@ -72,9 +82,9 @@ async fn isolation_hides_other_agents_edges() {
 
 #[tokio::test]
 async fn agents_can_reuse_same_graph_ids_without_conflict() {
-    let store = migrated_store().await;
-    let ga = Graph::new(&store, agent("A"));
-    let gb = Graph::new(&store, agent("B"));
+    let engine = engine_on(migrated_store().await);
+    let ga = Graph::new(Arc::clone(&engine), agent("A"));
+    let gb = Graph::new(Arc::clone(&engine), agent("B"));
 
     ga.add_entity("alice", "person", "Alice A").await.expect("alice A");
     ga.add_entity("acme", "company", "Acme A").await.expect("acme A");
@@ -94,10 +104,8 @@ async fn agents_can_reuse_same_graph_ids_without_conflict() {
 #[tokio::test]
 async fn file_backed_same_store_isolates_graph_agents() {
     let path = temp_db_path("graph-isolation");
-    let store_a = migrated_file_store(&path).await;
-    let store_b = migrated_file_store(&path).await;
-    let ga = Graph::new(&store_a, agent("A"));
-    let gb = Graph::new(&store_b, agent("B"));
+    let ga = Graph::new(engine_on(migrated_file_store(&path).await), agent("A"));
+    let gb = Graph::new(engine_on(migrated_file_store(&path).await), agent("B"));
 
     ga.add_entity("alice", "person", "Alice A").await.expect("alice A");
     ga.add_entity("acme", "company", "Acme A").await.expect("acme A");
@@ -116,8 +124,8 @@ async fn file_backed_same_store_isolates_graph_agents() {
 
 #[tokio::test]
 async fn excludes_expired_entities_and_edges() {
-    let store = migrated_store().await;
-    let g = Graph::new(&store, agent("a"));
+    let engine = engine_on(migrated_store().await);
+    let g = Graph::new(engine, agent("a"));
     let n = now();
 
     g.add_entity("root", "thing", "Root").await.expect("root");
@@ -145,8 +153,8 @@ async fn excludes_expired_entities_and_edges() {
 
 #[tokio::test]
 async fn terminates_on_cycle() {
-    let store = migrated_store().await;
-    let g = Graph::new(&store, agent("a"));
+    let engine = engine_on(migrated_store().await);
+    let g = Graph::new(engine, agent("a"));
 
     // Cycle a → b → a : la traversée bornée doit terminer, pas boucler.
     g.add_entity("a1", "thing", "A1").await.expect("a1");
