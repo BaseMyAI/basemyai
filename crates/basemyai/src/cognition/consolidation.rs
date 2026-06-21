@@ -12,14 +12,12 @@
 //! graphe est idempotente (`ON CONFLICT`), et les faits déjà présents sont
 //! ignorés : relancer la consolidation ne duplique rien.
 
-use basemyai_core::CoreError;
-use basemyai_core::libsql;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::inference::LlmInference;
 use crate::temporal::Validity;
-use crate::{Graph, Memory, MemoryError, MemoryLayer, Result, now_unix};
+use crate::{Memory, MemoryError, MemoryLayer, Result, now_unix};
 
 /// Borne le nombre d'épisodes envoyés au LLM en une passe (taille de prompt).
 const MAX_EPISODES: usize = 50;
@@ -122,8 +120,9 @@ pub fn parse_extraction(raw: &str) -> Result<Extraction> {
 /// Provenance des faits promus par consolidation (vs `"user"` pour un
 /// souvenir mémorisé directement, cf. ADR-018 / audit sécurité). Trace
 /// l'escalade de confiance `episodic → semantic` qui passe par une inférence
-/// LLM sur du contenu potentiellement non fiable.
-const SOURCE_CONSOLIDATION: &str = "consolidation";
+/// LLM sur du contenu potentiellement non fiable. Réexporté depuis `memory` :
+/// c'est aussi le marqueur qui fait émettre un événement `Consolidated`.
+use crate::memory::SOURCE_CONSOLIDATION;
 
 /// Applique une extraction (déjà parsée) à la mémoire : peuple le graphe
 /// (idempotent, `ON CONFLICT`) puis promeut les faits en `semantic` (dédupliqués
@@ -140,7 +139,7 @@ const SOURCE_CONSOLIDATION: &str = "consolidation";
 /// [`MemoryError::Core`] en cas d'échec de stockage/embedding.
 pub async fn apply_extraction(memory: &Memory, extraction: &Extraction) -> Result<ConsolidationReport> {
     // Graphe : upserts idempotents (ON CONFLICT) — relancer ne duplique pas.
-    let graph = Graph::new(memory.store(), memory.agent().clone());
+    let graph = memory.graph();
     for e in &extraction.entities {
         graph.add_entity(&e.id, &e.kind, &e.label).await?;
     }
@@ -211,23 +210,7 @@ fn strip_json_fences(raw: &str) -> &str {
 /// plus ancien, bornés à `limit`.
 async fn recent_episodes(memory: &Memory, limit: usize) -> Result<Vec<String>> {
     let now = now_unix();
-    let conn = memory.store().connect();
-    let mut rows = conn
-        .query(
-            "SELECT content FROM memory \
-             WHERE agent_id = ?1 AND layer = 'episodic' \
-               AND valid_from <= ?2 AND (valid_until IS NULL OR valid_until > ?2) \
-             ORDER BY valid_from DESC LIMIT ?3",
-            libsql::params![memory.agent().as_str(), now, i64::try_from(limit).unwrap_or(i64::MAX)],
-        )
-        .await
-        .map_err(storage)?;
-
-    let mut out = Vec::new();
-    while let Some(row) = rows.next().await.map_err(storage)? {
-        out.push(row.get::<String>(0).map_err(storage)?);
-    }
-    Ok(out)
+    memory.engine().recent_episodes(memory.agent(), limit, now).await
 }
 
 /// Seuil de similarité cosinus (`1 - distance`) au-delà duquel un fait
@@ -243,16 +226,7 @@ const SEMANTIC_DEDUP_THRESHOLD: f32 = 0.95;
 /// laisserait passer une reformulation légère (ou une variante injectée) du
 /// même fait — audit sécurité, memory poisoning.
 async fn fact_already_known(memory: &Memory, fact: &str) -> Result<bool> {
-    let conn = memory.store().connect();
-    let mut rows = conn
-        .query(
-            "SELECT 1 FROM memory \
-             WHERE agent_id = ?1 AND layer = 'semantic' AND content = ?2 LIMIT 1",
-            libsql::params![memory.agent().as_str(), fact],
-        )
-        .await
-        .map_err(storage)?;
-    if rows.next().await.map_err(storage)?.is_some() {
+    if memory.engine().exact_fact_exists(memory.agent(), fact).await? {
         return Ok(true);
     }
 
@@ -308,10 +282,6 @@ fn build_prompt(episodes: &[String]) -> String {
         ));
     }
     p
-}
-
-fn storage(e: libsql::Error) -> MemoryError {
-    CoreError::Storage(e.to_string()).into()
 }
 
 #[cfg(test)]
