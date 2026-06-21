@@ -7,12 +7,19 @@
 use std::fmt;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libsql::{Builder, Connection, Database, TransactionBehavior};
 use tokio::sync::{Mutex, MutexGuard};
 
 use super::{Filter, Metric, Neighbor, Value};
 use crate::{CoreError, EngineCapabilities, Result, StorageEngine};
+
+/// Taille par défaut du pool de connexions lecteur ouvert par [`Store::open`].
+/// Les lectures (KNN) se répartissent en round-robin sur ces connexions ;
+/// l'écriture reste sérialisée sur l'unique writer.
+const DEFAULT_READ_POOL: usize = 4;
 
 /// Facteur de sur-échantillonnage du top-k natif quand un `Filter` est présent :
 /// on demande `k * KNN_OVERSAMPLE` voisins avant d'appliquer le `WHERE`, pour
@@ -53,14 +60,32 @@ pub struct Migration {
     pub up_sql: &'static str,
 }
 
-/// Store libSQL. Garde une connexion partagée (libSQL synchronise l'accès en
-/// interne) — nécessaire pour que les bases `:memory:` restent cohérentes.
+/// Store libSQL avec **pool de lecteurs**. Un unique `writer` sérialisé (WAL +
+/// `busy_timeout`) porte toutes les écritures ; un pool de `readers` (round-robin)
+/// porte les lectures, qui se parallélisent sous WAL sans bloquer le writer. La
+/// `Database` est conservée vivante pour pouvoir rouvrir des connexions.
+///
+/// **Dégénérescence `:memory:`** : chaque `db.connect()` sur une base en mémoire
+/// ouvre une *base distincte*, donc impossible de pooler ; le store garde alors
+/// l'unique writer partagé (libSQL synchronise l'accès en interne), `readers`
+/// est vide et [`reader`](Self::reader) retombe sur le writer. Pas de PRAGMA WAL
+/// en mémoire.
 pub struct Store {
-    conn: Connection,
+    /// Conservée vivante pour que les connexions (writer + pool) restent
+    /// valides — `Connection` ne garde pas la `Database` en vie. Lue uniquement
+    /// comme propriétaire ; jamais déréférencée après l'ouverture.
+    #[allow(dead_code)]
+    db: Database,
+    /// L'unique connexion d'écriture, sérialisée via `write_lock`.
+    writer: Connection,
+    /// Pool de connexions lecteur (round-robin). **Vide** pour `:memory:`.
+    readers: Vec<Connection>,
+    /// Curseur round-robin sur `readers`.
+    next: AtomicUsize,
     path: Option<PathBuf>,
     encrypted: bool,
-    /// Sérialise les [`WriteTxn`] : la connexion étant partagée, deux `BEGIN`
-    /// concurrents s'imbriqueraient (erreur SQLite) sans ce verrou.
+    /// Sérialise les [`WriteTxn`] : deux `BEGIN` concurrents sur le writer
+    /// s'imbriqueraient (erreur SQLite) sans ce verrou.
     write_lock: Mutex<()>,
 }
 
@@ -81,36 +106,96 @@ impl Store {
     /// [`CoreError::Encryption`] si une clé est fournie sans la feature `crypto`,
     /// [`CoreError::Storage`] si l'ouverture échoue.
     pub async fn open(path: &Path, key: Option<EncryptionKey>) -> Result<Self> {
+        Self::open_with(path, key, DEFAULT_READ_POOL).await
+    }
+
+    /// Comme [`open`](Self::open) mais avec une taille de pool lecteur explicite.
+    /// `pool_size = 0` ⇒ aucune connexion lecteur (toutes les lectures retombent
+    /// sur le writer, comme en mémoire).
+    ///
+    /// Toute l'ouverture (writer + lecteurs) se fait **séquentiellement sous le
+    /// même `native_open_lock`** : la race native `sqlite3_open_v2` (voir le doc
+    /// de [`native_open_lock`]) interdit deux ouvertures concurrentes.
+    ///
+    /// # Errors
+    /// [`CoreError::Encryption`] si une clé est fournie sans la feature `crypto`,
+    /// [`CoreError::Storage`] si l'ouverture échoue.
+    pub async fn open_with(path: &Path, key: Option<EncryptionKey>, pool_size: usize) -> Result<Self> {
         let encrypted = key.is_some();
+        let _guard = native_open_lock().lock().await;
         let db = build_local(path, key).await?;
-        let conn = db.connect().map_err(map)?;
+
+        // Writer + PRAGMAs WAL (file-backed uniquement).
+        let writer = db.connect().map_err(map)?;
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;\n\
+                 PRAGMA synchronous=NORMAL;\n\
+                 PRAGMA busy_timeout=5000;",
+            )
+            .await
+            .map_err(map)?;
+
+        // Pool lecteur : ouvertures SÉQUENTIELLES, toujours sous le même guard.
+        let mut readers = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            let r = db.connect().map_err(map)?;
+            r.execute_batch("PRAGMA busy_timeout=5000;").await.map_err(map)?;
+            readers.push(r);
+        }
+
         Ok(Self {
-            conn,
+            db,
+            writer,
+            readers,
+            next: AtomicUsize::new(0),
             path: Some(path.to_path_buf()),
             encrypted,
             write_lock: Mutex::new(()),
         })
     }
 
-    /// Ouvre un store en mémoire (tests).
+    /// Ouvre un store en mémoire (tests). **Dégénéré** : pas de pool (chaque
+    /// `db.connect()` en mémoire est une base distincte), `readers` vide, pas de
+    /// PRAGMA WAL. La `Database` est conservée vivante.
     ///
     /// # Errors
     /// [`CoreError::Storage`] si l'initialisation échoue.
     pub async fn open_in_memory() -> Result<Self> {
+        let _guard = native_open_lock().lock().await;
         let db = Builder::new_local(":memory:").build().await.map_err(map)?;
-        let conn = db.connect().map_err(map)?;
+        let writer = db.connect().map_err(map)?;
         Ok(Self {
-            conn,
+            db,
+            writer,
+            readers: Vec::new(),
+            next: AtomicUsize::new(0),
             path: None,
             encrypted: false,
             write_lock: Mutex::new(()),
         })
     }
 
-    /// Connexion partagée (clone). libSQL synchronise l'accès en interne.
+    /// Connexion **writer** (clone) — pour les requêtes, préférer
+    /// [`reader`](Self::reader). libSQL synchronise l'accès en interne ; les
+    /// écritures ad hoc via cette connexion restent correctes et sérialisées
+    /// (WAL + `busy_timeout`).
     #[must_use]
     pub fn connect(&self) -> Connection {
-        self.conn.clone()
+        self.writer.clone()
+    }
+
+    /// Connexion **lecteur** (clone) issue du pool, en round-robin. Si le pool
+    /// est vide (`:memory:` ou `pool_size = 0`), retombe sur le writer. Les
+    /// connexions SERIALIZED sont sûres à partager sans checkout.
+    #[must_use]
+    pub fn reader(&self) -> Connection {
+        if self.readers.is_empty() {
+            self.writer.clone()
+        } else {
+            let i = self.next.fetch_add(1, Ordering::Relaxed) % self.readers.len();
+            self.readers[i].clone()
+        }
     }
 
     /// Applique les migrations de version supérieure à la courante. Idempotent.
@@ -122,7 +207,7 @@ impl Store {
         conn.execute_batch("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL);")
             .await
             .map_err(map)?;
-        let current = scalar_i64(&conn, "SELECT COALESCE(MAX(version), 0) FROM _schema_version").await?;
+        let current = scalar_i64(&self.reader(), "SELECT COALESCE(MAX(version), 0) FROM _schema_version").await?;
 
         for m in migrations.iter().filter(|m| i64::from(m.version) > current) {
             conn.execute_batch(m.up_sql).await.map_err(map)?;
@@ -194,7 +279,7 @@ impl Store {
         filter: Option<&Filter>,
     ) -> Result<Vec<Neighbor>> {
         let table = ident(table)?;
-        let conn = self.connect();
+        let conn = self.reader();
 
         let filtered = matches!(filter, Some(f) if !f.where_sql.is_empty());
         let inner_k = if filtered { k.saturating_mul(KNN_OVERSAMPLE) } else { k };
@@ -270,7 +355,7 @@ impl Store {
         metric: Metric,
     ) -> Result<Vec<Neighbor>> {
         let table = ident(table)?;
-        let conn = self.connect();
+        let conn = self.reader();
         let inner_k = k.saturating_mul(RERANK_OVERSAMPLE);
 
         // Placeholders : 1) query (vector_top_k) 2) inner_k 3..) params du filtre.
@@ -319,7 +404,7 @@ impl Store {
     pub async fn begin_write(&self) -> Result<WriteTxn<'_>> {
         let writer = self.write_lock.lock().await;
         let txn = self
-            .conn
+            .writer
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .await
             .map_err(map)?;
@@ -372,6 +457,22 @@ impl Deref for WriteTxn<'_> {
     fn deref(&self) -> &Connection {
         &self.txn
     }
+}
+
+/// Sérialise toutes les ouvertures natives (`sqlite3_open_v2` via libSQL), process-wide.
+///
+/// libSQL configure son threading SQLite (`SQLITE_CONFIG_SERIALIZED` +
+/// `sqlite3_initialize`) derrière un `Once` interne au premier `Database::new` ; ce
+/// verrou évite que deux ouvertures concurrentes touchent cette init globale en
+/// même temps. **Insuffisant seul** contre la rare race native Windows observée à
+/// haute concurrence de threads (`STATUS_ACCESS_VIOLATION`, voir
+/// `RUST_TEST_THREADS=1` dans `.cargo/config.toml`) — celle-ci se reproduit même
+/// avec ce verrou en place, donc ailleurs dans le runtime libSQL. Conservé pour
+/// la sémantique correcte qu'il garantit en prod ; les ouvertures sont rares (une
+/// par session), donc le coût est négligeable.
+fn native_open_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[cfg(feature = "crypto")]
