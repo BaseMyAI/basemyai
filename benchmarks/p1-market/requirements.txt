@@ -1,3 +1,6 @@
-basemyai
+# basemyai is NOT on PyPI — build the local bindings instead:
+#   pip install maturin
+#   (cd ../../bindings/basemyai-py && maturin develop --release)
 mem0ai
 qdrant-client
+numpy<2  # numpy 2.x segfaults (WinError / exit 139) with the mem0+qdrant native stack
