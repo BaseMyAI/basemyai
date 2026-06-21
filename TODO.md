@@ -1,0 +1,32 @@
+# TODO — BaseMyAI M6+ (as of 2026-06-21)
+
+## Benchmarking (In Progress)
+
+- [ ] **mem0+Qdrant 500-item run**: Retry with fixed Qdrant timeout (120s, was 5s) after client crash at ~2h04
+  - Options:
+    - (A) Full 500-item run (~2h+, progress saved now if it fails again)
+    - (B) Shrink to 100 items (~30-40min, document asymmetry vs BaseMyAI n=500)
+    - (C) Publish with BaseMyAI n=500 + mem0 n=10 (old), note the gap
+  - **Decision pending**
+- [ ] Update `docs/benchmarks/local-memory-vs-mem0-qdrant.md` once mem0 run completes (n=500 numbers, remove n=10 caveat)
+- [ ] Regenerate `benchmarks/p1-market/out/summary.md` via `summarize.py`
+- [ ] Commit benchmark data & updated docs
+
+## CI & Release (Not Started)
+
+- [ ] Add `basemyai-cli` to GitHub Actions matrix (currently missing from CI)
+- [ ] Add dedicated job for `p1_isolation_adversarial` test (ADR-018 adversarial isolation)
+- [ ] Fix release workflows:
+  - `release.yml` (crates.io publish gate)
+  - `python-wheels.yml` (PyPI publish)
+  - `node-prebuilds.yml` (npm publish)
+- [ ] Dry-run publish to staging before announcing
+
+## Cleanup (Optional)
+
+- [ ] Stop Qdrant container: `docker compose -f benchmarks/p1-market/docker-compose.qdrant.yml down`
+- [ ] Unload Ollama models if not needed: `ollama pull llama3.2:1b && ollama pull all-minilm` (or `ollama rm`)
+
+---
+
+**Status**: Benchmark retry decision needed; CI/release work blocked on benchmark completion.

@@ -122,12 +122,14 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 |---|---|---|---|
 | Crate `basemyai-cli` (clap) | ✅ | `crates/basemyai-cli/` (binaire `basemyai`) dans `Cargo.toml` members ; build + `clippy --workspace --all-targets -D warnings` verts (2026-06-20) | Features `embed`+`crypto` (défaut), miroir `basemyai-mcp`. Clé via `BASEMYAI_DB_KEY`. Référence complète : `docs/cli.md`. |
 | Commandes V1 indispensables (`init`, `inspect`, `stats`, `recall`, `verify`, `migrate`) | ✅ | smoke test end-to-end : init→remember→recall(+`--hybrid`)→stats→inspect→verify ; isolation agent vérifiée ; mauvaise clé → refus | Couvre exactement les *indispensables V1* de la recherche stratégique. + `remember`. |
-| Cycle de vie mémoire complet (`list`, `forget`, `invalidate`, `purge --yes`, `export`, `import`) | ✅ | `commands_memory.rs` | `list`/`forget`/`invalidate`/`purge` passent par `basemyai::storage::MemoryStore` directement (pas de chargement Candle pour des mutations sans embedding). **Non listé dans `TODO.md` M5** — code plus avancé que le plan. |
-| Graphe (`graph add-entity`, `graph add-edge`, `graph traverse`) | ✅ | `commands_graph.rs` | Miroir CLI de `basemyai::Graph`. **Non listé dans `TODO.md` M5.** |
-| Maintenance one-shot (`maintenance gc`, `maintenance forget-adaptive`) et `consolidate` | ✅ | `commands_maintenance.rs` | `gc` était listé comme restant — **fait**. `consolidate` exige un LLM local détecté (`llm detect`). **`maintenance gc` n'est pas scopé par agent** (tourne sur tout le conteneur) — pas de `--agent-id` comme envisagé dans `TODO.md`. |
-| `config show/set/unset`, `completions` | ✅ | `cli_config.rs`, `main.rs` | Résolution `--db`/`--agent` : flag > env (`BASEMYAI_DB_PATH`/`BASEMYAI_AGENT`) > `~/.basemyai/config.toml` > erreur explicite. `--format json` sur toutes les commandes (agent-as-tool). |
-| `setup [--fetch]`, `status`, `llm detect`, `llm suggest` | ✅ | `src/main.rs` ; testé contre modèle provisionné + détection LLM locale | `setup` respecte le consentement explicite (ADR-010). Persistance via `provision.json`. |
-| Distribution binaire (cargo-dist), tests CLI automatisés | 🟡 | — | Reste ouvert (M5). Smoke test manuel, pas encore en CI (`assert_cmd`/`trycmd`). |
+| Cycle de vie mémoire complet (`list`, `forget`, `invalidate`, `purge --yes`, `export`, `import`) | ✅ | `commands/memory.rs` | `list`/`forget`/`invalidate`/`purge` passent par `basemyai::storage::MemoryStore` directement (pas de chargement Candle pour des mutations sans embedding). **Non listé dans `TODO.md` M5** — code plus avancé que le plan. |
+| Graphe (`graph add-entity`, `graph add-edge`, `graph traverse`) | ✅ | `commands/graph.rs` | Miroir CLI de `basemyai::Graph`. **Non listé dans `TODO.md` M5.** |
+| Maintenance one-shot (`maintenance gc`, `maintenance forget-adaptive`) et `consolidate` | ✅ | `commands/maintenance.rs` | `gc` était listé comme restant — **fait**. `consolidate` exige un LLM local détecté (`llm detect`). **`maintenance gc` n'est pas scopé par agent** (tourne sur tout le conteneur) — pas de `--agent-id` comme envisagé dans `TODO.md`. |
+| `config show/set/unset`, `completions` | ✅ | `commands/config.rs`, `persisted_config.rs` | Résolution `--db`/`--agent` : flag > env (`BASEMYAI_DB_PATH`/`BASEMYAI_AGENT`) > `~/.basemyai/config.toml` > erreur explicite. `--format json` sur toutes les commandes (agent-as-tool). |
+| `setup [--fetch]`, `status`, `llm detect`, `llm suggest` | ✅ | `commands/provision.rs` ; testé contre modèle provisionné + détection LLM locale | `setup` respecte le consentement explicite (ADR-010). Persistance via `provision.json`. |
+| Erreurs/exit codes stables (`error.rs`/`exit.rs`), JSON `{"error":{"code","message"}}` | ✅ | `error.rs`, `exit.rs`, `output.rs` | Voir `docs/cli.md` §Exit codes & error shape. |
+| Distribution binaire (cargo-dist) | 🟡 | — | Reste ouvert (M5). |
+| Tests CLI automatisés | ✅ (partiel) | `tests/cli.rs` (`assert_cmd`, 12 tests) | Couvre les commandes sans embedder. Pas encore wiré en CI (aucun job `crypto`+`embed` combiné) ; `remember`/`recall`/`stats`/`export`/`import`/`consolidate` non couverts (nécessitent le modèle Candle). |
 
 ---
 
