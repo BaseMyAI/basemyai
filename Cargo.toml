@@ -49,7 +49,7 @@ sha2 = "0.10"
 # HTTP framework — basemyai-mcp (transport HTTP) et basemyai-rest.
 axum        = { version = "0.8", features = ["macros"] }
 tower       = { version = "0.5", features = ["util"] }
-tower-http  = { version = "0.6", features = ["timeout", "trace", "request-id", "limit", "set-header"] }
+tower-http  = { version = "0.7", features = ["timeout", "trace", "request-id", "limit", "set-header"] }
 # MCP (Model Context Protocol) — server + macros.
 rmcp        = { version = "1.7", features = ["server", "macros"] }
 # JSON Schema pour les macros #[tool] de rmcp.
