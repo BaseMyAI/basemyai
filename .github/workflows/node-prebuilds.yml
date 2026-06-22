@@ -37,6 +37,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # rust-toolchain.toml pins channel 1.95, so the build uses 1.95 — not the
+      # `stable` the action set the target on. Add the target to the pinned
+      # toolchain that actually compiles (fixes cross x86_64 on arm64 runners).
+      - name: Add Rust target to pinned toolchain
+        run: rustup target add ${{ matrix.target }}
+
       - name: Install CMake (Ubuntu)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake
