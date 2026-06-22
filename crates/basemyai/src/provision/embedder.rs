@@ -3,6 +3,7 @@
 //! et persiste le choix dans `~/.local/share/basemyai/provision.json` (Linux /
 //! `%APPDATA%` Windows / `~/Library/Application Support` macOS).
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use basemyai_core::{CoreError, Device};
@@ -279,7 +280,12 @@ async fn download_and_verify(
         on_progress(received, total);
     }
 
-    let computed = format!("{:x}", hasher.finalize());
+    // sha2 0.11 : `finalize()` renvoie un `Array` qui n'implémente plus `LowerHex`.
+    // On encode l'empreinte en hexadécimal nous-mêmes (sans dépendance supplémentaire).
+    let mut computed = String::with_capacity(Sha256::output_size() * 2);
+    for byte in hasher.finalize() {
+        let _ = write!(computed, "{byte:02x}");
+    }
 
     // ── Vérification SHA-256 ────────────────────────────────────────────────
     let sha_path = dest.with_extension("sha256");
