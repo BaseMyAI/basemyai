@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: "BaseMyAI: the local memory engine for AI agents"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  - name: "The BaseMyAI Authors"
+repository-code: "https://github.com/basemyai/basemyai"
+url: "https://basemyai.com"
+abstract: >-
+  BaseMyAI is a privacy-first, 100% local memory engine for AI agents, built in
+  Rust on a hardened libSQL backend with native vector search and encryption at
+  rest. It provides persistent, temporal, per-agent isolated memory with
+  semantic, hybrid, and graph recall.
+keywords:
+  - ai-agents
+  - memory
+  - vector-search
+  - embeddings
+  - libsql
+  - rust
+  - local-first
+license: MIT
+version: 0.1.0
+date-released: "2026-06-21"

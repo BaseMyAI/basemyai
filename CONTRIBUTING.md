@@ -1,0 +1,96 @@
+# Contributing to BaseMyAI
+
+Thanks for your interest in BaseMyAI — the local memory engine for AI agents.
+This guide covers how to build, test, and propose changes.
+
+## Code of Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By
+participating, you agree to uphold it. Report unacceptable behavior to
+**conduct@basemyai.com**.
+
+## Ground rules
+
+BaseMyAI is two crates in one workspace:
+
+- **`basemyai-core`** — the business-agnostic foundation. It knows nothing about
+  agent memory (`agent_id`, temporal validity, layers) or code (`Symbol`,
+  `Edge`). **Mechanism lives in the core; meaning lives in the consumer.**
+- **`basemyai`** — the memory semantics, built on top of the core.
+
+A few invariants are non-negotiable and enforced by tests and CI:
+
+- **`basemyai-core` stays agnostic.** No `agent_id`, `valid_from/until`, memory
+  layer, or `Symbol/Edge` in it (ADR-001). A grep for those terms in
+  `crates/basemyai-core/src` must return zero.
+- **Per-agent isolation is a security invariant**, not a config option (ADR-006).
+  Every read and write is filtered by `agent_id` at the SQL level.
+- **All agent inputs are bound as SQL parameters**, never interpolated.
+- **Encryption is mandatory in `basemyai`** (libSQL `crypto` feature).
+- **The `Embedder` never downloads** and never detects hardware — it receives a
+  resolved path and `Device` (ADR-010).
+
+If a change requires bending one of these, it needs an **ADR** first (see below).
+
+## Development setup
+
+Requires a recent stable Rust toolchain (edition 2024, see
+`rust-toolchain.toml`). The native vector path compiles without CMake; only the
+`crypto` feature (encryption at rest) needs **CMake** installed.
+
+```bash
+# The quality gate — must pass before every commit:
+cargo clippy --workspace --all-targets -- -D warnings
+
+cargo test --workspace                                  # full async test suite
+cargo fmt --all                                         # formatting
+cargo build -p basemyai-core --features embed           # Candle (heavy)
+cargo build -p basemyai-core --features crypto          # encryption (needs CMake)
+```
+
+The workspace lint policy (`[workspace.lints]` in the root `Cargo.toml`) encodes
+the Rust rules below into the compiler. Your change must keep the clippy gate
+green.
+
+## Rust style (edition 2024, 2026)
+
+- `thiserror` in libraries; `#[non_exhaustive]` on public error enums.
+- **No `unwrap()` in library code** (tests are exempt via `clippy.toml`).
+  `expect("message")` with a message is allowed.
+- No `static mut`. No std `Mutex` held across an `.await`.
+- Getters without a `get_` prefix. Prefer `&str` over `String` in parameters.
+- `Arc::clone(&x)` over `x.clone()` on ref-counted values.
+
+## ADRs — how decisions are made
+
+Architecture decisions live in `ADR.md`. **An ADR is never edited**: a decision
+that changes is recorded as a *new* ADR that supersedes the old one. If your
+contribution changes architecture or touches an invariant above, open an issue
+proposing the ADR first so the direction can be agreed before you write code.
+
+## Pull requests
+
+1. Fork and branch from `main` (or `dev`).
+2. Keep PRs focused — one logical change per PR.
+3. Make sure `cargo clippy --workspace --all-targets -- -D warnings`,
+   `cargo test --workspace`, and `cargo fmt --all --check` all pass locally.
+4. Write a clear PR description: what changed, why, and which ADR/issue it
+   relates to. Reference issues with `Fixes #123`.
+5. Use [Conventional Commits](https://www.conventionalcommits.org/) for commit
+   and PR titles (e.g. `feat(core): …`, `fix(cli): …`, `docs: …`).
+
+CI runs clippy, tests, formatting, CodeQL, and supply-chain checks on every PR.
+First-time contributor PRs are labeled and may wait for a maintainer to approve
+workflow runs.
+
+## Reporting bugs and requesting features
+
+Use the [issue templates](https://github.com/basemyai/basemyai/issues/new/choose).
+For **security vulnerabilities, do not open a public issue** — see
+[SECURITY.md](SECURITY.md) (report privately to security@basemyai.com or via a
+GitHub security advisory).
+
+## Questions
+
+Open a [Discussion](https://github.com/basemyai/basemyai/discussions) or join the
+[Discord](https://discord.gg/basemyai).

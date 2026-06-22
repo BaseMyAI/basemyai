@@ -62,6 +62,10 @@ uuid        = { version = "1", features = ["v4"] }
 once_cell   = "1"
 # Parsing de config.toml (clé API MCP, db-path).
 toml        = "0.8"
+# Tests d'intégration CLI (process spawn + assertions stdout/exit code).
+assert_cmd  = "2"
+predicates  = "3"
+tempfile    = "3"
 
 # Lints partagés par tout le workspace (Rust 2026).
 # Gate : `cargo clippy --workspace --all-targets -- -D warnings` (CLAUDE.md).

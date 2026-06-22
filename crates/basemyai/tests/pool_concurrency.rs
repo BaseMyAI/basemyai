@@ -118,7 +118,15 @@ async fn reads_succeed_while_write_txn_in_progress() {
     {
         let engine = LibsqlMemoryStore::new(migrated_file_store(&path).await);
         engine
-            .put_memory("seed", &a, MemoryLayer::Episodic, "graine", Validity::since(0), &vec_for(1), "user")
+            .put_memory(
+                "seed",
+                &a,
+                MemoryLayer::Episodic,
+                "graine",
+                Validity::since(0),
+                &vec_for(1),
+                "user",
+            )
             .await
             .expect("seed put");
     }
@@ -150,7 +158,15 @@ async fn in_memory_store_degenerate_pool_roundtrips() {
     let a = agent("a");
 
     engine
-        .put_memory("m1", &a, MemoryLayer::Episodic, "bonjour", Validity::since(0), &vec_for(1), "user")
+        .put_memory(
+            "m1",
+            &a,
+            MemoryLayer::Episodic,
+            "bonjour",
+            Validity::since(0),
+            &vec_for(1),
+            "user",
+        )
         .await
         .expect("put");
 
@@ -169,7 +185,15 @@ async fn wal_sidecar_exists_after_write() {
     let engine = LibsqlMemoryStore::new(migrated_file_store(&path).await);
     let a = agent("a");
     engine
-        .put_memory("m1", &a, MemoryLayer::Episodic, "x", Validity::since(0), &vec_for(1), "user")
+        .put_memory(
+            "m1",
+            &a,
+            MemoryLayer::Episodic,
+            "x",
+            Validity::since(0),
+            &vec_for(1),
+            "user",
+        )
         .await
         .expect("put");
 

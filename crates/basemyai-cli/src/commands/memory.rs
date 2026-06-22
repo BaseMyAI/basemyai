@@ -7,8 +7,10 @@ use std::path::Path;
 
 use basemyai::{Memory, Record};
 
+use crate::cli::Layer;
+use crate::context::{memory_layer, now_unix, open_engine, open_memory, open_store};
+use crate::error::CliError;
 use crate::output::Format;
-use crate::{Layer, memory_layer, now_unix, open_engine, open_memory, open_store};
 
 pub(crate) async fn remember(
     memory: &Memory,
@@ -16,7 +18,7 @@ pub(crate) async fn remember(
     text: Option<String>,
     file: Option<String>,
     format: Format,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CliError> {
     let layer = memory_layer(layer);
     match (text, file) {
         (Some(_), Some(_)) | (None, None) => {
@@ -32,7 +34,11 @@ pub(crate) async fn remember(
         }
         (None, Some(file)) => {
             let raw = read_input(&file)?;
-            let texts: Vec<String> = raw.lines().map(str::to_string).filter(|l| !l.trim().is_empty()).collect();
+            let texts: Vec<String> = raw
+                .lines()
+                .map(str::to_string)
+                .filter(|l| !l.trim().is_empty())
+                .collect();
             let ids = memory.remember_batch(&texts, layer).await?;
             format.print(
                 || println!("remembered {} item(s) in layer {}", ids.len(), layer.table()),
@@ -52,13 +58,17 @@ pub(crate) async fn recall(
     layer: Option<Layer>,
     graph: bool,
     format: Format,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), CliError> {
     let records: Vec<Record> = match (hybrid, layer, graph) {
         (true, None, false) => memory.recall_hybrid(query, k).await?,
         (false, Some(l), false) => memory.recall_by_layer(query, memory_layer(l), k).await?,
         (false, None, true) => memory.search_graph(query, k).await?,
         (false, None, false) => memory.recall(query, k).await?,
-        _ => return Err("--hybrid, --layer and --graph are mutually exclusive".into()),
+        _ => {
+            return Err(CliError::MutuallyExclusive(
+                "--hybrid, --layer and --graph are mutually exclusive",
+            ));
+        }
     };
     print_records(&records, query, format);
     Ok(())
@@ -104,8 +114,8 @@ pub(crate) async fn list(
     limit: usize,
     include_invalid: bool,
     format: Format,
-) -> Result<(), Box<dyn std::error::Error>> {
-    basemyai::AgentId::new(agent).ok_or("agent id must not be empty")?;
+) -> Result<(), CliError> {
+    basemyai::AgentId::new(agent).ok_or(CliError::InvalidAgent)?;
 
     let store = open_store(path).await?;
     let conn = store.connect();
@@ -168,7 +178,7 @@ pub(crate) async fn list(
     Ok(())
 }
 
-pub(crate) async fn forget(path: &Path, agent: &str, id: &str, format: Format) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn forget(path: &Path, agent: &str, id: &str, format: Format) -> Result<(), CliError> {
     let (engine, agent_id) = open_engine(path, agent).await?;
     engine.forget(&agent_id, id).await?;
     format.print(
@@ -178,7 +188,7 @@ pub(crate) async fn forget(path: &Path, agent: &str, id: &str, format: Format) -
     Ok(())
 }
 
-pub(crate) async fn invalidate(path: &Path, agent: &str, id: &str, format: Format) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn invalidate(path: &Path, agent: &str, id: &str, format: Format) -> Result<(), CliError> {
     let (engine, agent_id) = open_engine(path, agent).await?;
     engine.invalidate(&agent_id, id, now_unix()).await?;
     format.print(
@@ -188,9 +198,11 @@ pub(crate) async fn invalidate(path: &Path, agent: &str, id: &str, format: Forma
     Ok(())
 }
 
-pub(crate) async fn purge(path: &Path, agent: &str, yes: bool, format: Format) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn purge(path: &Path, agent: &str, yes: bool, format: Format) -> Result<(), CliError> {
     if !yes {
-        return Err("purge is irreversible: re-run with --yes to confirm".into());
+        return Err(CliError::ConfirmationRequired(
+            "purge is irreversible: re-run with --yes to confirm",
+        ));
     }
     let (engine, agent_id) = open_engine(path, agent).await?;
     engine.purge_agent(&agent_id).await?;
@@ -201,7 +213,7 @@ pub(crate) async fn purge(path: &Path, agent: &str, yes: bool, format: Format) -
     Ok(())
 }
 
-pub(crate) async fn export(path: &Path, agent: &str, out: Option<String>, format: Format) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn export(path: &Path, agent: &str, out: Option<String>, format: Format) -> Result<(), CliError> {
     let memory = open_memory(path, agent).await?;
     let jsonl = memory.export_jsonl().await?;
     match out {
@@ -217,7 +229,7 @@ pub(crate) async fn export(path: &Path, agent: &str, out: Option<String>, format
     Ok(())
 }
 
-pub(crate) async fn import(path: &Path, agent: &str, file: &str, format: Format) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn import(path: &Path, agent: &str, file: &str, format: Format) -> Result<(), CliError> {
     let memory = open_memory(path, agent).await?;
     let jsonl = read_input(file)?;
     let report = memory.import_jsonl(&jsonl).await?;
@@ -225,7 +237,11 @@ pub(crate) async fn import(path: &Path, agent: &str, file: &str, format: Format)
         || {
             println!(
                 "imported: {} memories ({} skipped), {} entities ({} skipped), {} edges ({} skipped)",
-                report.memories, report.memories_skipped, report.entities, report.entities_skipped, report.edges,
+                report.memories,
+                report.memories_skipped,
+                report.entities,
+                report.entities_skipped,
+                report.edges,
                 report.edges_skipped
             );
         },
@@ -244,7 +260,7 @@ pub(crate) async fn import(path: &Path, agent: &str, file: &str, format: Format)
 }
 
 /// Lit `-` depuis stdin, sinon le fichier au chemin donné.
-fn read_input(path: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn read_input(path: &str) -> Result<String, CliError> {
     if path == "-" {
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;

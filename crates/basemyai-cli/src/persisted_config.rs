@@ -36,7 +36,10 @@ impl CliConfig {
     #[must_use]
     pub(crate) fn load() -> Self {
         let mut cfg = match load_file_config() {
-            Ok(Some(file)) => Self { db_path: file.cli.db_path, agent: file.cli.agent },
+            Ok(Some(file)) => Self {
+                db_path: file.cli.db_path,
+                agent: file.cli.agent,
+            },
             Ok(None) => Self::default(),
             Err(e) => {
                 eprintln!("warning: {e}");
@@ -137,7 +140,6 @@ fn write_raw_table(path: &std::path::Path, cli: CliSection) -> Result<(), String
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
     }
-    let rendered =
-        toml::to_string_pretty(&FileConfig { cli }).map_err(|e| format!("serializing config: {e}"))?;
+    let rendered = toml::to_string_pretty(&FileConfig { cli }).map_err(|e| format!("serializing config: {e}"))?;
     std::fs::write(path, rendered).map_err(|e| format!("writing {}: {e}", path.display()))
 }
