@@ -9,16 +9,16 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 
-#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
+#[cfg(all(feature = "crypto", feature = "embed"))]
 use basemyai::AgentId;
 use basemyai::MemoryLayer;
 
-#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
+#[cfg(all(feature = "crypto", feature = "embed"))]
 use basemyai_core::Store;
 #[cfg(all(feature = "crypto", feature = "embed"))]
 use basemyai_core::{CandleEmbedder, Device, Embedder, EncryptionKey};
 
-#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
+#[cfg(all(feature = "crypto", feature = "embed"))]
 use crate::errors::ValidationError;
 use crate::errors::to_pyerr;
 use crate::types::{AgentStats, Entity, Record};
@@ -101,18 +101,9 @@ impl Memory {
     #[staticmethod]
     fn open_test_file(py: Python<'_>, path: String, agent_id: String) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
-            let agent =
-                AgentId::new(agent_id).ok_or_else(|| ValidationError::new_err("a valid agent_id is required"))?;
-            let store = Store::open(&PathBuf::from(path), None)
+            let mem = basemyai::Memory::open_test_file(&PathBuf::from(path), &agent_id)
                 .await
-                .map_err(basemyai::MemoryError::from)
                 .map_err(to_pyerr)?;
-            store
-                .migrate(&basemyai::schema())
-                .await
-                .map_err(basemyai::MemoryError::from)
-                .map_err(to_pyerr)?;
-            let mem = basemyai::Memory::new(store, Box::new(basemyai::HashEmbedder::new()), agent);
             Ok(Memory::wrap(mem))
         })
     }

@@ -11,7 +11,7 @@ use napi::{Error, Status};
 use napi_derive::napi;
 
 use basemyai::MemoryLayer;
-#[cfg(any(feature = "embed", feature = "test-util"))]
+#[cfg(feature = "embed")]
 use basemyai_core::Store;
 #[cfg(feature = "embed")]
 use basemyai_core::{CandleEmbedder, Device, EncryptionKey};
@@ -200,17 +200,9 @@ impl Memory {
     /// sans compiler Candle ni embarquer de modèle.
     #[napi(factory, js_name = "openTestFile")]
     pub async fn open_test_file(path: String, agent_id: String) -> Result<Memory> {
-        let agent = basemyai::AgentId::new(agent_id).ok_or_else(|| to_napi(basemyai::MemoryError::MissingAgent))?;
-        let store = Store::open(&PathBuf::from(path), None)
+        let mem = basemyai::Memory::open_test_file(&PathBuf::from(path), &agent_id)
             .await
-            .map_err(basemyai::MemoryError::from)
             .map_err(to_napi)?;
-        store
-            .migrate(&basemyai::schema())
-            .await
-            .map_err(basemyai::MemoryError::from)
-            .map_err(to_napi)?;
-        let mem = basemyai::Memory::new(store, Box::new(basemyai::HashEmbedder::new()), agent);
         Ok(Memory { inner: Arc::new(mem) })
     }
 }

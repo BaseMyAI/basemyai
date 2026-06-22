@@ -216,6 +216,26 @@ fn purge_requires_explicit_yes() {
 }
 
 #[test]
+fn export_json_to_stdout_is_rejected() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+
+    isolated(home.path())
+        .arg("--format")
+        .arg("json")
+        .arg("--db")
+        .arg(&db)
+        .arg("--agent")
+        .arg("alice")
+        .arg("export")
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("\"code\":\"USAGE_ERROR\""))
+        .stderr(predicate::str::contains("JSONL"));
+}
+
+#[test]
 fn empty_agent_is_invalid_agent_exit_5() {
     let home = tempfile::tempdir().expect("tempdir");
     let db = db_path(home.path());

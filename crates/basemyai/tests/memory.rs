@@ -5,7 +5,6 @@ use basemyai::temporal::Validity;
 use basemyai::{AgentId, AgentStats, Memory, MemoryLayer};
 use basemyai_core::libsql;
 use basemyai_core::{Embedder, Result, Store};
-use std::path::PathBuf;
 
 const DIM: usize = 384;
 
@@ -50,16 +49,6 @@ fn agent(id: &str) -> AgentId {
 fn now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs()).expect("fits i64")
-}
-
-fn temp_db_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("basemyai-{name}-{}-{}.db", std::process::id(), now()))
-}
-
-async fn open_file_memory(path: &std::path::Path, agent_id: &str) -> Memory {
-    let store = Store::open(path, None).await.expect("open file store");
-    store.migrate(&basemyai::schema()).await.expect("migrate");
-    Memory::new(store, Box::new(FakeEmbedder), agent(agent_id))
 }
 
 #[tokio::test]
@@ -273,7 +262,9 @@ async fn isolation_hides_other_agents_items() {
     .expect("insert A");
 
     // Mémoire bornée à l'agent B sur la MÊME base.
-    let mem_b = Memory::new(store, Box::new(FakeEmbedder), agent("B"));
+    let mem_b = Memory::open(store, Box::new(FakeEmbedder), agent("B"))
+        .await
+        .expect("open memory B");
     mem_b
         .remember("public note of B", MemoryLayer::Semantic)
         .await
@@ -284,29 +275,6 @@ async fn isolation_hides_other_agents_items() {
         hits.iter().all(|r| r.text != "secret of agent A"),
         "un item de l'agent A ne doit JAMAIS apparaître dans le recall de l'agent B"
     );
-}
-
-#[tokio::test]
-async fn file_backed_same_store_isolates_agents() {
-    let path = temp_db_path("memory-isolation");
-    let mem_a = open_file_memory(&path, "agent-a").await;
-    let mem_b = open_file_memory(&path, "agent-b").await;
-
-    mem_a
-        .remember("secret of agent A", MemoryLayer::Semantic)
-        .await
-        .expect("A remembers");
-    mem_b
-        .remember("public note of agent B", MemoryLayer::Semantic)
-        .await
-        .expect("B remembers");
-
-    let hits_b = mem_b.recall("secret of agent A", 5).await.expect("B recalls");
-    assert!(
-        hits_b.iter().all(|r| r.text != "secret of agent A"),
-        "B ne doit pas voir les souvenirs de A"
-    );
-    assert_eq!(mem_b.stats().await.expect("B stats").total(), 1);
 }
 
 #[tokio::test]

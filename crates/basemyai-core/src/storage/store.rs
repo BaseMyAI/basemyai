@@ -203,21 +203,23 @@ impl Store {
     /// # Errors
     /// [`CoreError::Storage`] en cas d'échec SQL.
     pub async fn migrate(&self, migrations: &[Migration]) -> Result<()> {
-        let conn = self.connect();
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL);")
+        let _migration = migration_lock().lock().await;
+        let txn = self.begin_write().await?;
+        txn.execute_batch("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL);")
             .await
             .map_err(map)?;
-        let current = scalar_i64(&self.reader(), "SELECT COALESCE(MAX(version), 0) FROM _schema_version").await?;
+        let current = scalar_i64(&txn, "SELECT COALESCE(MAX(version), 0) FROM _schema_version").await?;
 
         for m in migrations.iter().filter(|m| i64::from(m.version) > current) {
-            conn.execute_batch(m.up_sql).await.map_err(map)?;
-            conn.execute(
+            txn.execute_batch(m.up_sql).await.map_err(map)?;
+            txn.execute(
                 "INSERT INTO _schema_version (version) VALUES (?1)",
                 libsql::params![i64::from(m.version)],
             )
             .await
             .map_err(map)?;
         }
+        txn.commit().await?;
         Ok(())
     }
 
@@ -471,6 +473,17 @@ impl Deref for WriteTxn<'_> {
 /// la sémantique correcte qu'il garantit en prod ; les ouvertures sont rares (une
 /// par session), donc le coût est négligeable.
 fn native_open_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Sérialise les migrations process-wide.
+///
+/// Chaque [`Store`] a son propre verrou writer, donc deux stores ouverts sur le
+/// même fichier froid pourraient sinon créer `_schema_version` et appliquer le
+/// même lot de DDL en parallèle. Le verrou global garde le chemin cold-open
+/// simple et déterministe ; la transaction writer rend chaque lot tout-ou-rien.
+fn migration_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }

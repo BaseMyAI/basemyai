@@ -88,10 +88,10 @@ de le rendre **publiable et utilisable** comme dépendance.
 | [x] | `cargo doc --no-deps --all-features` sans warning | `///` ajoutés sur `EncryptionKey::new`, `MaintenanceWorker::new`, champs `Filter`/`Neighbor`/`Value`. |
 | [x] | `examples/rust/memory_basic.rs` | `crates/basemyai/examples/memory_basic.rs` — FakeEmbedder + in-memory store. Compile sans feature flag. |
 | [x] | `examples/rust/llm_consolidation.rs` | `crates/basemyai/examples/llm_consolidation.rs` — FakeLlm + consolidation. |
-| [~] | `cargo publish --dry-run` sur les deux crates | **`basemyai-core` : dry-run vert (2026-06-20), zéro bloqueur d'empaquetage.** `basemyai` reste à dry-run mais sera bloqué tant que `basemyai-core 0.1.0` n'est pas sur crates.io (dep `version = "0.1.0"`). Ordre de publication : **core d'abord, puis basemyai**. |
-| [ ] | Publier `basemyai-core` sur crates.io | `cargo publish -p basemyai-core` |
-| [ ] | Publier `basemyai` sur crates.io | `cargo publish -p basemyai` |
-| [ ] | Workflow CI `publish.yml` déclenché sur tag `v*` | |
+| [~] | `cargo publish --dry-run` sur les deux crates | Historique : `basemyai-core` dry-run vert le 2026-06-20. Les crates sont désormais **publiées** ; garder le dry-run comme garde-fou avant la prochaine release. |
+| [x] | Publier `basemyai-core` sur crates.io | Confirmé le 2026-06-22 via `cargo search basemyai --limit 10`. |
+| [x] | Publier `basemyai` sur crates.io | Confirmé le 2026-06-22 via `cargo search basemyai --limit 10`. |
+| [x] | Workflow CI `publish.yml` déclenché sur tag `v*` | Le tag `v0.1.0` existe ; la publication crates.io a effectivement eu lieu. |
 
 ---
 
@@ -100,21 +100,21 @@ de le rendre **publiable et utilisable** comme dépendance.
 > **⚠️ Désynchronisé avec le code (voir `docs/status.md`).** Le binding existe
 > déjà sous `bindings/basemyai-node` (pas `crates/`), avec classe `Memory`
 > complète, tests roundtrip et workflow `node-prebuilds.yml`. Reste réellement
-> ouvert : **publication npm** + wrappers d'intégration. Le tableau ci-dessous
+> ouvert : **vérification finale de la publication npm** + wrappers d'intégration. Le tableau ci-dessous
 > est l'ancien plan, conservé pour historique.
 
 | # | Tâche | Notes |
 |---|-------|-------|
 | [x] | Créer le binding Node avec NAPI-RS | Fait sous `bindings/basemyai-node`. |
-| [ ] | Wrapper `Memory` → classe JS `Memory` | Constructor async : `await Memory.open(path, agentId, encryptionKey, modelPath)` |
-| [ ] | Méthodes : `remember`, `recallByLayer`, `recall`, `invalidate`, `forget` | Retourner des `Promise<T>` via `napi::Task`. |
-| [ ] | Wrapper `Graph` → classe JS `Graph` | `addEntity`, `addEdge`, `traverse` |
-| [ ] | Types TypeScript générés automatiquement | NAPI-RS génère les `.d.ts` via `#[napi]` — vérifier la qualité. |
-| [ ] | Package npm `basemyai` : `package.json`, `index.js`, `index.d.ts` | |
-| [ ] | Tests Jest | Au moins : remember + recall, invalidate, graph traversal. |
+| [x] | Wrapper `Memory` → classe JS `Memory` | Fait dans `bindings/basemyai-node/src/memory.rs` ; ouverture async exposée côté JS. |
+| [x] | Méthodes : `remember`, `recallByLayer`, `recall`, `invalidate`, `forget` | API complète exposée ; voir aussi `recallHybrid`, `stats`, graphe. |
+| [x] | Wrapper `Graph` → classe JS `Graph` | Surface graphe exposée sur `Memory` (`addGraphEntity`, `addGraphEdge`, `recallGraph`). |
+| [x] | Types TypeScript générés automatiquement | `index.d.ts` présent ; qualité encore à surveiller en publication. |
+| [x] | Package npm `basemyai` : `package.json`, `index.js`, `index.d.ts` | Présents sous `bindings/basemyai-node/`. |
+| [x] | Tests Jest | `bindings/basemyai-node/__tests__/roundtrip.test.js`. |
 | [ ] | CI prebuild matrix : `linux-x64`, `win32-x64`, `darwin-x64`, `darwin-arm64` | GitHub Actions `@napi-rs/cli`, upload artefacts. |
-| [ ] | Publish npm | `npm publish --access public` sur tag `v*` |
-| [ ] | `examples/node/memory_basic.ts` | 15 lignes, copier-coller dans un README. |
+| [~] | Publish npm | Le workflow et le README ciblent `basemyai`, mais `npm view basemyai` renvoie `404` depuis cette machine au 2026-06-22 ; vérifier le nom/scope réellement publié avant de clore. |
+| [x] | `examples/node/memory_basic.ts` | Présent sous `examples/node/`. |
 | [ ] | `examples/node/llm_consolidation.ts` | |
 
 ---
@@ -124,18 +124,18 @@ de le rendre **publiable et utilisable** comme dépendance.
 > **⚠️ Désynchronisé avec le code (voir `docs/status.md`).** Le binding existe
 > déjà sous `bindings/basemyai-py` (pas `crates/`), avec classe `Memory` async,
 > stubs `.pyi`, `py.typed`, tests et workflow `python-wheels.yml`. Reste
-> réellement ouvert : **publication PyPI** + wrappers LangChain/LlamaIndex.
+> réellement ouvert : wrappers LangChain/LlamaIndex. **Publication PyPI confirmée** le 2026-06-22.
 
 | # | Tâche | Notes |
 |---|-------|-------|
 | [x] | Créer le binding Python avec PyO3 | Fait sous `bindings/basemyai-py`. |
-| [ ] | Wrapper `Memory` → classe Python `Memory` | Méthodes async via `asyncio` (pyo3-asyncio ou PyO3 0.22+ native async). |
-| [ ] | Méthodes : `remember`, `recall`, `recall_by_layer`, `invalidate`, `forget` | |
-| [ ] | Wrapper `Graph` | |
-| [ ] | Stubs `.pyi` générés | `maturin develop --strip` + `maturin generate-ci` |
-| [ ] | Tests pytest | `tests/python/test_memory.py`, `test_graph.py` |
-| [ ] | CI manylinux wheel matrix | `manylinux2014_x86_64`, `musllinux_1_1`, `win_amd64`, `macosx_11_arm64` |
-| [ ] | Publish PyPI | `maturin publish` sur tag `v*` |
+| [x] | Wrapper `Memory` → classe Python `Memory` | Classe async présente dans `bindings/basemyai-py/src/memory.rs`. |
+| [x] | Méthodes : `remember`, `recall`, `recall_by_layer`, `invalidate`, `forget` | API complète exposée ; voir aussi `recall_hybrid`, `stats`, graphe. |
+| [x] | Wrapper `Graph` | Surface graphe exposée par la classe `Memory`. |
+| [x] | Stubs `.pyi` générés | `python/basemyai/__init__.pyi` + `py.typed` présents. |
+| [x] | Tests pytest | `bindings/basemyai-py/tests/test_roundtrip.py`. |
+| [x] | CI manylinux wheel matrix | Workflow `python-wheels.yml` présent ; publication PyPI observée avec wheels manylinux/macOS/Windows. |
+| [x] | Publish PyPI | Confirmé le 2026-06-22 via `python -m pip index versions basemyai` et la page PyPI. |
 | [ ] | Compat LangChain : `BasemyaiMemory(BaseMemory)` wrapper | Rend `basemyai` utilisable dans n'importe quelle chaîne LangChain en 2 lignes. |
 | [ ] | Compat LlamaIndex : `BasemyaiMemoryBuffer` | |
 | [ ] | `examples/python/memory_basic.py` | |
@@ -158,9 +158,9 @@ multi-langages.
 | # | Tâche | Notes |
 |---|-------|-------|
 | [x] | Crate binaire REST (axum) | Fait sous `crates/basemyai-rest`. |
-| [ ] | Auth basique (Bearer token, configurable) | Sans auth le sidecar est un vecteur d'attaque locale. |
-| [ ] | OpenAPI 3.1 spec source de vérité | `openapi-sidecar.yaml` reste la source canonique V1. Ne pas ajouter `utoipa` tant que la spec YAML n'est pas explicitement remplacée. |
-| [ ] | Config complète | bind/port, db path, encryption key, model path, auth Bearer, agent policy. |
+| [x] | Auth basique (Bearer token, configurable) | Fait : Bearer constant-time, mode dev explicite, tests API. |
+| [x] | OpenAPI 3.1 spec source de vérité | `openapi-sidecar.yaml` présent ; source canonique V1. |
+| [x] | Config complète | `bind`/`port`, db path, encryption key, model path, auth Bearer, agent policy. |
 | [ ] | Image Docker (`FROM scratch` ou `alpine`) | Binaire statique — possible avec `musl`. |
 | [ ] | CI build + push Docker Hub / GHCR | |
 | [ ] | `examples/go/memory_client.go` | Démo cross-langage. |
@@ -280,4 +280,4 @@ M6  Hardening                      continu
 M7  Docs + launch                  ~1 sem
 ```
 
-**Total estimé jusqu'au premier `pip install basemyai` qui marche : ~6-8 semaines.**
+**Le premier `pip install basemyai` marche déjà** (PyPI `0.1.0` confirmé le 2026-06-22). Le reste du travail porte désormais surtout sur npm, la distribution binaire CLI, les intégrations framework et le hardening.

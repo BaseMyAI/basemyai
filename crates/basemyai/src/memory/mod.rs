@@ -60,7 +60,7 @@ impl Memory {
     /// Assemble une mémoire à partir des primitives du core déjà construites,
     /// **sans** migrer le schéma (à utiliser quand le schéma est déjà en place).
     #[must_use]
-    pub fn new(store: Store, embedder: Box<dyn Embedder>, agent: AgentId) -> Self {
+    fn from_migrated_store(store: Store, embedder: Box<dyn Embedder>, agent: AgentId) -> Self {
         let (events, _) = broadcast::channel(DEFAULT_EVENT_CAPACITY);
         Self {
             engine: Arc::new(LibsqlMemoryStore::new(store)),
@@ -84,7 +84,7 @@ impl Memory {
             return Err(crate::MemoryError::EncryptionRequired);
         }
         store.migrate(&schema::schema()).await?;
-        Ok(Self::new(store, embedder, agent))
+        Ok(Self::from_migrated_store(store, embedder, agent))
     }
 
     /// L'agent propriétaire de cette mémoire.
@@ -160,6 +160,26 @@ impl Memory {
         let agent = AgentId::new(agent_id).ok_or(crate::MemoryError::MissingAgent)?;
         let store = Store::open_in_memory().await?;
         Self::open(store, Box::new(HashEmbedder::new()), agent).await
+    }
+
+    /// Ouvre une mémoire sur un fichier libSQL **non chiffré** avec l'embedder
+    /// déterministe de test, en contournant volontairement la règle de
+    /// chiffrement obligatoire de [`Memory::open`].
+    ///
+    /// Réservé aux **tests et spikes des bindings** (`test-util`) : vérifie
+    /// l'isolation SQL réelle entre agents sur un vrai fichier partagé, sans
+    /// Candle ni CMake. **Jamais en production** — le seul bypass de chiffrement
+    /// du crate vit ici, strictement confiné à cette feature.
+    ///
+    /// # Errors
+    /// [`crate::MemoryError::MissingAgent`] si `agent_id` est vide ;
+    /// [`crate::MemoryError::Core`] si l'ouverture/migration échoue.
+    #[cfg(feature = "test-util")]
+    pub async fn open_test_file(path: &std::path::Path, agent_id: &str) -> Result<Self> {
+        let agent = AgentId::new(agent_id).ok_or(crate::MemoryError::MissingAgent)?;
+        let store = Store::open(path, None).await?;
+        store.migrate(&schema::schema()).await?;
+        Ok(Self::from_migrated_store(store, Box::new(HashEmbedder::new()), agent))
     }
 
     /// Mémorise un texte dans une couche, valide dès maintenant et sans

@@ -214,6 +214,11 @@ pub(crate) async fn purge(path: &Path, agent: &str, yes: bool, format: Format) -
 }
 
 pub(crate) async fn export(path: &Path, agent: &str, out: Option<String>, format: Format) -> Result<(), CliError> {
+    if out.is_none() && format == Format::Json {
+        return Err(CliError::MutuallyExclusive(
+            "export writes JSONL to stdout; use --out with --format json so stdout remains one JSON object",
+        ));
+    }
     let memory = open_memory(path, agent).await?;
     let jsonl = memory.export_jsonl().await?;
     match out {

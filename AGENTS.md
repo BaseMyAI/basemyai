@@ -105,4 +105,17 @@ Phase 1 (socle) ✅ et Phase 2 (Cognition) ✅ implémentées :
 - **Consolidation** épisodes→faits : `consolidate(memory, llm)`, idempotente, `LlmInference` injecté (ADR-012).
 - **LLM provision** : `KNOWN_MODELS` 20 modèles juin 2026, 8 backends détectés, `choose_llm()` hardware-aware (ADR-013).
 
-Reste ouvert : wiring consolidation dans `MaintenanceWorker` (nécessite `Arc<Memory>` + provider LLM dans la tâche) ; bindings PyO3/NAPI ; sidecar REST.
+Wiring consolidation dans `MaintenanceWorker` ✅ (`ConsolidationTask`, `maintenance/mod.rs`),
+bindings PyO3/NAPI ✅ (`bindings/basemyai-py`, `bindings/basemyai-node`), sidecar MCP ✅
+(`crates/basemyai-mcp`) et REST ✅ (`crates/basemyai-rest`) : tous implémentés et testés.
+
+**État réel : voir `docs/status.md` (source de vérité, 2026-06-22).** Le moteur (Phase 1 + 2)
+et les surfaces (MCP/REST/bindings/CLI) sont en place ; **crates.io et PyPI sont publiés**
+(`0.1.0` confirmé le 2026-06-22), tandis que la publication npm de `basemyai` reste à re-vérifier
+depuis cette machine (`npm view basemyai` renvoie `404`). Pas de binaire CLI distribué. CLI
+`basemyai-cli` ✅ : cycle de vie mémoire complet
+(`remember/recall/list/forget/invalidate/purge/export/import`), graphe, maintenance (`gc`/
+`forget-adaptive`/`consolidate`), `config`, `completions` — voir `docs/cli.md`. Reste ouvert (M5) :
+distribution binaire (cargo-dist), tests CLI en CI. `StorageEngine` : trait d'opérations mémoire
+`basemyai::storage::MemoryStore` + `LibsqlMemoryStore` fait (ADR-020, 2026-06-20), `Filter` confiné,
+tests de contrat ajoutés. Hardening (M6 : bench KNN, stress test, pool, key rotation) non commencé.

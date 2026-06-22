@@ -18,13 +18,24 @@ impl MaintenanceTask for ExpiredMemoryGc {
     }
 
     async fn run(&self, store: &Store) -> Result<()> {
-        let conn = store.connect();
-        conn.execute(
-            "DELETE FROM memory WHERE valid_until IS NOT NULL AND valid_until <= ?1",
-            basemyai_core::libsql::params![now_unix()],
+        let now = now_unix();
+        let txn = store.begin_write().await?;
+        txn.execute(
+            "DELETE FROM memory_fts \
+             WHERE id IN (\
+               SELECT id FROM memory WHERE valid_until IS NOT NULL AND valid_until <= ?1\
+             )",
+            basemyai_core::libsql::params![now],
         )
         .await
         .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
+        txn.execute(
+            "DELETE FROM memory WHERE valid_until IS NOT NULL AND valid_until <= ?1",
+            basemyai_core::libsql::params![now],
+        )
+        .await
+        .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
+        txn.commit().await?;
         Ok(())
     }
 }
