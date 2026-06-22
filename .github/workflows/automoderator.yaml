@@ -20,7 +20,7 @@ jobs:
       - name: Redact suspicious links
         # Adapted from "Comment-Filter" by Martin Leduc (MIT)
         # https://github.com/DecimalTurn/Comment-Filter
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const comment = context.payload.comment
