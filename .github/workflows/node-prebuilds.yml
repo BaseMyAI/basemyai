@@ -6,8 +6,9 @@ on:
   workflow_dispatch:
 
 # Construit les binaires natifs NAPI (.node, features crypto + embed) par
-# plateforme. napi9 est stable au niveau ABI : un prebuild par OS/arch couvre
-# Node 18/20/22 (testé ci-dessous). crypto exige CMake.
+# plateforme. napi9 est stable au niveau ABI : un prebuild par OS/arch tourne
+# dès Node 18.17 (testé ci-dessous sur 20/22 — le CLI de build exige 20+).
+# crypto exige CMake.
 defaults:
   run:
     working-directory: bindings/basemyai-node
@@ -78,7 +79,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [18, 20, 22]
+        # Le binaire prebuilt (ABI napi9) tourne dès Node 18.17 ; mais ce job
+        # REBUILD via @napi-rs/cli 3, dont une dépendance (@inquirer/core) importe
+        # `styleText` de `node:util` — API Node 20.12+. Le CLI ne s'exécute donc
+        # pas sous Node 18. On teste le rebuild sur 20/22 (l'ABI est identique).
+        node: [20, 22]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
