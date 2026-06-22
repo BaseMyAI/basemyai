@@ -25,7 +25,7 @@ basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
 rmcp        = { version = "1.7", features = ["server", "macros"] }
 axum        = { version = "0.8", optional = true, features = ["macros"] }
 tower       = { workspace = true, optional = true }
-tower-http  = { version = "0.6", optional = true, features = ["timeout", "trace"] }
+tower-http  = { version = "0.7", optional = true, features = ["timeout", "trace"] }
 
 thiserror.workspace  = true
 serde.workspace      = true
