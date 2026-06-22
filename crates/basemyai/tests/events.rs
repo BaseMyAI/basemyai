@@ -231,7 +231,10 @@ async fn recv_tolerates_lag_and_keeps_delivering() {
             None => break,
         }
     }
-    assert!(saw_after, "channel stays live and eventually delivers the post-flood event");
+    assert!(
+        saw_after,
+        "channel stays live and eventually delivers the post-flood event"
+    );
 }
 
 /// NO-SUBSCRIBER safety: a remember with zero live subscribers succeeds (the
