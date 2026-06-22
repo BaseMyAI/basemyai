@@ -40,7 +40,7 @@ schemars = "1.2"
 subtle   = "2"
 uuid     = { version = "1", features = ["v4"] }
 dirs.workspace = true
-toml     = "0.8"
+toml     = "1.1"
 
 [lints]
 workspace = true

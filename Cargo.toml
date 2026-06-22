@@ -61,7 +61,7 @@ uuid        = { version = "1", features = ["v4"] }
 # Lazy singleton (runtime tokio dans les bindings FFI).
 once_cell   = "1"
 # Parsing de config.toml (clé API MCP, db-path).
-toml        = "0.8"
+toml        = "1.1"
 # Tests d'intégration CLI (process spawn + assertions stdout/exit code).
 assert_cmd  = "2"
 predicates  = "3"
