@@ -20,6 +20,9 @@
     "ts-jest": "^29",
     "typescript": "^6"
   },
+  "overrides": {
+    "js-yaml": "^4.2.0"
+  },
   "napi": {
     "binaryName": "basemyai",
     "targets": [
