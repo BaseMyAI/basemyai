@@ -36,7 +36,7 @@ tracing.workspace    = true
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 async-trait.workspace = true
 
-schemars = "1.0"
+schemars = "1.2"
 subtle   = "2"
 uuid     = { version = "1", features = ["v4"] }
 dirs.workspace = true
