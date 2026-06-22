@@ -18,6 +18,12 @@ async fn insert(store: &Store, id: &str, agent: &str, importance: f64, last_acce
     )
     .await
     .expect("insert souvenir");
+    conn.execute(
+        "INSERT INTO memory_fts (id, agent_id, content) VALUES (?1, ?2, ?1)",
+        basemyai_core::libsql::params![id, agent],
+    )
+    .await
+    .expect("insert souvenir fts");
 }
 
 /// Liste les `id` restants pour un agent donné, triés.
@@ -46,6 +52,19 @@ async fn count_for(store: &Store, agent: &str) -> i64 {
         )
         .await
         .expect("query count");
+    let row = rows.next().await.expect("row").expect("une ligne count");
+    row.get::<i64>(0).expect("count int")
+}
+
+async fn fts_count_for(store: &Store, id: &str, agent: &str) -> i64 {
+    let conn = store.connect();
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM memory_fts WHERE id = ?1 AND agent_id = ?2",
+            basemyai_core::libsql::params![id, agent],
+        )
+        .await
+        .expect("query fts count");
     let row = rows.next().await.expect("row").expect("une ligne count");
     row.get::<i64>(0).expect("count int")
 }
@@ -141,4 +160,23 @@ async fn recency_breaks_ties_at_equal_importance() {
         vec!["recent".to_string()],
         "à importance égale, le souvenir au last_access le plus récent est conservé"
     );
+}
+
+#[tokio::test]
+async fn evicts_matching_fts_rows_with_memory_rows() {
+    let store = Store::open_in_memory().await.expect("open");
+    store.migrate(&basemyai::schema()).await.expect("migrate");
+
+    let t = 3_000_i64;
+    insert(&store, "drop-me", "a", 0.1, Some(t), t).await;
+    insert(&store, "keep-me", "a", 0.9, Some(t), t).await;
+
+    let task = AdaptiveForgetting {
+        capacity_per_agent: 1,
+        recency_half_life_secs: 86_400,
+    };
+    task.run(&store).await.expect("run");
+
+    assert_eq!(fts_count_for(&store, "drop-me", "a").await, 0);
+    assert_eq!(fts_count_for(&store, "keep-me", "a").await, 1);
 }

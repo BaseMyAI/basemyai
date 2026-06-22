@@ -8,6 +8,20 @@ on:
 # Construit les wheels PyO3 (features crypto + embed, cf. pyproject.toml) pour
 # Linux/macOS/Windows × CPython 3.10–3.13. crypto exige CMake ; embed tire Candle.
 jobs:
+  validate-secrets:
+    name: validate publish credentials
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require PYPI_API_TOKEN
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$MATURIN_PYPI_TOKEN" ]; then
+            echo "PYPI_API_TOKEN is required for tagged PyPI releases." >&2
+            exit 1
+          fi
+
   wheels:
     name: wheels (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -73,14 +87,40 @@ jobs:
           name: sdist
           path: bindings/basemyai-py/dist/*.tar.gz
 
+  smoke-wheels:
+    name: smoke wheel import (${{ matrix.os }})
+    needs: wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist
+      - name: Install wheel and import package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-index --find-links dist basemyai
+          python -c "import basemyai; assert hasattr(basemyai, 'Memory')"
+
   # Publication PyPI — uniquement sur tag, et seulement si le secret est présent.
   # Nécessite `PYPI_API_TOKEN` dans les secrets du dépôt (rien n'est publié sans).
   publish-pypi:
     name: publish to PyPI
-    needs: [wheels, sdist]
+    needs: [validate-secrets, wheels, sdist, smoke-wheels]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -88,8 +128,24 @@ jobs:
       - name: Publish
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        if: env.MATURIN_PYPI_TOKEN != ''
         uses: PyO3/maturin-action@v1
         with:
           command: upload
           args: --non-interactive --skip-existing dist/*
+      - name: Verify PyPI publication
+        run: |
+          python - <<'PY' > version.txt
+          import tomllib
+          with open("bindings/basemyai-py/pyproject.toml", "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          PY
+          for i in $(seq 1 20); do
+            if python -m pip install --no-cache-dir --index-url https://pypi.org/simple "basemyai==$(cat version.txt)"; then
+              python -c "import basemyai; assert hasattr(basemyai, 'Memory')"
+              exit 0
+            fi
+            echo "Waiting for PyPI propagation ($i/20)..."
+            sleep 15
+          done
+          echo "PyPI publication verification failed for basemyai==$(cat version.txt)." >&2
+          exit 1

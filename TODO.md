@@ -12,14 +12,14 @@
 - [ ] Regenerate `benchmarks/p1-market/out/summary.md` via `summarize.py`
 - [ ] Commit benchmark data & updated docs
 
-## CI & Release (Not Started)
+## CI & Release (Partially wired, not validated end-to-end)
 
-- [ ] Add `basemyai-cli` to GitHub Actions matrix (currently missing from CI)
+- [ ] Add `basemyai-cli` to GitHub Actions matrix (currently missing from `ci.yml`)
 - [ ] Add dedicated job for `p1_isolation_adversarial` test (ADR-018 adversarial isolation)
-- [ ] Fix release workflows:
-  - `release.yml` (crates.io publish gate)
-  - `python-wheels.yml` (PyPI publish)
-  - `node-prebuilds.yml` (npm publish)
+- [ ] Validate release workflows on a staging tag with real secrets:
+  - `release.yml` (crates.io publish gate exists, unproven on a live tag)
+  - `python-wheels.yml` (PyPI build/publish exists, unproven on a live tag)
+  - `node-prebuilds.yml` (npm prebuild/publish exists, unproven on a live tag)
 - [ ] Dry-run publish to staging before announcing
 
 ## Cleanup (Optional)
@@ -29,4 +29,4 @@
 
 ---
 
-**Status**: Benchmark retry decision needed; CI/release work blocked on benchmark completion.
+**Status**: Benchmark retry decision still needed; CI/release wiring exists but has not been validated by an end-to-end public release.

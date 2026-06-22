@@ -67,16 +67,9 @@ async fn recv_soon(sub: &mut basemyai::MemorySubscription) -> Option<basemyai::M
 /// is delivered, proving the channel is live and the filter is precise.
 #[tokio::test]
 async fn subscription_never_leaks_other_agents_events() {
-    let path = temp_db_path("events-isolation");
-
-    let store_a = Store::open(&path, None).await.expect("open A");
-    store_a.migrate(&basemyai::schema()).await.expect("migrate A");
-    let mem_a = Memory::new(store_a, Box::new(FakeEmbedder), agent("agent-a"));
-
-    let store_b = Store::open(&path, None).await.expect("open B same db");
-    store_b.migrate(&basemyai::schema()).await.expect("migrate B");
+    let mem_a = open_memory("agent-a").await;
     // Hostile id mirroring the isolation suite — must not help cross the boundary.
-    let mem_b = Memory::new(store_b, Box::new(FakeEmbedder), agent("agent-b' OR '1'='1"));
+    let mem_b = open_memory("agent-b' OR '1'='1").await;
 
     let mut sub_a = mem_a.watch("agent-a", None);
 
@@ -248,13 +241,4 @@ async fn remember_with_no_subscriber_succeeds() {
         .await
         .expect("remember succeeds with no subscriber");
     assert!(!id.is_empty());
-}
-
-fn current_unix() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs()).expect("fits i64")
-}
-
-fn temp_db_path(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("basemyai-{name}-{}-{}.db", std::process::id(), current_unix()))
 }

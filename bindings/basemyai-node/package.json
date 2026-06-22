@@ -10,8 +10,15 @@
     "build:test": "napi build --platform --no-default-features --features test-util --dts ../../target/basemyai-node-test-util.d.ts",
     "typecheck": "tsc --noEmit -p tsconfig.examples.json",
     "test": "npm run typecheck && npm run build:test && jest",
-    "prepublishOnly": "napi build --platform --release --features crypto,embed --dts ../../target/basemyai-node-default.d.ts"
+    "smoke:import": "node -e \"const binding = require('./'); if (typeof binding.Memory !== 'function') throw new Error('Memory export missing')\"",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm run smoke:import"
   },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "basemyai.*.node"
+  ],
   "devDependencies": {
     "@napi-rs/cli": "^3.7.2",
     "@types/node": "^26",
@@ -29,8 +36,7 @@
       "x86_64-pc-windows-msvc",
       "x86_64-unknown-linux-gnu",
       "x86_64-apple-darwin",
-      "aarch64-apple-darwin",
-      "aarch64-unknown-linux-gnu"
+      "aarch64-apple-darwin"
     ]
   },
   "license": "MIT"

@@ -222,6 +222,26 @@ async fn recall_hybrid_surfaces_exact_term() {
 }
 
 #[tokio::test]
+async fn recall_hybrid_rejects_layer_filter() {
+    let resp = app()
+        .oneshot(post(
+            "/v1/recall_hybrid",
+            &json!({"agent_id": "a", "query": "ACME-42", "layer": "semantic"}),
+            true,
+        ))
+        .await
+        .expect("recall_hybrid");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("layer is not supported"))
+    );
+}
+
+#[tokio::test]
 async fn unknown_layer_is_bad_request() {
     let req = post(
         "/v1/remember",
@@ -260,7 +280,7 @@ async fn recall_graph_returns_empty_nodes() {
 }
 
 #[tokio::test]
-async fn forget_agent_purges_all() {
+async fn forget_agent_requires_matching_confirmation() {
     let app = app();
     app.clone()
         .oneshot(post(
@@ -277,6 +297,59 @@ async fn forget_agent_purges_all() {
             Request::builder()
                 .method("DELETE")
                 .uri("/v1/agent/a")
+                .header(header::AUTHORIZATION, format!("Bearer {KEY}"))
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("forget agent");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/agent/a?confirm=b")
+                .header(header::AUTHORIZATION, format!("Bearer {KEY}"))
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("forget agent");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+
+    let resp = app
+        .clone()
+        .oneshot(get("/v1/agent/a/stats", true))
+        .await
+        .expect("stats");
+    let body = json_body(resp).await;
+    assert_eq!(body["total"], 1);
+}
+
+#[tokio::test]
+async fn forget_agent_purges_all_with_matching_confirmation() {
+    let app = app();
+    app.clone()
+        .oneshot(post(
+            "/v1/remember",
+            &json!({"agent_id": "a", "text": "fact", "layer": "semantic"}),
+            true,
+        ))
+        .await
+        .expect("remember");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/agent/a?confirm=a")
                 .header(header::AUTHORIZATION, format!("Bearer {KEY}"))
                 .body(Body::empty())
                 .expect("req"),
@@ -341,6 +414,39 @@ async fn remember_rejects_agent_id_too_long() {
     let agent_id = "a".repeat(129);
     let resp = app
         .oneshot(post("/v1/remember", &json!({"agent_id": agent_id, "text": "x"}), true))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn agent_stats_rejects_agent_id_too_long() {
+    let app = app();
+    let agent_id = "a".repeat(129);
+    let resp = app
+        .oneshot(get(&format!("/v1/agent/{agent_id}/stats"), true))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn forget_agent_rejects_agent_id_too_long() {
+    let app = app();
+    let agent_id = "a".repeat(129);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/agent/{agent_id}?confirm={agent_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {KEY}"))
+                .body(Body::empty())
+                .expect("req"),
+        )
         .await
         .expect("oneshot");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

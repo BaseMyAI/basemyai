@@ -1,6 +1,6 @@
 # BaseMyAI — Implementation Status Matrix
 
-**Date : 2026-06-20**
+**Date : 2026-06-22**
 **Statut : SOURCE DE VÉRITÉ.** Ce fichier réconcilie les contradictions entre les
 docs internes (TODO.md, CLAUDE.md, VISION.md, ADR-019, la recherche stratégique
 2026-06-18). Il a été recommandé par la recherche stratégique
@@ -103,11 +103,11 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 
 | Surface | Statut | Preuve (vérifiée) | Notes |
 |---|---|---|---|
-| **Rust SDK** (crate `basemyai`) | 🟡 | `Cargo.toml` (`version = 0.1.0`, keywords/categories) ; `examples/rust/*` | API complète, examples présents, `cargo doc` propre (M1 partiel). **`cargo publish --dry-run` non fait, NON publié sur crates.io** (TODO M1 cases non cochées). |
+| **Rust SDK** (crate `basemyai`) | ✅ | `Cargo.toml` (`version = 0.1.0`, keywords/categories) ; `examples/rust/*` ; `cargo search basemyai --limit 10` | API complète, examples présents, `cargo doc` propre. **Publication confirmée sur crates.io** le 2026-06-22 (`basemyai = "0.1.0"` et `basemyai-core = "0.1.0"`). |
 | **MCP server** (`basemyai-mcp`) | ✅ | `crates/basemyai-mcp/` ; outils `remember/recall/recall_hybrid/recall_graph/invalidate/consolidate/consolidate_apply/stats` ; `tests/server.rs`, `tests/sampling.rs` | Transports stdio + HTTP, auth, audit, sampling (ADR-018). **Surface la plus aboutie** — cohérent avec « MCP prioritaire » de la recherche stratégique. Non listé comme milestone TODO (TODO ne mentionne que REST en M4). |
 | **REST sidecar** (`basemyai-rest`) | ✅ | `crates/basemyai-rest/src/routes.rs` ; `tests/api.rs` | axum, `/v1/remember,recall,recall_hybrid,recall_graph`, delete memory/agent, stats ; auth Bearer (constant-time), request-id, body limit. **Plus avancé que TODO M4 (tout non coché).** `openapi-sidecar.yaml` = spec source. Pas d'image Docker (M4 ouvert). |
-| **Node binding** (`bindings/basemyai-node`, NAPI-RS) | 🟡 | `bindings/basemyai-node/src/memory.rs`, `index.d.ts` ; `__tests__/roundtrip.test.js` ; workflow `node-prebuilds.yml` | Classe `Memory` complète (remember, recall, recallByLayer, recallHybrid, invalidate, forget, stats, addGraphEntity/Edge, recallGraph). **NON publié sur npm.** Constructeur de test gardé `test-util`. |
-| **Python binding** (`bindings/basemyai-py`, PyO3) | 🟡 | `bindings/basemyai-py/src/memory.rs`, `python/basemyai/__init__.pyi` ; `tests/test_roundtrip.py` ; workflow `python-wheels.yml` | Classe `Memory` async complète + stubs `.pyi` + `py.typed`. **NON publié sur PyPI.** Pas de wrapper LangChain/LlamaIndex (TODO M3 ouvert). |
+| **Node binding** (`bindings/basemyai-node`, NAPI-RS) | 🟡 | `bindings/basemyai-node/src/memory.rs`, `index.d.ts` ; `__tests__/roundtrip.test.js` ; workflow `node-prebuilds.yml` | Classe `Memory` complète (remember, recall, recallByLayer, recallHybrid, invalidate, forget, stats, addGraphEntity/Edge, recallGraph). **Publication npm non confirmée depuis cette machine** au 2026-06-22 : `npm view basemyai` et le registre public renvoient `404` pour `basemyai`. Vérifier le nom/scope final si besoin. |
+| **Python binding** (`bindings/basemyai-py`, PyO3) | ✅ | `bindings/basemyai-py/src/memory.rs`, `python/basemyai/__init__.pyi` ; `tests/test_roundtrip.py` ; workflow `python-wheels.yml` ; `python -m pip index versions basemyai` | Classe `Memory` async complète + stubs `.pyi` + `py.typed`. **Publication confirmée sur PyPI** (`basemyai 0.1.0` vu le 2026-06-22). Wrappers LangChain/LlamaIndex toujours absents. |
 
 > **Écart TODO.** `TODO.md` décrit M2 (Node) et M3 (Python) comme « à créer »
 > sous `crates/basemyai-node` / `crates/basemyai-python`. En réalité les deux
@@ -157,8 +157,8 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Graphe / consolidation / oubli | ✅ | `tests/graph.rs`, `tests/consolidation*.rs`, `tests/forgetting.rs` | |
 | Contrats core | ✅ | `crates/basemyai-core/tests/contracts.rs` | |
 | Roundtrip bindings | ✅ | Node `__tests__/roundtrip.test.js`, Py `tests/test_roundtrip.py` | |
-| CI multi-OS × features | ✅ | `.github/workflows/ci.yml` (Ubuntu/Windows/macOS × default/embed/crypto) | Tests par crate (évite OOM Windows). |
-| Workflows release / prebuild | 🟡 | `release.yml`, `node-prebuilds.yml`, `python-wheels.yml`, `codeql.yml`, `supply-chain.yml` | Workflows présents mais **aucune publication effective** (rien sur crates.io/npm/PyPI). |
+| CI multi-OS × features | ✅ | `.github/workflows/ci.yml` | CI actuelle : `gate` sur Ubuntu + Windows, `embed` sur Ubuntu, `crypto` sur Ubuntu + Windows. Tests par crate (évite OOM Windows et coût macOS). |
+| Workflows release / prebuild | 🟡 | `release.yml`, `node-prebuilds.yml`, `python-wheels.yml`, `codeql.yml`, `supply-chain.yml` | Workflows présents. **Publication effective confirmée pour crates.io et PyPI** le 2026-06-22 ; **npm reste à re-vérifier** car le registre public ne résout pas `basemyai` depuis cette machine. |
 | Bench KNN (10k/100k/1M), stress 1h | 📋 | — | M6 ouvert. Aucun bench `criterion`. |
 
 ---
@@ -224,8 +224,10 @@ agent locale, pas une base vectorielle de plus », liés depuis `README.md`
    **Faux dans les deux dimensions.** Les bindings existent déjà, sous
    `bindings/basemyai-node` et `bindings/basemyai-py` (pas `crates/`), avec API
    complète, tests roundtrip et workflows de prebuild. Le plan M0→M7 décrit un
-   futur déjà partiellement réalisé. Reste vrai : **rien n'est publié** (npm /
-   PyPI / crates.io), et les wrappers LangChain/LlamaIndex (M3) manquent.
+   futur déjà partiellement réalisé. Mise à jour 2026-06-22 : **crates.io et
+   PyPI sont publiés** ; le point encore ouvert est surtout **npm** (package
+   `basemyai` non résolu depuis cette machine) ainsi que les wrappers
+   LangChain/LlamaIndex (M3).
 
 4. **TODO.md M4 : REST « nouveau crate à créer ».**
    **Déjà fait.** `basemyai-rest` existe avec auth, routes `/v1`, tests
@@ -264,7 +266,8 @@ agent locale, pas une base vectorielle de plus », liés depuis `README.md`
 - **Moteur mémoire (core + Phase 1 + Phase 2) : ✅ implémenté et testé.** Plus
   avancé que ce que CLAUDE.md et TODO.md laissent croire.
 - **Surfaces d'intégration : largement en place** (MCP ✅, REST ✅, bindings Node
-  🟡, Python 🟡) **mais rien n'est publié** (crates.io / npm / PyPI = 0).
+  🟡, Python ✅). **Publication confirmée pour crates.io et PyPI** ; **npm reste
+  à re-vérifier** pour `basemyai` depuis cette machine.
 - **CLI (M5) : surface complète livrée** (2026-06-20) — `basemyai-cli` couvre
   les indispensables V1 (`init/inspect/stats/recall/verify/migrate`) **et**
   le cycle de vie complet (`list/forget/invalidate/purge/export/import`), le
@@ -273,8 +276,10 @@ agent locale, pas une base vectorielle de plus », liés depuis `README.md`
   Référence : `docs/cli.md`. Restent : distribution binaire (cargo-dist),
   tests CLI automatisés en CI (`TODO.md` M5 sous-documente cette surface —
   à mettre à jour).
-- **Publication : `basemyai-core` dry-run vert** (zéro bloqueur d'empaquetage) ;
-  reste à publier dans l'ordre core→basemyai, puis npm/PyPI. Toujours **0 publié**.
+- **Publication : crates.io et PyPI confirmés** le 2026-06-22 (`basemyai`,
+  `basemyai-core`, `basemyai 0.1.0` sur PyPI). **Le point résiduel est npm** :
+  le README et les workflows visent `basemyai`, mais le registre public renvoie
+  encore `404` depuis cette machine.
 - **`StorageEngine` : ✅ fait (ADR-020, 2026-06-20)** — `basemyai::storage::MemoryStore`
   cache désormais `Filter`/SQL derrière un trait d'opérations mémoire, avec
   tests de contrat. Zones résiduelles assumées : `memory/porting.rs`,

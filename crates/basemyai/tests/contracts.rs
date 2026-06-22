@@ -82,7 +82,9 @@ fn core_error_converts_into_memory_error() {
 async fn memory_assembles_via_dependency_injection() {
     let store = Store::open_in_memory().await.expect("store opens");
     let agent = AgentId::new("assistant-42").expect("valid agent");
-    let mem = Memory::new(store, Box::new(FakeEmbedder), agent.clone());
+    let mem = Memory::open(store, Box::new(FakeEmbedder), agent.clone())
+        .await
+        .expect("memory opens");
     assert_eq!(mem.agent(), &agent);
 }
 

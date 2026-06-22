@@ -12,6 +12,26 @@ const KEEP_SCHEMA: [Migration; 1] = [Migration {
     up_sql: "CREATE TABLE keep_flag (id TEXT PRIMARY KEY, keep INTEGER NOT NULL);",
 }];
 
+const BROKEN_SCHEMA: [Migration; 1] = [Migration {
+    version: 1,
+    up_sql: "CREATE TABLE partial_migration (id INTEGER PRIMARY KEY); SELECT * FROM missing_table;",
+}];
+
+fn now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs()).expect("fits i64")
+}
+
+fn temp_db_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("basemyai-core-{name}-{}-{}.db", std::process::id(), now()))
+}
+
+fn cleanup(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
 #[tokio::test]
 async fn migrate_applies_schema_and_is_idempotent() {
     let store = Store::open_in_memory().await.expect("open in-memory");
@@ -29,6 +49,61 @@ async fn migrate_applies_schema_and_is_idempotent() {
     let row = rows.next().await.expect("row").expect("one row");
     let body: String = row.get(0).expect("get body");
     assert_eq!(body, "hello");
+}
+
+#[tokio::test]
+async fn concurrent_cold_migrations_apply_once() {
+    let path = temp_db_path("concurrent-migrate");
+    let store_a = Store::open(&path, None).await.expect("open A");
+    let store_b = Store::open(&path, None).await.expect("open B");
+
+    let (a, b) = tokio::join!(store_a.migrate(&SCHEMA), store_b.migrate(&SCHEMA));
+    a.expect("migrate A");
+    b.expect("migrate B");
+
+    let conn = store_a.connect();
+    let mut rows = conn
+        .query("SELECT COUNT(*) FROM _schema_version WHERE version = 1", ())
+        .await
+        .expect("count schema version");
+    let row = rows.next().await.expect("row").expect("one row");
+    let count: i64 = row.get(0).expect("count");
+    assert_eq!(count, 1, "concurrent cold migration must record the version once");
+
+    cleanup(&path);
+}
+
+#[tokio::test]
+async fn failed_migration_rolls_back_ddl_and_version() {
+    let store = Store::open_in_memory().await.expect("open");
+    let err = store.migrate(&BROKEN_SCHEMA).await;
+    assert!(err.is_err(), "broken migration must fail");
+
+    let conn = store.connect();
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'partial_migration'",
+            (),
+        )
+        .await
+        .expect("query sqlite_master");
+    let row = rows.next().await.expect("row").expect("one row");
+    let table_count: i64 = row.get(0).expect("count");
+    assert_eq!(table_count, 0, "DDL from a failed migration must roll back");
+
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_schema_version'",
+            (),
+        )
+        .await
+        .expect("query schema version table");
+    let row = rows.next().await.expect("row").expect("one row");
+    let schema_version_tables: i64 = row.get(0).expect("count");
+    assert_eq!(
+        schema_version_tables, 0,
+        "failed migration must not persist schema bookkeeping"
+    );
 }
 
 #[tokio::test]

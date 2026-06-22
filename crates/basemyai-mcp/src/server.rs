@@ -153,12 +153,14 @@ impl McpServer {
     }
 
     async fn invalidate_impl(&self, p: InvalidateParams) -> Result<InvalidateResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
         let mem = self.memory_for(&p.agent_id).await?;
         mem.invalidate(&p.id).await?;
         Ok(InvalidateResult { invalidated: true })
     }
 
     async fn stats_impl(&self, p: StatsParams) -> Result<StatsResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
         let mem = self.memory_for(&p.agent_id).await?;
         let s = mem.stats().await?;
         Ok(StatsResult {
@@ -183,6 +185,7 @@ impl McpServer {
         p: ConsolidateParams,
         peer: Peer<RoleServer>,
     ) -> Result<ConsolidateResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
         let mem = self.memory_for(&p.agent_id).await?;
 
         // Niveau 1 : sampling, seulement si le client l'a annoncé à l'init.
@@ -212,6 +215,7 @@ impl McpServer {
     /// Applique une extraction produite par l'agent (consolidation pilotée par
     /// l'agent, ADR-018) : peuple le graphe et promeut les faits, idempotent.
     async fn consolidate_apply_impl(&self, p: ConsolidateApplyParams) -> Result<ConsolidateResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
         let mem = self.memory_for(&p.agent_id).await?;
         let report = basemyai::apply_extraction(&mem, &p.into_extraction()).await?;
         Ok(ConsolidateResult::done("agent", report))

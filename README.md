@@ -32,10 +32,6 @@
     <img src="https://img.shields.io/pypi/dm/basemyai?color=3776ab&label=python&style=flat-square" alt="PyPI">
   </a>
   &nbsp;
-  <a href="https://www.npmjs.com/package/basemyai">
-    <img src="https://img.shields.io/npm/dt/basemyai?color=bde800&label=node&style=flat-square" alt="npm">
-  </a>
-  &nbsp;
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey?style=flat-square" alt="Platforms">
 </p>
 
@@ -320,7 +316,7 @@ let hits = mem.recall("billing plan", 5).await?;
 
 <h2><img height="20" src="./basemyai-branding/icons/installation.svg">&nbsp;&nbsp;Installation</h2>
 
-BaseMyAI is designed to be simple to install. Precompiled wheels (Python) and NAPI prebuilds (Node) mean **no C or Rust toolchain required** on the client machine.
+BaseMyAI is designed to be simple to install. Precompiled wheels (Python) and NAPI prebuilds (Node) are the packaging target so client machines do not need a C or Rust toolchain.
 
 <h4><img width="20" src="./basemyai-branding/icons/apple.svg">&nbsp;&nbsp;Python (all platforms)</h4>
 
@@ -329,6 +325,10 @@ pip install basemyai
 ```
 
 <h4><img width="20" src="./basemyai-branding/icons/cloud.svg">&nbsp;&nbsp;Node / TypeScript</h4>
+
+The public npm package is not live yet: `npm view basemyai` returned `404` from
+the public registry on 2026-06-22. Use this command only after the npm release
+workflow has published and verified `basemyai`.
 
 ```bash
 npm install basemyai

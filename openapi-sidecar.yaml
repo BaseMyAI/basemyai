@@ -424,7 +424,9 @@ paths:
       summary: Recherche hybride vectorielle + BM25 dans la mémoire d'un agent.
       description: >
         Exécute les signaux vectoriel et full-text, puis fusionne les rangs par
-        Reciprocal Rank Fusion. `score` porte le score RRF fusionné.
+        Reciprocal Rank Fusion. `score` porte le score RRF fusionné. Le champ
+        `layer` de RecallRequest n'est pas supporté sur cette route et provoque
+        une réponse 400 ; utiliser /recall pour un recall filtré par couche.
       tags: [Memory]
       requestBody:
         required: true
@@ -536,6 +538,15 @@ paths:
             type: string
             minLength: 1
             maxLength: 128
+          example: "agent-42"
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+          description: Confirmation destructive ; doit correspondre exactement à agent_id.
           example: "agent-42"
       responses:
         "204":
