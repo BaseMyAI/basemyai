@@ -14,6 +14,20 @@ defaults:
     working-directory: bindings/basemyai-node
 
 jobs:
+  validate-secrets:
+    name: validate publish credentials
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require NPM_TOKEN
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN is required for tagged npm releases." >&2
+            exit 1
+          fi
+
   build:
     name: prebuild (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -72,6 +86,28 @@ jobs:
           name: bindings-${{ matrix.target }}
           path: bindings/basemyai-node/*.node
 
+  smoke-prebuild:
+    name: smoke prebuild (${{ matrix.target }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: bindings/basemyai-node
+      - name: Import native addon without rebuilding
+        run: npm run smoke:import
+
   test:
     name: test (node ${{ matrix.node }})
     needs: build
@@ -100,7 +136,7 @@ jobs:
   # Nécessite `NPM_TOKEN` dans les secrets du dépôt (rien n'est publié sans).
   publish-npm:
     name: publish to npm
-    needs: [build, test]
+    needs: [validate-secrets, build, smoke-prebuild, test]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -114,10 +150,32 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: bindings/basemyai-node/artifacts
-      - name: Assemble platform packages
-        run: npx napi create-npm-dirs && npx napi artifacts --output-dir ./artifacts
+      - name: Assemble publish package
+        shell: bash
+        run: |
+          set -euo pipefail
+          find artifacts -name '*.node' -print -exec cp '{}' . \;
+          test -f basemyai.linux-x64-gnu.node
+          npm run smoke:import
+          npm pack --dry-run --json > pack.json
+          node -e "const fs = require('node:fs'); const files = JSON.parse(fs.readFileSync('pack.json', 'utf8'))[0].files.map(f => f.path); const banned = files.filter(p => /^(src\/|__tests__\/|target\/|artifacts\/|Cargo\.|build\.rs$|package-lock\.json$)/.test(p)); if (banned.length) { throw new Error('npm pack includes forbidden files: ' + banned.join(', ')); }"
       - name: Publish
-        if: ${{ env.NODE_AUTH_TOKEN != '' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
+      - name: Verify npm publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          for i in $(seq 1 20); do
+            published="$(npm view "basemyai@$version" version --registry https://registry.npmjs.org 2>/dev/null || true)"
+            if [ "$published" = "$version" ]; then
+              echo "Verified basemyai@$version on npm."
+              exit 0
+            fi
+            echo "Waiting for npm registry propagation ($i/20)..."
+            sleep 15
+          done
+          echo "npm publication verification failed for basemyai@$version." >&2
+          exit 1

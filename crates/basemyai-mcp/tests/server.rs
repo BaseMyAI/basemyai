@@ -6,9 +6,15 @@
 use std::sync::Arc;
 
 use basemyai_mcp::{
-    Config, InMemoryProvider, InvalidateParams, McpServer, RecallGraphParams, RecallParams, RememberParams, StatsParams,
+    ApplyEntity, ApplyRelation, Config, ConsolidateApplyParams, InMemoryProvider, InvalidateParams, McpServer,
+    RecallGraphParams, RecallParams, RememberParams, StatsParams,
 };
+use rmcp::ServiceExt;
+use rmcp::handler::client::ClientHandler;
 use rmcp::handler::server::wrapper::{Json, Parameters};
+use rmcp::model::{CallToolRequestParams, ClientInfo, object};
+use rmcp::service::{RoleClient, RunningService};
+use serde_json::{Value, json};
 
 fn server() -> McpServer {
     McpServer::new(Arc::new(InMemoryProvider::new()), Config::default())
@@ -20,6 +26,41 @@ fn remember(agent: &str, text: &str, layer: &str) -> Parameters<RememberParams> 
         text: text.to_string(),
         layer: layer.to_string(),
     })
+}
+
+fn overlong_agent_id() -> String {
+    "a".repeat(129)
+}
+
+fn call(name: &'static str, args: Value) -> CallToolRequestParams {
+    let mut p = CallToolRequestParams::new(name);
+    p.arguments = Some(object(args));
+    p
+}
+
+#[derive(Clone)]
+struct BasicClient;
+
+impl ClientHandler for BasicClient {
+    fn get_info(&self) -> ClientInfo {
+        ClientInfo::default()
+    }
+}
+
+async fn mcp_client() -> (RunningService<RoleClient, BasicClient>, tokio::task::JoinHandle<()>) {
+    let (server_io, client_io) = tokio::io::duplex(1 << 16);
+    let server = server();
+    let server_task = tokio::spawn(async move {
+        let running = server.serve(server_io).await.expect("serve server");
+        running.waiting().await.expect("server loop");
+    });
+    let client = BasicClient.serve(client_io).await.expect("serve client");
+    (client, server_task)
+}
+
+async fn shutdown(client: RunningService<RoleClient, BasicClient>, server_task: tokio::task::JoinHandle<()>) {
+    client.cancel().await.expect("cancel client");
+    let _ = server_task.await;
 }
 
 #[tokio::test]
@@ -194,8 +235,91 @@ async fn remember_text_too_long_is_rejected() {
 #[tokio::test]
 async fn remember_agent_id_too_long_is_rejected() {
     let s = server();
-    let agent_id = "a".repeat(129);
+    let agent_id = overlong_agent_id();
     let err = match s.remember(remember(&agent_id, "x", "semantic")).await {
+        Err(e) => e,
+        Ok(_) => panic!("un agent_id trop long doit être rejeté"),
+    };
+    assert!(
+        err.message.contains("agent_id"),
+        "agent_id trop long rejeté : {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn invalidate_agent_id_too_long_is_rejected() {
+    let s = server();
+    let err = match s
+        .invalidate(Parameters(InvalidateParams {
+            agent_id: overlong_agent_id(),
+            id: "memory-id".to_string(),
+        }))
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("un agent_id trop long doit être rejeté"),
+    };
+    assert!(
+        err.message.contains("agent_id"),
+        "agent_id trop long rejeté : {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn stats_agent_id_too_long_is_rejected() {
+    let s = server();
+    let err = match s
+        .stats(Parameters(StatsParams {
+            agent_id: overlong_agent_id(),
+        }))
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("un agent_id trop long doit être rejeté"),
+    };
+    assert!(
+        err.message.contains("agent_id"),
+        "agent_id trop long rejeté : {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn consolidate_agent_id_too_long_is_rejected() {
+    let (client, server_task) = mcp_client().await;
+    let err = client
+        .call_tool(call("consolidate", json!({ "agent_id": overlong_agent_id() })))
+        .await
+        .expect_err("un agent_id trop long doit être rejeté");
+    assert!(
+        err.to_string().contains("agent_id"),
+        "agent_id trop long rejeté : {err}"
+    );
+    shutdown(client, server_task).await;
+}
+
+#[tokio::test]
+async fn consolidate_apply_agent_id_too_long_is_rejected() {
+    let s = server();
+    let err = match s
+        .consolidate_apply(Parameters(ConsolidateApplyParams {
+            agent_id: overlong_agent_id(),
+            facts: vec!["fact".to_string()],
+            entities: vec![ApplyEntity {
+                id: "alice".to_string(),
+                kind: "person".to_string(),
+                label: "Alice".to_string(),
+            }],
+            relations: vec![ApplyRelation {
+                src: "alice".to_string(),
+                relation: "knows".to_string(),
+                dst: "alice".to_string(),
+            }],
+        }))
+        .await
+    {
         Err(e) => e,
         Ok(_) => panic!("un agent_id trop long doit être rejeté"),
     };

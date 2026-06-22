@@ -109,9 +109,11 @@ Wiring consolidation dans `MaintenanceWorker` ✅ (`ConsolidationTask`, `mainten
 bindings PyO3/NAPI ✅ (`bindings/basemyai-py`, `bindings/basemyai-node`), sidecar MCP ✅
 (`crates/basemyai-mcp`) et REST ✅ (`crates/basemyai-rest`) : tous implémentés et testés.
 
-**État réel : voir `docs/status.md` (source de vérité, 2026-06-20).** Le moteur (Phase 1 + 2)
-et les surfaces (MCP/REST/bindings/CLI) sont en place ; **rien n'est encore publié** (crates.io /
-npm / PyPI = 0, pas de binaire CLI distribué). CLI `basemyai-cli` ✅ : cycle de vie mémoire complet
+**État réel : voir `docs/status.md` (source de vérité, 2026-06-22).** Le moteur (Phase 1 + 2)
+et les surfaces (MCP/REST/bindings/CLI) sont en place ; **crates.io et PyPI sont publiés**
+(`0.1.0` confirmé le 2026-06-22), tandis que la publication npm de `basemyai` reste à re-vérifier
+depuis cette machine (`npm view basemyai` renvoie `404`). Pas de binaire CLI distribué. CLI
+`basemyai-cli` ✅ : cycle de vie mémoire complet
 (`remember/recall/list/forget/invalidate/purge/export/import`), graphe, maintenance (`gc`/
 `forget-adaptive`/`consolidate`), `config`, `completions` — voir `docs/cli.md`. Reste ouvert (M5) :
 distribution binaire (cargo-dist), tests CLI en CI. `StorageEngine` : trait d'opérations mémoire

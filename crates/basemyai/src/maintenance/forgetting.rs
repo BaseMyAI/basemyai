@@ -27,7 +27,6 @@ impl MaintenanceTask for AdaptiveForgetting {
     }
 
     async fn run(&self, store: &Store) -> Result<()> {
-        let conn = store.connect();
         let now = now_unix();
         let half_life = self.recency_half_life_secs;
         // Plafond de capacité par agent (lié en paramètre, jamais interpolé).
@@ -53,23 +52,31 @@ impl MaintenanceTask for AdaptiveForgetting {
         // score, `id` départageant les ex æquo, puis on évince tout ce qui dépasse
         // `capacity` (rang > capacity). Une seule requête, fonction de fenêtrage
         // native libSQL/SQLite.
-        conn.execute(
-            "DELETE FROM memory WHERE id IN (\
-               SELECT id FROM (\
-                 SELECT id, ROW_NUMBER() OVER (\
-                   PARTITION BY agent_id \
-                   ORDER BY importance \
-                     + CAST(?2 AS REAL) / (\
-                         CAST(?2 AS REAL) \
-                         + max(0, CAST(?1 AS REAL) - COALESCE(last_access, valid_from))\
-                       ) DESC, id\
-                 ) AS rn FROM memory\
-               ) WHERE rn > ?3\
-             )",
+        let txn = store.begin_write().await?;
+        let evicted_ids = "\
+            SELECT id FROM (\
+              SELECT id, ROW_NUMBER() OVER (\
+                PARTITION BY agent_id \
+                ORDER BY importance \
+                  + CAST(?2 AS REAL) / (\
+                      CAST(?2 AS REAL) \
+                      + max(0, CAST(?1 AS REAL) - COALESCE(last_access, valid_from))\
+                    ) DESC, id\
+              ) AS rn FROM memory\
+            ) WHERE rn > ?3";
+        txn.execute(
+            &format!("DELETE FROM memory_fts WHERE id IN ({evicted_ids})"),
             basemyai_core::libsql::params![now, half_life, capacity],
         )
         .await
         .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
+        txn.execute(
+            &format!("DELETE FROM memory WHERE id IN ({evicted_ids})"),
+            basemyai_core::libsql::params![now, half_life, capacity],
+        )
+        .await
+        .map_err(|e| basemyai_core::CoreError::Storage(e.to_string()))?;
+        txn.commit().await?;
         Ok(())
     }
 }

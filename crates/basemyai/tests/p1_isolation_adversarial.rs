@@ -8,7 +8,6 @@
 use basemyai::temporal::Validity;
 use basemyai::{AgentId, Memory, MemoryLayer};
 use basemyai_core::{Embedder, Result, Store};
-use std::path::PathBuf;
 
 const DIM: usize = 384;
 
@@ -49,35 +48,49 @@ fn agent(id: &str) -> AgentId {
 
 #[tokio::test]
 async fn hostile_agent_id_query_and_known_ids_do_not_cross_tenant_boundary() {
-    let path = temp_db_path("p1-adversarial-isolation");
-    let store_a = Store::open(&path, None).await.expect("open A");
-    store_a.migrate(&basemyai::schema()).await.expect("migrate A");
-    let mem_a = Memory::new(store_a, Box::new(FakeEmbedder), agent("agent-a"));
+    let store = Store::open_in_memory().await.expect("open store");
+    store.migrate(&basemyai::schema()).await.expect("migrate");
+    let conn = store.connect();
 
-    let secret_id = mem_a
-        .remember("secret token SABLE-777 belongs only to agent A", MemoryLayer::Semantic)
-        .await
-        .expect("agent A remembers");
-    mem_a
-        .graph()
-        .add_entity("shared-root", "secret", "Agent A private graph node")
-        .await
-        .expect("agent A graph entity");
-    mem_a
-        .graph()
-        .add_entity("shared-leaf", "secret", "Agent A private graph leaf")
-        .await
-        .expect("agent A graph leaf");
-    mem_a
-        .graph()
-        .add_edge("shared-root", "points_to", "shared-leaf", 1.0)
-        .await
-        .expect("agent A graph edge");
+    let secret_id = "agent-a-secret";
+    let secret_vector = to_vec_literal(&FakeEmbedder::vec_for("secret token SABLE-777 belongs only to agent A"));
+    conn.execute(
+        "INSERT INTO memory (id, agent_id, layer, content, valid_from, valid_until, emb) \
+         VALUES (?1, 'agent-a', 'semantic', ?2, 0, NULL, vector(?3))",
+        basemyai_core::libsql::params![
+            secret_id,
+            "secret token SABLE-777 belongs only to agent A",
+            secret_vector
+        ],
+    )
+    .await
+    .expect("insert agent A memory");
+    conn.execute(
+        "INSERT INTO memory_fts (id, agent_id, content) VALUES (?1, 'agent-a', ?2)",
+        basemyai_core::libsql::params![secret_id, "secret token SABLE-777 belongs only to agent A"],
+    )
+    .await
+    .expect("insert agent A fts");
+    conn.execute(
+        "INSERT INTO entity (agent_id, id, kind, label, valid_from, valid_until, importance) \
+         VALUES ('agent-a', 'shared-root', 'secret', 'Agent A private graph node', 0, NULL, 0), \
+                ('agent-a', 'shared-leaf', 'secret', 'Agent A private graph leaf', 0, NULL, 0)",
+        (),
+    )
+    .await
+    .expect("insert agent A graph entities");
+    conn.execute(
+        "INSERT INTO edge (agent_id, src, dst, relation, weight, valid_from, valid_until) \
+         VALUES ('agent-a', 'shared-root', 'shared-leaf', 'points_to', 1.0, 0, NULL)",
+        (),
+    )
+    .await
+    .expect("insert agent A graph edge");
 
-    let store_b = Store::open(&path, None).await.expect("open B on same DB");
-    store_b.migrate(&basemyai::schema()).await.expect("migrate B");
     let hostile = "agent-b' OR '1'='1";
-    let mem_b = Memory::new(store_b, Box::new(FakeEmbedder), agent(hostile));
+    let mem_b = Memory::open(store, Box::new(FakeEmbedder), agent(hostile))
+        .await
+        .expect("open hostile memory");
     mem_b
         .remember("public token SABLE-000 belongs only to agent B", MemoryLayer::Semantic)
         .await
@@ -106,17 +119,27 @@ async fn hostile_agent_id_query_and_known_ids_do_not_cross_tenant_boundary() {
     );
 
     mem_b
-        .invalidate(&secret_id)
+        .invalidate(secret_id)
         .await
         .expect("foreign invalidate is a scoped no-op");
-    mem_b
-        .forget(&secret_id)
-        .await
-        .expect("foreign forget is a scoped no-op");
+    mem_b.forget(secret_id).await.expect("foreign forget is a scoped no-op");
 
-    let still_visible_to_a = mem_a.recall("SABLE-777", 10).await.expect("agent A recall");
-    assert!(
-        still_visible_to_a.iter().any(|r| r.id == secret_id),
+    let mut rows = conn
+        .query(
+            "SELECT COUNT(*) FROM memory WHERE id = ?1 AND agent_id = 'agent-a'",
+            basemyai_core::libsql::params![secret_id],
+        )
+        .await
+        .expect("count agent A row");
+    let still_visible_to_a: i64 = rows
+        .next()
+        .await
+        .expect("row read")
+        .expect("one row")
+        .get(0)
+        .expect("count");
+    assert_eq!(
+        still_visible_to_a, 1,
         "agent B must not invalidate or delete agent A's known id"
     );
 
@@ -163,6 +186,15 @@ fn current_unix() -> i64 {
     i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs()).expect("fits i64")
 }
 
-fn temp_db_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("basemyai-{name}-{}-{}.db", std::process::id(), current_unix()))
+fn to_vec_literal(v: &[f32]) -> String {
+    let mut s = String::with_capacity(v.len() * 8 + 2);
+    s.push('[');
+    for (i, x) in v.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&x.to_string());
+    }
+    s.push(']');
+    s
 }

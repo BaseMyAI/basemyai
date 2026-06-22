@@ -191,6 +191,12 @@ struct AgentQuery {
     agent_id: String,
 }
 
+#[derive(Deserialize)]
+struct DeleteAgentQuery {
+    #[serde(default)]
+    confirm: Option<String>,
+}
+
 #[derive(Serialize)]
 struct IdResponse {
     id: String,
@@ -295,9 +301,14 @@ async fn recall_hybrid(
     validate_agent_id(&req.agent_id)?;
     validate_query(&req.query)?;
     validate_k(req.k)?;
+    if req.layer.is_some() {
+        return Err(RestError::Validation(
+            "layer is not supported by /recall_hybrid; use /recall for layer-filtered recall".to_string(),
+        ));
+    }
     let mem = state.memory_for(&req.agent_id).await?;
-    // Hybride : vecteur + BM25 fusionnés (RRF). Le filtre `layer` ne s'applique
-    // pas ici ; `score` porte le score RRF fusionné (ADR-014).
+    // Hybride : vecteur + BM25 fusionnés (RRF). `score` porte le score RRF
+    // fusionné (ADR-014).
     let records = mem.recall_hybrid(&req.query, req.k).await?;
     let items: Vec<RecordDto> = records
         .into_iter()
@@ -339,6 +350,7 @@ async fn forget_memory(
     Path(id): Path<String>,
     Query(q): Query<AgentQuery>,
 ) -> Result<impl IntoResponse, RestError> {
+    validate_agent_id(&q.agent_id)?;
     let mem = state.memory_for(&q.agent_id).await?;
     mem.forget(&id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -347,7 +359,14 @@ async fn forget_memory(
 async fn forget_agent(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
+    Query(q): Query<DeleteAgentQuery>,
 ) -> Result<impl IntoResponse, RestError> {
+    validate_agent_id(&agent_id)?;
+    if q.confirm.as_deref() != Some(agent_id.as_str()) {
+        return Err(RestError::Validation(
+            "confirm must exactly match agent_id for destructive agent deletion".to_string(),
+        ));
+    }
     let mem = state.memory_for(&agent_id).await?;
     mem.purge_agent().await?;
     Ok(StatusCode::NO_CONTENT)
@@ -357,6 +376,7 @@ async fn agent_stats(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
 ) -> Result<impl IntoResponse, RestError> {
+    validate_agent_id(&agent_id)?;
     let mem = state.memory_for(&agent_id).await?;
     let s = mem.stats().await?;
     Ok(Json(StatsResponse {

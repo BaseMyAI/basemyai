@@ -9,8 +9,11 @@ on:
       - Cargo.lock
       - Cargo.toml
       - deny.toml
+      - 'bindings/*/package.json'
+      - 'bindings/*/package-lock.json'
       - 'bindings/*/Cargo.toml'
       - 'crates/*/Cargo.toml'
+      - .github/workflows/node-prebuilds.yml
       - .github/workflows/supply-chain.yml
     branches:
       - main
@@ -19,8 +22,11 @@ on:
       - Cargo.lock
       - Cargo.toml
       - deny.toml
+      - 'bindings/*/package.json'
+      - 'bindings/*/package-lock.json'
       - 'bindings/*/Cargo.toml'
       - 'crates/*/Cargo.toml'
+      - .github/workflows/node-prebuilds.yml
       - .github/workflows/supply-chain.yml
   merge_group:
 
@@ -65,3 +71,31 @@ jobs:
           echo "## ⚠️ Supply chain check failed" >> $GITHUB_STEP_SUMMARY
           echo "A dependency has a known vulnerability, is banned, or has an incompatible license." >> $GITHUB_STEP_SUMMARY
           echo "Run \`cargo deny check\` locally to see details, then update \`deny.toml\` accordingly." >> $GITHUB_STEP_SUMMARY
+
+  npm-audit:
+    name: Check Node dependencies (npm audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/basemyai-node
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout sources
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bindings/basemyai-node/package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Audit Node dependencies
+        run: npm audit --audit-level=high
