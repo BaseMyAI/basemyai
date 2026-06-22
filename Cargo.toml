@@ -41,7 +41,7 @@ serde_json = "1"
 # Détection matérielle (RAM, cœurs, GPU best-effort) pour le setup hardware-aware.
 sysinfo = "0.32"
 # Résolution du cache modèle (~/.basemyai/models) cross-plateforme.
-dirs = "5"
+dirs = "6"
 # Client HTTP async (provisioning LLM : détection Ollama/llama.cpp). rustls évite
 # OpenSSL sur Windows (pas de dep système supplémentaire).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
