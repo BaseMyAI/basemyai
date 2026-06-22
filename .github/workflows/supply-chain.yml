@@ -46,7 +46,7 @@ jobs:
           egress-policy: audit
 
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup environment
         uses: ./.github/actions/setup-environment
