@@ -66,7 +66,7 @@ jobs:
           before-script-linux: |
             command -v cmake >/dev/null 2>&1 || pipx install cmake || pip install cmake || pip3 install cmake
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}
           path: bindings/basemyai-py/dist/*.whl
@@ -82,7 +82,7 @@ jobs:
           command: sdist
           args: --out dist
           working-directory: bindings/basemyai-py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: bindings/basemyai-py/dist/*.tar.gz
