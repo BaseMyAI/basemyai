@@ -101,7 +101,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bindings-${{ matrix.target }}
           path: bindings/basemyai-node
@@ -147,7 +147,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm install --include=dev
       - name: Collect prebuilt addons
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: bindings/basemyai-node/artifacts
       - name: Assemble publish package
