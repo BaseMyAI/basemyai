@@ -38,6 +38,25 @@ pub enum MemoryError {
     #[error("porting error: {0}")]
     Porting(String),
 
+    /// Métadonnées d'embedding invalides dans le conteneur `.bmai`.
+    #[error("embedding metadata invalid: {0}")]
+    EmbeddingMetadata(String),
+
+    /// L'embedder fourni ne correspond pas aux vecteurs déjà stockés.
+    #[error(
+        "embedding model mismatch: store uses {stored_model} ({stored_dim}d), embedder is {embedder_model} ({embedder_dim}d); export/import to re-index with the new model"
+    )]
+    EmbeddingModelMismatch {
+        /// Modèle enregistré dans le conteneur.
+        stored_model: String,
+        /// Dimension enregistrée dans le conteneur.
+        stored_dim: usize,
+        /// Modèle de l'embedder fourni.
+        embedder_model: String,
+        /// Dimension de l'embedder fourni.
+        embedder_dim: usize,
+    },
+
     /// Texte à mémoriser au-delà de la limite de taille (DoS de contexte :
     /// un item démesuré saturerait le prompt de consolidation, qui ne borne
     /// que le *nombre* d'épisodes, pas leur taille individuelle).

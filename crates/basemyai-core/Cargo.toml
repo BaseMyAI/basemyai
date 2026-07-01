@@ -37,6 +37,11 @@ libsql = { version = "0.9.30", default-features = false, features = ["core"] }
 
 [dev-dependencies]
 tokio.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "knn_scalability"
+harness = false
 
 [lints]
 workspace = true

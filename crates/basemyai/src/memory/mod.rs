@@ -17,7 +17,7 @@ pub use porting::ImportReport;
 #[cfg(feature = "test-util")]
 pub use testutil::HashEmbedder;
 
-use basemyai_core::{Embedder, Metric, Store};
+use basemyai_core::{Embedder, Metric, Store, libsql};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -38,6 +38,8 @@ pub const MAX_TEXT_LEN: usize = 65_536;
 /// Provenance par défaut d'un souvenir mémorisé directement par l'agent (par
 /// opposition à `"consolidation"`, faits promus par le pipeline LLM).
 const SOURCE_USER: &str = "user";
+const META_EMBEDDING_MODEL_ID: &str = "embedding_model_id";
+const META_EMBEDDING_DIM: &str = "embedding_dim";
 
 /// Provenance des faits promus par consolidation (vs [`SOURCE_USER`]). Référence
 /// unique partagée avec `cognition::consolidation` : c'est elle qui distingue un
@@ -84,6 +86,7 @@ impl Memory {
             return Err(crate::MemoryError::EncryptionRequired);
         }
         store.migrate(&schema::schema()).await?;
+        ensure_embedding_contract(&store, embedder.as_ref()).await?;
         Ok(Self::from_migrated_store(store, embedder, agent))
     }
 
@@ -496,6 +499,62 @@ fn check_text_len(text: &str) -> Result<()> {
     Ok(())
 }
 
+async fn ensure_embedding_contract(store: &Store, embedder: &dyn Embedder) -> Result<()> {
+    let conn = store.connect();
+    conn.execute(
+        "INSERT OR IGNORE INTO bmai_meta (key, value) VALUES (?1, ?2)",
+        libsql::params![META_EMBEDDING_MODEL_ID, embedder.model_id()],
+    )
+    .await
+    .map_err(storage)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO bmai_meta (key, value) VALUES (?1, ?2)",
+        libsql::params![META_EMBEDDING_DIM, embedder.dim().to_string()],
+    )
+    .await
+    .map_err(storage)?;
+
+    let mut rows = conn
+        .query(
+            "SELECT key, value FROM bmai_meta WHERE key IN (?1, ?2)",
+            libsql::params![META_EMBEDDING_MODEL_ID, META_EMBEDDING_DIM],
+        )
+        .await
+        .map_err(storage)?;
+
+    let mut meta = HashMap::new();
+    while let Some(row) = rows.next().await.map_err(storage)? {
+        meta.insert(
+            row.get::<String>(0).map_err(storage)?,
+            row.get::<String>(1).map_err(storage)?,
+        );
+    }
+
+    let stored_model = meta
+        .get(META_EMBEDDING_MODEL_ID)
+        .ok_or_else(|| MemoryError::EmbeddingMetadata("missing embedding_model_id".into()))?;
+    let stored_dim = meta
+        .get(META_EMBEDDING_DIM)
+        .ok_or_else(|| MemoryError::EmbeddingMetadata("missing embedding_dim".into()))?
+        .parse::<usize>()
+        .map_err(|e| MemoryError::EmbeddingMetadata(format!("invalid embedding_dim: {e}")))?;
+
+    if stored_model != embedder.model_id() || stored_dim != embedder.dim() {
+        return Err(MemoryError::EmbeddingModelMismatch {
+            stored_model: stored_model.clone(),
+            stored_dim,
+            embedder_model: embedder.model_id().to_string(),
+            embedder_dim: embedder.dim(),
+        });
+    }
+
+    Ok(())
+}
+
+fn storage(e: libsql::Error) -> MemoryError {
+    basemyai_core::CoreError::Storage(e.to_string()).into()
+}
+
 /// Construit une expression FTS5 MATCH sûre depuis une requête libre : tokens
 /// alphanumériques, chacun cité (literal, donc insensible aux mots-clés FTS5
 /// comme AND/OR/NEAR) et joints par OR (orienté rappel). `None` si aucun token.
@@ -510,5 +569,90 @@ fn fts_match_expr(query: &str) -> Option<String> {
         None
     } else {
         Some(tokens.join(" OR "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use basemyai_core::Result as CoreResult;
+
+    struct TestEmbedder {
+        model: &'static str,
+        dim: usize,
+    }
+
+    impl Embedder for TestEmbedder {
+        fn embed(&self, _text: &str) -> CoreResult<Vec<f32>> {
+            Ok(vec![0.0; self.dim])
+        }
+
+        fn embed_batch(&self, texts: &[String]) -> CoreResult<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.0; self.dim]).collect())
+        }
+
+        fn model_id(&self) -> &str {
+            self.model
+        }
+
+        fn dim(&self) -> usize {
+            self.dim
+        }
+    }
+
+    #[tokio::test]
+    async fn open_records_embedding_model_metadata() {
+        let store = Store::open_in_memory().await.expect("store opens");
+        let agent = AgentId::new("metadata-agent").expect("valid agent");
+        let memory = Memory::open(
+            store,
+            Box::new(TestEmbedder {
+                model: "test-model-a",
+                dim: schema::EMBEDDING_DIM,
+            }),
+            agent,
+        )
+        .await
+        .expect("memory opens");
+
+        let conn = memory.libsql_engine().store().connect();
+        let mut rows = conn
+            .query(
+                "SELECT value FROM bmai_meta WHERE key = ?1",
+                libsql::params![META_EMBEDDING_MODEL_ID],
+            )
+            .await
+            .expect("metadata query");
+        let row = rows.next().await.expect("row read").expect("metadata row");
+        let model = row.get::<String>(0).expect("model value");
+        assert_eq!(model, "test-model-a");
+    }
+
+    #[tokio::test]
+    async fn open_rejects_incompatible_embedding_model() {
+        let store = Store::open_in_memory().await.expect("store opens");
+        let agent = AgentId::new("metadata-agent").expect("valid agent");
+        let memory = Memory::open(
+            store,
+            Box::new(TestEmbedder {
+                model: "test-model-a",
+                dim: schema::EMBEDDING_DIM,
+            }),
+            agent,
+        )
+        .await
+        .expect("memory opens");
+
+        let err = ensure_embedding_contract(
+            memory.libsql_engine().store(),
+            &TestEmbedder {
+                model: "test-model-b",
+                dim: schema::EMBEDDING_DIM,
+            },
+        )
+        .await
+        .expect_err("different model must be rejected");
+
+        assert!(matches!(err, MemoryError::EmbeddingModelMismatch { .. }));
     }
 }
