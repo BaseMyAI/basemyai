@@ -201,12 +201,14 @@ multi-langages.
 
 | # | Tâche | Notes |
 |---|-------|-------|
-| [ ] | Stress test inférence 1h (Candle, ADR-003) | Vérifier l'absence de fuite mémoire. `valgrind` / DHAT sur Linux. |
-| [ ] | Benchmark KNN : 10k, 100k, 1M vecteurs | `criterion`. Valider que l'ANN natif libSQL tient. |
+| [x] | Harnais stress inférence Candle (ADR-003) | `crates/basemyai-core/tests/candle_stress.rs`, ignoré par défaut, exige `BASEMYAI_MODEL_DIR`. Voir `docs/benchmarks/m6-knn-and-candle-stress.md`. |
+| [ ] | Exécution stress 1h + mémoire | Produire un run `BASEMYAI_CANDLE_STRESS_SECS=3600` sur machine cible, idéalement avec DHAT/Valgrind ou monitoring OS, puis archiver le brut avant claim public. |
+| [x] | Harnais benchmark KNN | `criterion` : `cargo bench -p basemyai-core --bench knn_scalability`. Tailles via `BASEMYAI_KNN_BENCH_SIZES=10000,100000,1000000`. |
+| [ ] | Résultats KNN 10k/100k/1M | Générer et archiver les sorties Criterion full-scale sur machine cible avant claim public. |
 | [x] | Multi-connexions libSQL (pool) | ✅ ADR-021 : pool de lecteurs round-robin + writer unique sérialisé sous WAL (`journal_mode=WAL`, `busy_timeout`). `:memory:` dégénère en taille 1. Warm-up séquentiel sous `native_open_lock`. `spawn_blocking` reporté (à benchmarker). |
 | [ ] | CUDA réel dans la détection hardware | Aujourd'hui : `CUDA_PATH` env var. V1 suffisant ; V1.1 : lier NVML directement. |
 | [ ] | Key rotation (chiffrement) | `PRAGMA rekey` libSQL : changer la clé sans recréer la DB. |
-| [ ] | Rotation des modèles d'embedding | Si le modèle change, tous les vecteurs doivent être re-générés. Détecter le changement via `model_id` stocké, proposer re-indexation. |
+| [x] | Rotation des modèles d'embedding (garde-fou) | `Memory::open` enregistre `embedding_model_id` dans `bmai_meta` et refuse un embedder incompatible (`EmbeddingModelMismatch`) avec consigne export/import pour ré-indexer. Reste hors scope : commande de réindexation in-place. |
 
 ### M6.2 — Live subscriptions (PLAN.md P2.1) — fondation faite (2026-06-21)
 

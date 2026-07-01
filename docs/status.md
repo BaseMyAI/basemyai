@@ -38,7 +38,7 @@ prêt prod ». La colonne Notes le précise systématiquement.
 | Migrations (`Migration`, `migrate`) | ✅ | `storage/store.rs` ; `tests/store.rs` | Versionnées, idempotentes. |
 | `MaintenanceWorker` + tâches injectées | ✅ | `maintenance.rs` ; `tests/maintenance_worker.rs` (dans `basemyai`) | Mécanisme d'injection ; le sens (GC, oubli, consolidation) vit dans `basemyai`. |
 | Embedder trait (object-safe, sync) | ✅ | `embed/mod.rs` (`Embedder`, `Device`) ; `tests/embed.rs` | Ne télécharge jamais (invariant ADR-010). |
-| Candle BERT (`CandleEmbedder`, `all-MiniLM-L6-v2`, 384d) | 🟡 | `embed/candle.rs` (feature `embed`) ; job CI `embed` | Code présent et compilé en CI. **Pas de stress test 1h / pas de bench mémoire** (M6 ouvert). Lourd (Candle). |
+| Candle BERT (`CandleEmbedder`, `all-MiniLM-L6-v2`, 384d) | 🟡 | `embed/candle.rs` (feature `embed`) ; job CI `embed` ; `tests/candle_stress.rs` | Code présent et compilé en CI. Stress test 1h opt-in ajouté (modèle local requis, `#[ignore]`) ; résultats mémoire/DHAT à produire sur machine cible avant claim public. Lourd (Candle). |
 | Agnosticité du core (zéro `agent_id`/`Symbol`/`Edge`) | ✅ | `tests/agnosticity.rs`, `tests/contracts.rs` | Invariant ADR-001 testé. |
 
 ---
@@ -159,7 +159,7 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Roundtrip bindings | ✅ | Node `__tests__/roundtrip.test.js`, Py `tests/test_roundtrip.py` | |
 | CI multi-OS × features | ✅ | `.github/workflows/ci.yml` | CI actuelle : `gate` sur Ubuntu + Windows, `embed` sur Ubuntu, `crypto` sur Ubuntu + Windows. Tests par crate (évite OOM Windows et coût macOS). |
 | Workflows release / prebuild | 🟡 | `release.yml`, `node-prebuilds.yml`, `python-wheels.yml`, `codeql.yml`, `supply-chain.yml` | Workflows présents. **Publication effective confirmée pour crates.io et PyPI** le 2026-06-22 ; **npm reste à re-vérifier** car le registre public ne résout pas `basemyai` depuis cette machine. |
-| Bench KNN (10k/100k/1M), stress 1h | 📋 | — | M6 ouvert. Aucun bench `criterion`. |
+| Bench KNN (10k/100k/1M), stress 1h | 🟡 | `crates/basemyai-core/benches/knn_scalability.rs`, `crates/basemyai-core/tests/candle_stress.rs`, `docs/benchmarks/m6-knn-and-candle-stress.md` | Harnais reproductibles ajoutés. Résultats full-scale non encore générés/commités, donc aucun claim de scale publié. |
 
 ---
 
@@ -290,5 +290,6 @@ agent locale, pas une base vectorielle de plus », liés depuis `README.md`
   Mem0+Qdrant : harnais prêt, **chiffres pas encore publiés**.
 - **Studio, Tauri, backend natif, Turso, sync, multi-modèles : ⏸️ correctement
   reportés** (V1.5 / V2), pas de dette cachée.
-- **Hardening (M6) : 📋 non commencé** — pas de bench KNN, pas de stress test
-  mémoire, pas de pool de connexions, pas de key rotation.
+- **Hardening (M6) : 🟡 en cours** — pool lecteur libSQL livré (ADR-021),
+  harnais bench KNN et stress Candle ajoutés. Restent : résultats full-scale
+  archivés, CUDA/NVML réel, key rotation.

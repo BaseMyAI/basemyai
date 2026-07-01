@@ -66,6 +66,7 @@ toml        = "1.1"
 assert_cmd  = "2"
 predicates  = "3"
 tempfile    = "3"
+criterion   = "0.7"
 
 # Lints partagés par tout le workspace (Rust 2026).
 # Gate : `cargo clippy --workspace --all-targets -- -D warnings` (CLAUDE.md).
