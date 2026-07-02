@@ -239,6 +239,52 @@ impl Store {
         Ok(())
     }
 
+    /// Variante de [`ensure_vector_table`](Self::ensure_vector_table) qui crée
+    /// **uniquement la table**, sans l'index `libsql_vector_idx`.
+    ///
+    /// **Scope : bulk-load / benchmark uniquement.** L'index natif de libSQL
+    /// (graphe de type DiskANN) est maintenu de façon incrémentale : chaque
+    /// insertion déclenche une recherche de voisins dans le graphe déjà
+    /// construit, dont le coût croît avec la taille de l'index. Sur un chargement
+    /// massif séquentiel, ça a été mesuré comme un mur de scalabilité réel (voir
+    /// `docs/benchmarks/m6-knn-results-2026-07-01.md`) — construire l'index
+    /// après le chargement en masse plutôt qu'avant l'évite. **N'utilisez pas
+    /// ceci pour le chemin d'usage normal de la lib** (`Memory`, etc.), qui doit
+    /// pouvoir interroger le KNN à tout moment y compris pendant l'insertion
+    /// incrémentale : préférez toujours [`ensure_vector_table`](Self::ensure_vector_table)
+    /// hors bulk-load explicite. Combiner avec [`create_vector_index`](Self::create_vector_index)
+    /// une fois le chargement terminé.
+    ///
+    /// # Errors
+    /// [`CoreError::Vector`] si `table` n'est pas un identifiant sûr, ou échec SQL.
+    pub async fn ensure_vector_table_no_index(&self, table: &str, dim: usize) -> Result<()> {
+        let table = ident(table)?;
+        let conn = self.connect();
+        conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, emb F32_BLOB({dim}));",))
+            .await
+            .map_err(map)?;
+        Ok(())
+    }
+
+    /// Crée (si absent) l'index vectoriel natif `metric=cosine` sur une table
+    /// déjà remplie. Contrepartie bulk-load de
+    /// [`ensure_vector_table_no_index`](Self::ensure_vector_table_no_index) :
+    /// appeler **après** le chargement en masse, pour construire l'index en une
+    /// fois plutôt que de payer le coût incrémental à chaque ligne.
+    ///
+    /// # Errors
+    /// [`CoreError::Vector`] si `table` n'est pas un identifiant sûr, ou échec SQL.
+    pub async fn create_vector_index(&self, table: &str) -> Result<()> {
+        let table = ident(table)?;
+        let conn = self.connect();
+        conn.execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS {table}_idx ON {table}(libsql_vector_idx(emb, 'metric=cosine'));",
+        ))
+        .await
+        .map_err(map)?;
+        Ok(())
+    }
+
     /// Insère ou met à jour le vecteur d'un identifiant.
     ///
     /// # Errors
@@ -423,6 +469,73 @@ impl Store {
     #[must_use]
     pub fn is_encrypted(&self) -> bool {
         self.encrypted
+    }
+
+    /// Change la clé de chiffrement **en place** via `PRAGMA rekey`
+    /// (SQLite3MultipleCiphers, le backend de la feature `crypto`) : les pages
+    /// sont ré-écrites avec `new_key` sans recréer ni dumper le fichier.
+    ///
+    /// # Pourquoi ce `Store` devient caduc après l'appel
+    ///
+    /// `PRAGMA rekey` ne ré-encrypte que sur la connexion qui l'exécute (ici
+    /// le writer, sous `write_lock`) : c'est le seul point d'entrée SQL qui
+    /// déclenche `sqlite3_rekey_v2` côté SQLite3MultipleCiphers. Les autres
+    /// connexions déjà ouvertes — tout le pool de **lecteurs** — gardent en
+    /// mémoire l'**ancienne** clé dans leur propre état de chiffrement natif
+    /// (fixé une fois via `sqlite3_key` à leur ouverture) ; rien ne les
+    /// notifie du changement, et leurs prochaines lectures de pages
+    /// nouvellement ré-écrites échoueront (déchiffrement avec la mauvaise
+    /// clé). Pire : `libsql::Database` capture `encryption_config` **une
+    /// fois, immuablement**, à sa construction (`Builder::build`) — toute
+    /// connexion ouverte *après coup* via `db.connect()` (donc un futur appel
+    /// à [`reader`](Self::reader), ou un warm-up de pool) réutiliserait
+    /// encore l'**ancienne** clé et échouerait contre le fichier désormais
+    /// chiffré avec `new_key`. libSQL 0.9.30 n'offre ni API pour rafraîchir
+    /// cette config après coup, ni mécanisme pour diffuser un rekey aux
+    /// connexions sœurs.
+    ///
+    /// **Conséquence : après un appel réussi, cette instance de `Store`
+    /// (writer + pool de lecteurs) doit être considérée caduque.**
+    /// L'appelant doit la laisser tomber (`drop`) et rouvrir un `Store` frais
+    /// via [`Store::open`] avec `new_key` — exactement comme après une
+    /// ouverture initiale. Ne rien lire/écrire d'autre sur cette instance
+    /// après `rotate_key` : au mieux les lecteurs échouent proprement, au
+    /// pire ils servent des pages mises en cache avant la rotation (lecture
+    /// obsolète mais silencieusement "valide").
+    ///
+    /// # Errors
+    /// [`CoreError::Encryption`] si le store n'est pas chiffré (rien à
+    /// rotater — `rotate_key` ne sert pas à chiffrer a posteriori un store en
+    /// clair, seulement à changer la clé d'un store déjà chiffré).
+    /// [`CoreError::Storage`] si le `PRAGMA rekey` échoue côté SQL.
+    #[cfg(feature = "crypto")]
+    pub async fn rotate_key(&self, new_key: EncryptionKey) -> Result<()> {
+        if !self.encrypted {
+            return Err(CoreError::Encryption);
+        }
+        // Sérialise avec `begin_write`/toute transaction en cours : le rekey
+        // doit être la seule opération en vol sur le writer pendant la
+        // ré-écriture des pages.
+        let _writer = self.write_lock.lock().await;
+        // `PRAGMA rekey` ne supporte pas les placeholders liés (`?`) : la
+        // grammaire PRAGMA de SQLite n'accepte qu'un littéral. On échappe donc
+        // la clé comme un littéral SQL (guillemet simple doublé) plutôt que de
+        // l'interpoler telle quelle.
+        let escaped = new_key.expose().replace('\'', "''");
+        // SQLite3MultipleCiphers refuse `PRAGMA rekey` tant que la connexion
+        // est en `journal_mode=WAL` (« Rekeying is not supported in WAL
+        // journal mode », vérifié empiriquement contre libSQL 0.9.30) : le
+        // rekey ré-écrit la totalité des pages via le rollback journal
+        // classique, incompatible avec le modèle WAL. On repasse donc en
+        // `DELETE` pour la durée du rekey, puis on restaure `WAL` (le mode
+        // nominal de ce `Store`, cf. [`Store::open_with`]) juste après.
+        self.writer.execute_batch("PRAGMA journal_mode=DELETE;").await.map_err(map)?;
+        let rekey_result = self.writer.execute_batch(&format!("PRAGMA rekey = '{escaped}';")).await;
+        // Toujours retenter de revenir en WAL, même si le rekey a échoué : on
+        // ne veut pas laisser le fichier en mode DELETE suite à une erreur.
+        self.writer.execute_batch("PRAGMA journal_mode=WAL;").await.map_err(map)?;
+        rekey_result.map_err(map)?;
+        Ok(())
     }
 }
 

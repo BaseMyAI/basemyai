@@ -27,9 +27,10 @@ test-util = ["basemyai/test-util"]
 basemyai      = { path = "../basemyai" }
 basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
 
-axum       = { workspace = true }
-tower      = { workspace = true }
-tower-http = { workspace = true }
+axum         = { workspace = true }
+tower        = { workspace = true }
+tower-http   = { workspace = true }
+futures-util = { workspace = true }
 
 serde.workspace      = true
 serde_json.workspace = true

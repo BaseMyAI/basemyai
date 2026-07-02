@@ -6,12 +6,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
+use tokio::sync::Mutex as AsyncMutex;
 
 #[cfg(all(feature = "crypto", feature = "embed"))]
 use basemyai::AgentId;
-use basemyai::MemoryLayer;
+use basemyai::{MemoryLayer, MemorySubscription};
 
 #[cfg(all(feature = "crypto", feature = "embed"))]
 use basemyai_core::Store;
@@ -21,7 +23,7 @@ use basemyai_core::{CandleEmbedder, Device, Embedder, EncryptionKey};
 #[cfg(all(feature = "crypto", feature = "embed"))]
 use crate::errors::ValidationError;
 use crate::errors::to_pyerr;
-use crate::types::{AgentStats, Entity, Record};
+use crate::types::{AgentStats, Entity, Record, WatchEvent};
 
 /// Mémoire d'un agent (tenant). Construite via une fabrique asynchrone, puis
 /// interrogée par `remember`/`recall`/... (toutes asynchrones).
@@ -241,6 +243,55 @@ impl Memory {
         future_into_py(py, async move {
             let reached = inner.graph().traverse(&start, max_depth).await.map_err(to_pyerr)?;
             Ok(reached.into_iter().map(Entity::from).collect::<Vec<_>>())
+        })
+    }
+
+    /// Démarre un abonnement aux événements mémoire de **cet** agent (ADR-022,
+    /// seconde vague — PLAN.md §P2.1). Rend un [`MemoryWatch`], un itérateur
+    /// asynchrone Python : `async for event in memory.watch():` consomme les
+    /// événements au fur et à mesure qu'ils arrivent (`remember`/`invalidate`/
+    /// `forget`/consolidation), jusqu'à ce que la boucle soit interrompue ou
+    /// que la `Memory` sous-jacente disparaisse. `layer` restreint optionnellement
+    /// à une couche unique. L'isolation par agent/couche est déjà garantie par
+    /// `MemorySubscription::recv` (ADR-022) — cette méthode passe `agent_id` tel
+    /// quel, elle ne refait aucun filtrage.
+    #[pyo3(signature = (layer = None))]
+    fn watch(&self, layer: Option<String>) -> PyResult<MemoryWatch> {
+        let layer = layer.map(|l| MemoryLayer::from_table(&l)).transpose().map_err(to_pyerr)?;
+        let agent_id = self.inner.agent().as_str().to_string();
+        let subscription = self.inner.watch(&agent_id, layer);
+        Ok(MemoryWatch {
+            subscription: Arc::new(AsyncMutex::new(subscription)),
+        })
+    }
+}
+
+/// Itérateur asynchrone Python rendu par [`Memory::watch`]. Porte un
+/// [`MemorySubscription`] derrière un verrou tokio (interior mutability) :
+/// `__anext__` prend `&self` — c'est le protocole Python — pas `&mut self`,
+/// donc l'exclusivité vient du verrou, pas de l'emprunt Rust.
+#[pyclass]
+pub struct MemoryWatch {
+    subscription: Arc<AsyncMutex<MemorySubscription>>,
+}
+
+#[pymethods]
+impl MemoryWatch {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Rend l'awaitable du prochain événement. Lève `StopAsyncIteration`
+    /// quand le canal source est fermé (la `Memory` d'origine a disparu) —
+    /// c'est le seul cas où le flux se termine, sinon il attend indéfiniment.
+    fn __anext__<'p>(&self, py: Python<'p>) -> PyResult<Bound<'p, PyAny>> {
+        let subscription = Arc::clone(&self.subscription);
+        future_into_py(py, async move {
+            let mut sub = subscription.lock().await;
+            match sub.recv().await {
+                Some(event) => Ok(WatchEvent::from(event)),
+                None => Err(PyStopAsyncIteration::new_err(())),
+            }
         })
     }
 }

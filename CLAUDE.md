@@ -118,4 +118,10 @@ depuis cette machine (`npm view basemyai` renvoie `404`). Pas de binaire CLI dis
 `forget-adaptive`/`consolidate`), `config`, `completions` — voir `docs/cli.md`. Reste ouvert (M5) :
 distribution binaire (cargo-dist), tests CLI en CI. `StorageEngine` : trait d'opérations mémoire
 `basemyai::storage::MemoryStore` + `LibsqlMemoryStore` fait (ADR-020, 2026-06-20), `Filter` confiné,
-tests de contrat ajoutés. Hardening (M6 : bench KNN, stress test, pool, key rotation) non commencé.
+tests de contrat ajoutés. Hardening (M6, 2026-07-02) : pool lecteur ✅ (ADR-021), bench KNN ✅
+(10k/100k réels archivés, `docs/benchmarks/m6-knn-results-2026-07-01.md` — 1M documenté comme
+non exécuté, coût de build de l'index natif ~78-79 ms/ligne), stress Candle 1h ✅ (stable, pas de
+fuite, `docs/benchmarks/m6-candle-stress-results-2026-07-01.md`), key rotation ✅ (`PRAGMA rekey`,
+`Store::rotate_key`/`Memory::rotate_key`). Live subscriptions vague 2 (ADR-022) : REST SSE ✅, MCP
+notifications ✅, PyO3 callback ✅, NAPI/Node reporté (pas d'équivalent direct de l'itérateur async
+Python en napi-rs). Reste ouvert : CUDA/NVML réel (M6), résultats KNN 1M, NAPI live subscriptions.

@@ -477,6 +477,114 @@ async fn valid_recall_request_still_passes_validation() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// Lit les frames du corps SSE jusqu'à ce que `predicate` matche le texte
+/// accumulé, ou jusqu'au timeout (le test échoue explicitement plutôt que de
+/// bloquer indéfiniment si l'événement n'arrive jamais).
+async fn read_sse_until(body: &mut axum::body::Body, predicate: impl Fn(&str) -> bool, timeout: Duration) -> String {
+    let mut acc = String::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return acc;
+        }
+        match tokio::time::timeout(remaining, body.frame()).await {
+            Ok(Some(Ok(frame))) => {
+                if let Ok(data) = frame.into_data() {
+                    acc.push_str(&String::from_utf8_lossy(&data));
+                    if predicate(&acc) {
+                        return acc;
+                    }
+                }
+            }
+            // Fin de flux ou timeout : on renvoie ce qui a été accumulé (vide si rien).
+            Ok(Some(Err(_)) | None) | Err(_) => return acc,
+        }
+    }
+}
+
+#[tokio::test]
+async fn watch_delivers_remembered_event_for_same_agent() {
+    let app = app();
+
+    let watch_resp = app
+        .clone()
+        .oneshot(get("/v1/watch?agent_id=a", true))
+        .await
+        .expect("watch");
+    assert_eq!(watch_resp.status(), StatusCode::OK);
+    assert_eq!(
+        watch_resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let mut body = watch_resp.into_body();
+
+    let remember_resp = app
+        .clone()
+        .oneshot(post(
+            "/v1/remember",
+            &json!({"agent_id": "a", "text": "sse fact", "layer": "semantic"}),
+            true,
+        ))
+        .await
+        .expect("remember");
+    assert_eq!(remember_resp.status(), StatusCode::CREATED);
+    let id = json_body(remember_resp).await["id"].as_str().expect("id").to_string();
+
+    let received = read_sse_until(
+        &mut body,
+        |acc| acc.contains("\"remembered\""),
+        Duration::from_secs(5),
+    )
+    .await;
+
+    assert!(
+        received.contains("\"remembered\""),
+        "expected a remembered event, got: {received:?}"
+    );
+    assert!(received.contains(&id), "event should carry the memory id: {received:?}");
+    assert!(received.contains("\"agent_id\":\"a\""), "event should carry agent_id: {received:?}");
+}
+
+#[tokio::test]
+async fn watch_isolates_events_from_other_agents() {
+    let app = app();
+
+    let watch_resp = app
+        .clone()
+        .oneshot(get("/v1/watch?agent_id=a", true))
+        .await
+        .expect("watch");
+    assert_eq!(watch_resp.status(), StatusCode::OK);
+    let mut body = watch_resp.into_body();
+
+    // Rafale d'écritures au nom de l'agent B : rien ne doit atteindre A.
+    for i in 0..5 {
+        let resp = app
+            .clone()
+            .oneshot(post(
+                "/v1/remember",
+                &json!({"agent_id": "b", "text": format!("other agent fact {i}")}),
+                true,
+            ))
+            .await
+            .expect("remember for b");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    // Aucun événement ne doit jamais arriver sur le flux de A : on attend un
+    // court délai fixe et on vérifie qu'il ne s'est rien passé (pas de course
+    // possible puisque rien n'est censé arriver, quel que soit le délai).
+    let received = read_sse_until(&mut body, |_| false, Duration::from_millis(300)).await;
+    assert!(
+        received.is_empty(),
+        "agent a's stream must not receive agent b's events: {received:?}"
+    );
+}
+
 #[tokio::test]
 async fn remember_is_rate_limited_per_agent() {
     let config = Config {

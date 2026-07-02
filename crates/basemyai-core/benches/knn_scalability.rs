@@ -48,13 +48,25 @@ fn bench_sizes() -> Vec<usize> {
     if sizes.is_empty() { vec![10_000] } else { sizes }
 }
 
+/// Sème `rows` vecteurs synthétiques puis construit l'index vectoriel natif
+/// **après** le chargement en masse (bulk-load-then-index), au lieu de laisser
+/// libSQL maintenir le graphe `libsql_vector_idx` de façon incrémentale ligne
+/// par ligne. Mesuré empiriquement comme nécessaire pour rester dans un temps
+/// de seeding raisonnable au-delà de la dizaine de milliers de lignes — voir
+/// `docs/benchmarks/m6-knn-results-2026-07-01.md` (« amplification à la
+/// construction incrémentale de l'index »). Ce chemin bulk-load n'est PAS le
+/// comportement par défaut de `Store::ensure_vector_table` (qui crée l'index
+/// avant insertion, adapté à l'usage incrémental normal de la lib) : il est
+/// scopé à ce benchmark via `Store::ensure_vector_table_no_index` +
+/// `Store::create_vector_index`.
 async fn seed_store(rows: usize) -> basemyai_core::Result<(Store, PathBuf)> {
     let path = temp_db_path(rows);
     cleanup(&path);
 
     let store = Store::open_with(&path, None, 4).await?;
-    store.ensure_vector_table(TABLE, DIM).await?;
+    store.ensure_vector_table_no_index(TABLE, DIM).await?;
 
+    eprintln!("[knn_scalability] seeding {rows} rows (bulk insert, no index yet)...");
     let mut inserted = 0;
     while inserted < rows {
         let upper = rows.min(inserted + INSERT_CHUNK);
@@ -72,7 +84,14 @@ async fn seed_store(rows: usize) -> basemyai_core::Result<(Store, PathBuf)> {
         }
         txn.commit().await?;
         inserted = upper;
+        if inserted % (INSERT_CHUNK * 20) == 0 || inserted == rows {
+            eprintln!("[knn_scalability]   ...{inserted}/{rows} rows inserted");
+        }
     }
+
+    eprintln!("[knn_scalability] building libsql_vector_idx over {rows} rows...");
+    store.create_vector_index(TABLE).await?;
+    eprintln!("[knn_scalability] index built for {rows} rows");
 
     Ok((store, path))
 }

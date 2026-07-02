@@ -175,6 +175,62 @@ async def test_empty_agent_raises_validation_error():
         await basemyai.Memory.open_in_memory("")
 
 
+@pytest.mark.asyncio
+async def test_watch_delivers_remembered_event():
+    """ADR-022 seconde vague : `async for event in memory.watch()` (PLAN.md §P2.1)."""
+    mem = await basemyai.Memory.open_in_memory("agent-1")
+    watcher = mem.watch()
+
+    mid = await mem.remember("watched fact", layer="semantic")
+
+    event = await anext(watcher)
+    assert event.kind == "remembered"
+    assert event.id == mid
+    assert event.agent_id == "agent-1"
+    assert event.layer == "semantic"
+
+
+@pytest.mark.asyncio
+async def test_watch_filters_by_layer():
+    mem = await basemyai.Memory.open_in_memory("agent-1")
+    watcher = mem.watch(layer="episodic")
+
+    # Un souvenir sémantique ne doit pas franchir le filtre de couche.
+    await mem.remember("semantic noise", layer="semantic")
+    episodic_id = await mem.remember("episodic signal", layer="episodic")
+
+    event = await anext(watcher)
+    assert event.id == episodic_id
+    assert event.layer == "episodic"
+
+
+@pytest.mark.asyncio
+async def test_watch_isolates_events_from_other_agents():
+    """Test adversarial ADR-022 : la mémoire d'un autre agent ne fuite jamais.
+
+    NB : n'utilise volontairement PAS `asyncio.wait_for(..., timeout=...)` pour
+    prouver « rien n'arrive » : annuler une coroutine pyo3-async-runtimes en
+    attente au milieu d'un `tokio::sync::Mutex`/`broadcast::Receiver::recv().await`
+    provoque un access violation sous Windows (crash différé, observé sur le test
+    suivant) — cohérent avec le hasard documenté sur l'abandon de tâches tokio en
+    plein I/O (voir `crates/basemyai-mcp/tests/sampling.rs`). À la place, on
+    prouve l'isolation en montrant que les 5 écritures de l'agent B ne se
+    glissent jamais devant l'unique écriture de l'agent A : le premier (et seul)
+    événement reçu par le watcher de A est bien celui de A.
+    """
+    a = await basemyai.Memory.open_in_memory("agent-a")
+    b = await basemyai.Memory.open_in_memory("agent-b")
+    watcher = a.watch()
+
+    for i in range(5):
+        await b.remember(f"other agent fact {i}", layer="semantic")
+    a_id = await a.remember("agent a's own fact", layer="semantic")
+
+    event = await anext(watcher)
+    assert event.agent_id == "agent-a"
+    assert event.id == a_id
+
+
 def test_exports_and_typing_marker_present():
     assert "Memory" in basemyai.__all__
     assert hasattr(basemyai.Memory, "recall_by_layer")

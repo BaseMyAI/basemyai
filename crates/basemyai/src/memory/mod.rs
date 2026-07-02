@@ -488,6 +488,28 @@ impl Memory {
         let now = now_unix();
         self.engine.recall_graph_filtered(&self.agent, &qvec, k, now).await
     }
+
+    /// Change la clé de chiffrement du store sous-jacent **en place**
+    /// (`PRAGMA rekey`, cf. [`basemyai_core::Store::rotate_key`]) — sans
+    /// recréer le fichier `.bmai`.
+    ///
+    /// **Après un appel réussi, cette `Memory` (et le `Store` qu'elle
+    /// enveloppe) devient caduque** : le pool de lecteurs du core retient
+    /// l'ancienne clé et libSQL ne permet pas de la rafraîchir après coup
+    /// (détail complet dans la doc de
+    /// [`basemyai_core::Store::rotate_key`]). L'appelant doit laisser tomber
+    /// cette `Memory` et rouvrir via [`Memory::open`] avec `new_key` — le
+    /// même `Store` (même fichier) mais une clé neuve.
+    ///
+    /// # Errors
+    /// [`basemyai_core::CoreError::Encryption`] si le store n'est pas
+    /// chiffré ; [`basemyai_core::CoreError::Storage`] si le `PRAGMA rekey`
+    /// échoue. Les deux remontent enveloppées dans [`MemoryError::Core`].
+    #[cfg(feature = "crypto")]
+    pub async fn rotate_key(&self, new_key: basemyai_core::EncryptionKey) -> Result<()> {
+        self.engine.store().rotate_key(new_key).await?;
+        Ok(())
+    }
 }
 
 /// Rejette un texte dépassant [`MAX_TEXT_LEN`] (DoS de contexte, audit sécurité).

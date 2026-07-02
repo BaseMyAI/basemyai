@@ -34,11 +34,12 @@ prêt prod ». La colonne Notes le précise systématiquement.
 | `Filter` paramétré (fragment SQL + valeurs liées) | ✅ | `storage/vector.rs` (`Filter`, `Value`, `Neighbor`) | Anti-injection ADR-006. Confiné depuis ADR-020 à `basemyai::storage::LibsqlMemoryStore` — plus aucun consommateur de `basemyai` (memory/cognition) ne le manipule directement. |
 | `StorageEngine` trait + `EngineCapabilities` | ✅ | `storage/engine.rs` (`StorageEngine`, `EngineCapabilities`, `EngineKind::Libsql`) ; `basemyai::storage::{MemoryStore, LibsqlMemoryStore}` (ADR-020) ; `tests/storage_contract.rs` | Contrat d'identité/capacités (core, inchangé) **+** contrat d'opérations mémoire (`put_memory`, `recall_vector`, `graph_upsert_entity`…) dans `basemyai` (ADR-020, suivi ADR-019). Tests de contrat pilotés par le trait. Reste hors périmètre : `memory/porting.rs` (export/import bas niveau) et `maintenance/{gc,forgetting}` (raison documentée dans ADR-020). |
 | Chiffrement au repos (feature `crypto`) | ✅ | `storage/store.rs` (`is_encrypted`, `EncryptionKey`) ; job CI `crypto` | Optionnel au core, obligatoire dans `basemyai`. Exige CMake. |
+| Key rotation (`PRAGMA rekey`) | ✅ | `storage/store.rs` (`Store::rotate_key`) ; `basemyai/src/memory/mod.rs` (`Memory::rotate_key`) ; `tests/store.rs`, `tests/key_rotation.rs` | Ajouté 2026-07-02. Rotation exige de rouvrir `Store`/`Memory` (le pool de lecteurs et `libsql::Database` figent la clé à l'ouverture — pas de rafraîchissement en place dans libsql 0.9.30). Bascule temporaire WAL→DELETE→rekey→WAL (SQLite3MultipleCiphers refuse `rekey` en WAL). |
 | FTS5 / full-text (mécanisme) | ✅ | utilisé via `Store::connect()` dans `basemyai` ; schéma `memory_fts` | Le core expose la connexion ; le schéma FTS vit dans `basemyai`. |
 | Migrations (`Migration`, `migrate`) | ✅ | `storage/store.rs` ; `tests/store.rs` | Versionnées, idempotentes. |
 | `MaintenanceWorker` + tâches injectées | ✅ | `maintenance.rs` ; `tests/maintenance_worker.rs` (dans `basemyai`) | Mécanisme d'injection ; le sens (GC, oubli, consolidation) vit dans `basemyai`. |
 | Embedder trait (object-safe, sync) | ✅ | `embed/mod.rs` (`Embedder`, `Device`) ; `tests/embed.rs` | Ne télécharge jamais (invariant ADR-010). |
-| Candle BERT (`CandleEmbedder`, `all-MiniLM-L6-v2`, 384d) | 🟡 | `embed/candle.rs` (feature `embed`) ; job CI `embed` ; `tests/candle_stress.rs` | Code présent et compilé en CI. Stress test 1h opt-in ajouté (modèle local requis, `#[ignore]`) ; résultats mémoire/DHAT à produire sur machine cible avant claim public. Lourd (Candle). |
+| Candle BERT (`CandleEmbedder`, `all-MiniLM-L6-v2`, 384d) | ✅ | `embed/candle.rs` (feature `embed`) ; job CI `embed` ; `tests/candle_stress.rs` ; `docs/benchmarks/m6-candle-stress-results-2026-07-01.md` | Stress 1h (3300s) exécuté sur machine cible le 2026-07-02 : `ok`, mémoire stable (min 61.2 MB / max 193.1 MB / moy. 88.6 MB sur 102 échantillons, pas de tendance de croissance), pas de fuite observée. Lourd (Candle). |
 | Agnosticité du core (zéro `agent_id`/`Symbol`/`Edge`) | ✅ | `tests/agnosticity.rs`, `tests/contracts.rs` | Invariant ADR-001 testé. |
 
 ---
@@ -108,6 +109,7 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | **REST sidecar** (`basemyai-rest`) | ✅ | `crates/basemyai-rest/src/routes.rs` ; `tests/api.rs` | axum, `/v1/remember,recall,recall_hybrid,recall_graph`, delete memory/agent, stats ; auth Bearer (constant-time), request-id, body limit. **Plus avancé que TODO M4 (tout non coché).** `openapi-sidecar.yaml` = spec source. Pas d'image Docker (M4 ouvert). |
 | **Node binding** (`bindings/basemyai-node`, NAPI-RS) | 🟡 | `bindings/basemyai-node/src/memory.rs`, `index.d.ts` ; `__tests__/roundtrip.test.js` ; workflow `node-prebuilds.yml` | Classe `Memory` complète (remember, recall, recallByLayer, recallHybrid, invalidate, forget, stats, addGraphEntity/Edge, recallGraph). **Publication npm non confirmée depuis cette machine** au 2026-06-22 : `npm view basemyai` et le registre public renvoient `404` pour `basemyai`. Vérifier le nom/scope final si besoin. |
 | **Python binding** (`bindings/basemyai-py`, PyO3) | ✅ | `bindings/basemyai-py/src/memory.rs`, `python/basemyai/__init__.pyi` ; `tests/test_roundtrip.py` ; workflow `python-wheels.yml` ; `python -m pip index versions basemyai` | Classe `Memory` async complète + stubs `.pyi` + `py.typed`. **Publication confirmée sur PyPI** (`basemyai 0.1.0` vu le 2026-06-22). Wrappers LangChain/LlamaIndex toujours absents. |
+| **Live subscriptions** (ADR-022 vague 2 : SSE/WS REST, notifications MCP, callbacks PyO3/NAPI) | 🟡 | `basemyai-rest/src/routes.rs` (`GET /v1/watch`, SSE) ; `basemyai-mcp/src/tools/watch.rs` (notification `notifications/message`) ; `bindings/basemyai-py/src/memory.rs` (`Memory.watch` → `async for`) ; tests adversariaux d'isolation par surface | Fait 2026-07-02, par-dessus `Memory::watch`/ADR-022 (mécanisme déjà en place). REST et MCP testés avec isolation adversariale agent A/B. PyO3 vérifié via `maturin develop` + pytest réel (pas juste `cargo build`) — un vrai bug Windows trouvé et documenté (crash access-violation en annulant un future en attente sur `broadcast::Receiver::recv()` via `asyncio.wait_for`, cf. `docs/TODO.md`). **NAPI/Node non fait** : pas d'équivalent direct du protocole itérateur async Python en napi-rs, nécessiterait une conception distincte (ThreadsafeFunction/EventEmitter). |
 
 > **Écart TODO.** `TODO.md` décrit M2 (Node) et M3 (Python) comme « à créer »
 > sous `crates/basemyai-node` / `crates/basemyai-python`. En réalité les deux
@@ -159,7 +161,7 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Roundtrip bindings | ✅ | Node `__tests__/roundtrip.test.js`, Py `tests/test_roundtrip.py` | |
 | CI multi-OS × features | ✅ | `.github/workflows/ci.yml` | CI actuelle : `gate` sur Ubuntu + Windows, `embed` sur Ubuntu, `crypto` sur Ubuntu + Windows. Tests par crate (évite OOM Windows et coût macOS). |
 | Workflows release / prebuild | 🟡 | `release.yml`, `node-prebuilds.yml`, `python-wheels.yml`, `codeql.yml`, `supply-chain.yml` | Workflows présents. **Publication effective confirmée pour crates.io et PyPI** le 2026-06-22 ; **npm reste à re-vérifier** car le registre public ne résout pas `basemyai` depuis cette machine. |
-| Bench KNN (10k/100k/1M), stress 1h | 🟡 | `crates/basemyai-core/benches/knn_scalability.rs`, `crates/basemyai-core/tests/candle_stress.rs`, `docs/benchmarks/m6-knn-and-candle-stress.md` | Harnais reproductibles ajoutés. Résultats full-scale non encore générés/commités, donc aucun claim de scale publié. |
+| Bench KNN (10k/100k/1M), stress 1h | 🟡 | `crates/basemyai-core/benches/knn_scalability.rs`, `crates/basemyai-core/tests/candle_stress.rs`, `docs/benchmarks/m6-knn-results-2026-07-01.md`, `docs/benchmarks/m6-candle-stress-results-2026-07-01.md` | Stress 1h fait (✅, voir §1). KNN : 10k et 100k réels archivés le 2026-07-02 (latence quasi stable ~40-58ms entre les deux tailles, confirme un vrai ANN sous-linéaire côté requête) ; **1M non exécuté** — la construction de `libsql_vector_idx` est linéaire en coût absolu (~78-79 ms/ligne aux deux échelles mesurées), soit ~22h extrapolées pour 1M, jugé non réalisable en session. Caractéristique backend documentée, pas juste un aléa de bench. |
 
 ---
 
@@ -182,8 +184,8 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Multi-modèles d'embedding | ⏸️ | — | V2 (baseline unique en V1, compat `.idx`). |
 | Sync multi-device | ⏸️ | — | V2 (VISION §7). |
 | Mémoire partagée inter-agents | ⏸️ | — | V2 (ADR-006). |
-| Key rotation (`PRAGMA rekey`) | 📋 | — | M6 ouvert. |
-| Pool de connexions libSQL | 📋 | — | M6 ouvert (connexion partagée clonée aujourd'hui). |
+| Key rotation (`PRAGMA rekey`) | ✅ | voir §1 (`storage/store.rs`) | Fait 2026-07-02. |
+| Pool de connexions libSQL | ✅ | `storage/store.rs` (pool lecteurs round-robin + writer sérialisé, ADR-021) | Fait — cette ligne était périmée : `TODO.md` M6 le coche déjà avant cette révision. `:memory:` dégénère en taille 1. |
 
 ---
 
@@ -290,6 +292,11 @@ agent locale, pas une base vectorielle de plus », liés depuis `README.md`
   Mem0+Qdrant : harnais prêt, **chiffres pas encore publiés**.
 - **Studio, Tauri, backend natif, Turso, sync, multi-modèles : ⏸️ correctement
   reportés** (V1.5 / V2), pas de dette cachée.
-- **Hardening (M6) : 🟡 en cours** — pool lecteur libSQL livré (ADR-021),
-  harnais bench KNN et stress Candle ajoutés. Restent : résultats full-scale
-  archivés, CUDA/NVML réel, key rotation.
+- **Hardening (M6) : 🟡 en cours, avancée majeure le 2026-07-02.** Pool lecteur
+  libSQL (ADR-021) ✅, key rotation (`PRAGMA rekey`) ✅, stress Candle 1h ✅
+  (stable, pas de fuite), bench KNN 10k/100k ✅ (avec un vrai finding : coût de
+  build de l'index natif ~78-79 ms/ligne, quasi-linéaire — 1M jugé irréaliste
+  en session et documenté comme tel plutôt qu'exécuté). Live subscriptions
+  vague 2 (ADR-022) : REST SSE ✅, MCP notifications ✅, PyO3 ✅, NAPI reporté.
+  Restent : CUDA/NVML réel, résultats KNN 1M (nécessite une machine dédiée sur
+  plusieurs heures), NAPI live subscriptions.
