@@ -8,6 +8,7 @@ mod recall;
 mod recall_graph;
 mod remember;
 mod stats;
+mod watch;
 
 pub use consolidate::{
     ApplyEntity, ApplyRelation, ConsolidateApplyParams, ConsolidateParams, ConsolidateResult, ConsolidateStatus,
@@ -17,6 +18,7 @@ pub use recall::{RecallItem, RecallParams, RecallResult};
 pub use recall_graph::{EntityItem, RecallGraphParams, RecallGraphResult};
 pub use remember::{RememberParams, RememberResult};
 pub use stats::{StatsParams, StatsResult};
+pub use watch::{WatchParams, WatchResult};
 
 use basemyai::MemoryLayer;
 

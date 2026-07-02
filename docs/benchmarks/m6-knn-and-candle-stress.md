@@ -1,7 +1,13 @@
 # M6 KNN Scalability and Candle Stress
 
-**Status**: harnesses present; full-scale numbers must be generated on target
-hardware before any public scale claim.
+**Status**: harnesses present. Candle stress: a full run (55 min continuous
+`embed_batch`, OS-level memory monitoring) is archived at
+[`docs/benchmarks/m6-candle-stress-results-2026-07-01.md`](./m6-candle-stress-results-2026-07-01.md)
+— verdict: stable, no leak observed. KNN scalability: 10k and 100k real numbers archived
+at [`docs/benchmarks/m6-knn-results-2026-07-01.md`](./m6-knn-results-2026-07-01.md),
+including a distinct index-build-cost scalability finding for the native
+`libsql_vector_idx`; 1M was extrapolated from that data (not executed — see that doc for
+why) rather than run.
 
 This page covers the M6 proof gap from `docs/TODO.md`: native libSQL KNN at
 larger cardinalities and long-running Candle embedding stability. The harnesses

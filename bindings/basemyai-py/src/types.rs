@@ -97,3 +97,48 @@ impl Entity {
         )
     }
 }
+
+/// Un événement mémoire poussé par `Memory.watch()` (ADR-022, seconde vague).
+/// Payload minimal : identité du souvenir + nature de la mutation, jamais le
+/// contenu (rappeler `recall`/`stats` par `id` pour le détail).
+#[pyclass(frozen, get_all)]
+pub struct WatchEvent {
+    /// Agent propriétaire (toujours celui de la `Memory` qui a émis l'itérateur).
+    pub agent_id: String,
+    /// `"remembered"` | `"invalidated"` | `"forgotten"` | `"consolidated"`.
+    pub kind: String,
+    /// Couche mémoire (`short_term` | `episodic` | `procedural` | `semantic`).
+    pub layer: String,
+    /// UUID du souvenir/fait affecté.
+    pub id: String,
+}
+
+impl From<basemyai::MemoryEvent> for WatchEvent {
+    fn from(ev: basemyai::MemoryEvent) -> Self {
+        let kind = match ev.kind {
+            basemyai::MemoryEventKind::Remembered => "remembered",
+            basemyai::MemoryEventKind::Invalidated => "invalidated",
+            basemyai::MemoryEventKind::Forgotten => "forgotten",
+            basemyai::MemoryEventKind::Consolidated => "consolidated",
+            // `MemoryEventKind` est `#[non_exhaustive]` : un genre futur atterrit
+            // ici plutôt que de casser la compilation.
+            _ => "unknown",
+        };
+        Self {
+            agent_id: ev.agent_id,
+            kind: kind.to_string(),
+            layer: ev.layer.table().to_string(),
+            id: ev.id,
+        }
+    }
+}
+
+#[pymethods]
+impl WatchEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "WatchEvent(kind={:?}, layer={:?}, id={:?})",
+            self.kind, self.layer, self.id
+        )
+    }
+}

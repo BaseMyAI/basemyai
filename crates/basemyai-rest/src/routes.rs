@@ -3,14 +3,17 @@
 //! Toutes les routes métier sont sous `/v1` et protégées par auth Bearer
 //! (sauf `/health`). Chaque réponse porte `X-Request-Id` et `X-Basemyai-Version`.
 
+use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tower::ServiceBuilder;
@@ -19,7 +22,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::timeout::TimeoutLayer;
 
-use basemyai::{MemoryLayer, Validity};
+use basemyai::{MemoryEvent, MemoryEventKind, MemoryLayer, Validity};
 
 use crate::error::RestError;
 use crate::state::AppState;
@@ -34,6 +37,7 @@ pub fn build_app(state: AppState) -> Router {
         .route("/memories/{id}", delete(forget_memory))
         .route("/agent/{agent_id}", delete(forget_agent))
         .route("/agent/{agent_id}/stats", get(agent_stats))
+        .route("/watch", get(watch))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new().route("/health", get(health));
@@ -197,6 +201,16 @@ struct DeleteAgentQuery {
     confirm: Option<String>,
 }
 
+/// `GET /v1/watch?agent_id=...&layer=...` : couche optionnelle, mêmes noms que
+/// `layer` ailleurs (`from_table`, ex. `"semantic"`). Sans `layer`, tous les
+/// événements de l'agent sont relayés.
+#[derive(Deserialize)]
+struct WatchQuery {
+    agent_id: String,
+    #[serde(default)]
+    layer: Option<String>,
+}
+
 #[derive(Serialize)]
 struct IdResponse {
     id: String,
@@ -243,6 +257,35 @@ struct StatsResponse {
 struct HealthResponse {
     status: &'static str,
     version: &'static str,
+}
+
+/// Payload SSE minimal (ADR-022) : identité du souvenir + nature de la
+/// mutation, jamais le contenu (l'abonné rappelle par `id` s'il le veut).
+#[derive(Serialize)]
+struct MemoryEventDto {
+    agent_id: String,
+    kind: &'static str,
+    layer: &'static str,
+    id: String,
+}
+
+impl From<&MemoryEvent> for MemoryEventDto {
+    fn from(ev: &MemoryEvent) -> Self {
+        Self {
+            agent_id: ev.agent_id.clone(),
+            kind: match ev.kind {
+                MemoryEventKind::Remembered => "remembered",
+                MemoryEventKind::Invalidated => "invalidated",
+                MemoryEventKind::Forgotten => "forgotten",
+                MemoryEventKind::Consolidated => "consolidated",
+                // `MemoryEventKind` est `#[non_exhaustive]` : un genre futur
+                // atterrit ici plutôt que de casser la compilation.
+                _ => "unknown",
+            },
+            layer: ev.layer.table(),
+            id: ev.id.clone(),
+        }
+    }
 }
 
 // --- Handlers --------------------------------------------------------------
@@ -386,6 +429,32 @@ async fn agent_stats(
         semantic: s.semantic,
         total: s.total(),
     }))
+}
+
+/// `GET /v1/watch` : relaie [`basemyai::Memory::watch`] en SSE, un
+/// [`MemoryEventDto`] JSON par ligne `data:`. L'isolation par agent/couche est
+/// déjà garantie par `MemorySubscription::recv` (ADR-022) — cette route ne
+/// refait aucun filtrage, elle passe `agent_id` tel quel.
+///
+/// Déconnexion propre : aucune tâche de fond n'est `spawn`ée. Le flux SSE est
+/// tiré directement par le corps de réponse axum ; quand le client se
+/// déconnecte, axum arrête de poller le flux et abandonne la `MemorySubscription`
+/// portée par `stream::unfold`, ce qui désabonne le récepteur `broadcast` via
+/// son `Drop` — pas d'arrêt explicite à coder.
+async fn watch(State(state): State<AppState>, Query(q): Query<WatchQuery>) -> Result<impl IntoResponse, RestError> {
+    validate_agent_id(&q.agent_id)?;
+    let layer = q.layer.as_deref().map(MemoryLayer::from_table).transpose()?;
+    let mem = state.memory_for(&q.agent_id).await?;
+    let subscription = mem.watch(&q.agent_id, layer);
+
+    let stream = stream::unfold(subscription, |mut subscription| async move {
+        let event = subscription.recv().await?;
+        let dto = MemoryEventDto::from(&event);
+        let data = serde_json::to_string(&dto).unwrap_or_else(|_| "{}".to_string());
+        Some((Ok::<_, Infallible>(Event::default().data(data)), subscription))
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 async fn health() -> impl IntoResponse {

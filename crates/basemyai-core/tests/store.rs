@@ -306,3 +306,66 @@ async fn encrypted_roundtrip_and_wrong_key_fails() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+/// `rotate_key` change la clé en place : l'ancienne clé ne relit plus rien,
+/// la nouvelle relit la donnée écrite avant la rotation — sur un `Store`
+/// **fraîchement rouvert** (cf. la doc de [`Store::rotate_key`] : le pool de
+/// lecteurs de l'instance ayant exécuté le rekey devient caduc, l'appelant
+/// doit rouvrir).
+#[cfg(feature = "crypto")]
+#[tokio::test]
+async fn rotate_key_changes_encryption_key_in_place() {
+    let path = std::env::temp_dir().join("basemyai-core-crypto-rotate.db");
+    cleanup(&path);
+
+    // Écrit sous la clé d'origine.
+    {
+        let store = Store::open(&path, Some(EncryptionKey::new("old-key")))
+            .await
+            .expect("open encrypted");
+        store.ensure_vector_table("emb", 3).await.expect("table");
+        store.vector_upsert("emb", "a", &[1.0, 2.0, 3.0]).await.expect("upsert");
+
+        // Rotation en place, sans recréer le fichier.
+        store
+            .rotate_key(EncryptionKey::new("new-key"))
+            .await
+            .expect("rotate_key succeeds on an encrypted store");
+        // Cette instance est désormais caduque (cf. doc rotate_key) : on la
+        // laisse tomber ici sans plus rien lire/écrire dessus.
+    }
+
+    // L'ancienne clé ne doit plus permettre de lire la base.
+    {
+        let usable = match Store::open(&path, Some(EncryptionKey::new("old-key"))).await {
+            Ok(store) => store.vector_knn("emb", &[1.0, 2.0, 3.0], 1, None).await.is_ok(),
+            Err(_) => false,
+        };
+        assert!(!usable, "l'ancienne clé ne doit plus déchiffrer la base après rotation");
+    }
+
+    // La nouvelle clé relit intégralement la donnée écrite avant rotation.
+    {
+        let store = Store::open(&path, Some(EncryptionKey::new("new-key")))
+            .await
+            .expect("reopen with new key");
+        let hits = store.vector_knn("emb", &[1.0, 2.0, 3.0], 1, None).await.expect("knn");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "a");
+    }
+
+    cleanup(&path);
+}
+
+/// `rotate_key` sur un store non chiffré n'a rien à rotater : erreur propre,
+/// pas de tentative de `PRAGMA rekey` sur une base en clair.
+#[cfg(feature = "crypto")]
+#[tokio::test]
+async fn rotate_key_rejects_unencrypted_store() {
+    let store = Store::open_in_memory().await.expect("open in-memory");
+    let err = store
+        .rotate_key(EncryptionKey::new("some-key"))
+        .await
+        .expect_err("rotate_key on an unencrypted store must fail");
+    assert!(matches!(err, basemyai_core::CoreError::Encryption));
+}

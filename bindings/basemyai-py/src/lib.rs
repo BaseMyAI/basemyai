@@ -13,8 +13,8 @@ mod types;
 use pyo3::prelude::*;
 
 use errors::{BasemyaiError, EncryptionError, InferenceError, StorageError, ValidationError};
-use memory::Memory;
-use types::{AgentStats, Entity, Record};
+use memory::{Memory, MemoryWatch};
+use types::{AgentStats, Entity, Record, WatchEvent};
 
 /// Point d'entrée du module natif (`PyInit__internal`).
 #[pymodule]
@@ -23,6 +23,8 @@ fn _internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Record>()?;
     m.add_class::<AgentStats>()?;
     m.add_class::<Entity>()?;
+    m.add_class::<WatchEvent>()?;
+    m.add_class::<MemoryWatch>()?;
 
     m.add("BasemyaiError", m.py().get_type::<BasemyaiError>())?;
     m.add("ValidationError", m.py().get_type::<ValidationError>())?;

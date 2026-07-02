@@ -50,6 +50,8 @@ sha2 = "0.11"
 axum        = { version = "0.8", features = ["macros"] }
 tower       = { version = "0.5", features = ["util"] }
 tower-http  = { version = "0.7", features = ["timeout", "trace", "request-id", "limit", "set-header"] }
+# Stream combinators (SSE : relaie `MemorySubscription::recv` en flux axum).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # MCP (Model Context Protocol) — server + macros.
 rmcp        = { version = "1.7", features = ["server", "macros"] }
 # JSON Schema pour les macros #[tool] de rmcp.

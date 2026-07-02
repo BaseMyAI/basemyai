@@ -15,15 +15,17 @@ use rmcp::ServerHandler;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
-    AnnotateAble, GetPromptRequestParams, GetPromptResult, ListPromptsResult, ListResourcesResult,
-    PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, PromptMessageRole, RawResource,
-    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+    AnnotateAble, GetPromptRequestParams, GetPromptResult, ListPromptsResult, ListResourcesResult, LoggingLevel,
+    LoggingMessageNotification, LoggingMessageNotificationParam, PaginatedRequestParams, Prompt, PromptArgument,
+    PromptMessage, PromptMessageRole, RawResource, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+    ServerCapabilities, ServerInfo, ServerNotification,
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{tool, tool_handler, tool_router};
+use serde::Serialize;
 use tokio::sync::RwLock;
 
-use basemyai::{AgentId, Memory};
+use basemyai::{AgentId, Memory, MemoryEvent, MemoryEventKind, MemoryLayer};
 
 use crate::audit::{Outcome, emit_audit};
 use crate::config::Config;
@@ -33,8 +35,13 @@ use crate::sampling::SamplingBackend;
 use crate::tools::{
     self, ConsolidateApplyParams, ConsolidateParams, ConsolidateResult, EntityItem, InvalidateParams, InvalidateResult,
     RecallGraphParams, RecallGraphResult, RecallItem, RecallParams, RecallResult, RememberParams, RememberResult,
-    StatsParams, StatsResult,
+    StatsParams, StatsResult, WatchParams, WatchResult,
 };
+
+/// Nom du "logger" MCP porté par chaque notification `notifications/message`
+/// émise pour un événement mémoire — permet au client de les distinguer d'un
+/// log applicatif générique sans introduire de méthode JSON-RPC custom.
+const MEMORY_EVENT_LOGGER: &str = "basemyai.memory";
 
 /// Serveur MCP basemyai. `Clone` : requis par le transport HTTP (un handle par
 /// session). Tous les champs sont partagés (`Arc`), le clone est bon marché.
@@ -220,6 +227,78 @@ impl McpServer {
         let report = basemyai::apply_extraction(&mem, &p.into_extraction()).await?;
         Ok(ConsolidateResult::done("agent", report))
     }
+
+    /// Démarre le relais des événements mémoire de `p.agent_id` vers **ce**
+    /// client MCP (ADR-022, seconde vague). Renvoie immédiatement ; les
+    /// événements arrivent ensuite en notifications `notifications/message`
+    /// (`logger = "basemyai.memory"`), poussées via le `peer` de la session —
+    /// même mécanisme de push serveur→client que [`SamplingBackend`], sans
+    /// attendre de réponse du client.
+    ///
+    /// L'isolation par agent/couche est déjà garantie par
+    /// `MemorySubscription::recv` (ADR-022) : cette méthode ne refait aucun
+    /// filtrage, elle passe `agent_id` tel quel à [`Memory::watch`].
+    async fn watch_impl(&self, p: WatchParams, peer: Peer<RoleServer>) -> Result<WatchResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
+        let layer = match p.layer.as_deref() {
+            Some(name) => Some(tools::parse_layer(name)?),
+            None => None,
+        };
+        let mem = self.memory_for(&p.agent_id).await?;
+        let agent_id = p.agent_id.clone();
+        tokio::spawn(relay_memory_events(mem, agent_id, layer, peer));
+        Ok(WatchResult { watching: true })
+    }
+}
+
+/// Payload minimal poussé pour un [`MemoryEvent`] (ADR-022) : identité du
+/// souvenir + nature de la mutation, jamais le contenu (le client rappelle
+/// `recall`/`stats` par `id` s'il veut le détail).
+#[derive(Serialize)]
+struct MemoryEventPayload {
+    agent_id: String,
+    kind: &'static str,
+    layer: &'static str,
+    id: String,
+}
+
+impl From<&MemoryEvent> for MemoryEventPayload {
+    fn from(ev: &MemoryEvent) -> Self {
+        Self {
+            agent_id: ev.agent_id.clone(),
+            kind: match ev.kind {
+                MemoryEventKind::Remembered => "remembered",
+                MemoryEventKind::Invalidated => "invalidated",
+                MemoryEventKind::Forgotten => "forgotten",
+                MemoryEventKind::Consolidated => "consolidated",
+                // `MemoryEventKind` est `#[non_exhaustive]` : un genre futur
+                // atterrit ici plutôt que de casser la compilation.
+                _ => "unknown",
+            },
+            layer: ev.layer.table(),
+            id: ev.id.clone(),
+        }
+    }
+}
+
+/// Boucle de relais : consomme [`basemyai::MemorySubscription`] et pousse
+/// chaque événement au client MCP via `notifications/message`. S'arrête
+/// proprement dès que l'envoi échoue (session/transport fermé côté client) —
+/// aucune tâche de fond ne survit à la déconnexion. `mem` est conservé vivant
+/// pour la durée de la tâche : le canal `broadcast` de `Memory` (donc les
+/// événements) ne disparaît pas tant qu'un abonné actif existe.
+async fn relay_memory_events(mem: Arc<Memory>, agent_id: String, layer: Option<MemoryLayer>, peer: Peer<RoleServer>) {
+    let mut subscription = mem.watch(&agent_id, layer);
+    while let Some(event) = subscription.recv().await {
+        let payload = MemoryEventPayload::from(&event);
+        let data = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
+        let param = LoggingMessageNotificationParam::new(LoggingLevel::Info, data).with_logger(MEMORY_EVENT_LOGGER);
+        let notification = ServerNotification::LoggingMessageNotification(LoggingMessageNotification::new(param));
+        if peer.send_notification(notification).await.is_err() {
+            // Transport fermé (client déconnecté) : plus personne à qui parler.
+            break;
+        }
+    }
 }
 
 /// `true` si le client MCP a annoncé la capability `sampling` à l'initialisation.
@@ -386,6 +465,28 @@ impl McpServer {
         emit_audit("consolidate_apply", &agent_id, outcome(&out), elapsed_ms(t0));
         Ok(Json(out?))
     }
+
+    /// Démarre le relais des événements mémoire en temps réel (ADR-022).
+    #[tool(
+        description = "Start receiving live memory-change notifications for an agent on this MCP session. \
+             Returns immediately; from then on, every remember/invalidate/forget/consolidate for this agent_id \
+             (optionally filtered to one layer) arrives asynchronously as a `notifications/message` \
+             (logger=\"basemyai.memory\", data={agent_id,kind,layer,id}). The notification carries only the \
+             changed memory's id and kind, never its content — call `recall`/`stats` if you need details. \
+             Stops automatically when this session disconnects.",
+        annotations(title = "Watch", read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn watch(
+        &self,
+        Parameters(p): Parameters<WatchParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<Json<WatchResult>, ErrorData> {
+        let t0 = Instant::now();
+        let agent_id = p.agent_id.clone();
+        let out = self.watch_impl(p, context.peer).await;
+        emit_audit("watch", &agent_id, outcome(&out), elapsed_ms(t0));
+        Ok(Json(out?))
+    }
 }
 
 /// Instructions exposées dans `get_info` et la resource `basemyai://instructions`.
@@ -393,7 +494,8 @@ const INSTRUCTIONS: &str = "\
 BaseMyAI — moteur de mémoire local pour agents IA (100% local, chiffré au repos).\n\
 Outils : remember (mémorise), recall (sémantique), recall_hybrid (vecteur+BM25 fusionnés),\n\
 recall_graph (graphe entités), invalidate (soft-delete), stats (compteurs par couche),\n\
-consolidate (distille les épisodes en faits+graphe), consolidate_apply (persiste une extraction).\n\
+consolidate (distille les épisodes en faits+graphe), consolidate_apply (persiste une extraction),\n\
+watch (démarre le relais temps réel des changements mémoire en notifications/message).\n\
 Consolidation (ADR-018) : consolidate tente un LLM côté serveur (sampling si supporté, sinon LLM local) ;\n\
 s'il n'y en a pas, il renvoie status=\"extraction_required\" et c'est TOI qui extrais puis appelles\n\
 consolidate_apply. Le prompt /consolidate_memory pilote ce flux de bout en bout.\n\
@@ -419,6 +521,9 @@ impl ServerHandler for McpServer {
                 .enable_tools()
                 .enable_prompts()
                 .enable_resources()
+                // Requis pour `notifications/message` (ADR-022, relais `watch`) :
+                // annonce au client qu'il peut recevoir des notifications de log.
+                .enable_logging()
                 .build(),
         )
         .with_instructions(INSTRUCTIONS)
