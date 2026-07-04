@@ -1,14 +1,33 @@
 # BaseMyAI — guide agent
 
-Moteur de mémoire local pour agents IA. **Deux crates** dans ce workspace :
+Moteur de mémoire local pour agents IA. Le cœur du workspace est le **duo**
 `basemyai-core` (socle agnostique) + `basemyai` (sémantique mémoire), posée dessus.
+Le workspace compte en tout **5 crates** (`crates/` : `basemyai-core`, `basemyai`,
+`basemyai-cli`, `basemyai-mcp`, `basemyai-rest`) + **2 bindings**
+(`bindings/basemyai-py`, `bindings/basemyai-node`) + l'outil DX `xtask/`.
 Décisions : `ADR.md`. Relation d'écosystème : `../ECOSYSTEM_ARCHITECTURE.md`.
 
 ## Commandes
 
+**LE point d'entrée qui reproduit la CI est `cargo xtask`** (matrice exacte de
+`.github/workflows/ci.yml` : par-crate, avec les bonnes combinaisons de features).
+
+```bash
+cargo xtask check        # fmt --check + clippy par crate (features CI), -D warnings
+cargo xtask test         # tests par crate, config légère (sans embed/crypto)
+cargo xtask ci           # check + test — LE gate avant commit
+cargo xtask test-embed   # job CI `embed` (Candle, lourd)
+cargo xtask test-crypto  # job CI `crypto` — EXIGE CMake installé
+```
+
+⚠ **`cargo clippy --workspace` ne reproduit pas la CI** (la CI clippy/teste chaque
+crate avec des features précises, ex. `-p basemyai-mcp --no-default-features
+--features stdio,http,test-util`) — utiliser `cargo xtask check`. Commandes cargo
+brutes, gardées en référence :
+
 ```bash
 cargo test --workspace                                 # async (tokio) ; libSQL compile via bindgen/cc
-cargo clippy --workspace --all-targets -- -D warnings  # LE gate qualité : doit passer
+cargo clippy --workspace --all-targets -- -D warnings  # utile en local, mais ≠ matrice CI
 cargo build -p basemyai-core --features embed          # active Candle (lourd)
 cargo build -p basemyai-core --features crypto         # chiffrement libSQL — EXIGE CMake installé
 cargo build --profile profiling -p basemyai-rest       # binaire optimisé MAIS symbolisable (perf/flamegraph)
@@ -27,7 +46,7 @@ Le **vecteur est natif libSQL** (compile sans CMake). Seule la feature `crypto` 
 - **L'`Embedder` ne télécharge jamais** et ne détecte jamais le matériel. Il reçoit chemin + `Device` résolus par `setup` (ADR-010). Zéro réseau hors setup explicite.
 - **`Filter` est paramétré** : fragment SQL + valeurs liées (`?`). Les inputs d'agent vont dans `params`, jamais interpolés (anti-injection, ADR-006).
 - **Chiffrement obligatoire dans `basemyai`** (libSQL feature `crypto`), optionnel dans `basemyai-core`.
-- **Backend = libSQL** (ADR-011), **async**. Vecteur **natif** (`vector_top_k`, pas d'extension), chiffrement intégré. `Store` est async ; l'`Embedder` reste **sync** (CPU-bound). Pas de DB externe. **Candle**, pas ONNX/fastembed. Chemin futur : Turso DB (pur Rust).
+- **Backend = libSQL** (ADR-011), **async**. Vecteur **natif** (`vector_top_k`, pas d'extension), chiffrement intégré. `Store` est async ; l'`Embedder` reste **sync** (CPU-bound). Pas de DB externe. **Candle**, pas ONNX/fastembed. Chemin futur : **moteur natif BaseMyAI** (ADR-024, remplace le chemin Turso — voir `docs/PLAN-NATIVE-ENGINE.md`) ; libSQL reste le défaut jusqu'à parité prouvée.
 
 ## Style Rust (2026, édition 2024)
 

@@ -20,9 +20,9 @@ Le besoin est **convergent** sur deux documents indépendants :
 - **PLAN.md §P2.1** spécifie déjà l'API cible
   (`async for event in memory.watch(agent_id, layer)`) et le mécanisme
   pressenti : « canal tokio broadcast dans `basemyai` ».
-- **`docs/surrealdb-gap-analysis.md`** classe le gap #6 (« `MemoryEvent`
+- **`docs/research/surrealdb-gap-analysis.md`** classe le gap #6 (« `MemoryEvent`
   broadcast ») en **P1** — révision motivée du verdict précédent
-  (`surrealdb-patterns.md` §2 l'avait écarté en V1) : le cas d'usage existe dès
+  (`research/surrealdb-patterns.md` §2 l'avait écarté en V1) : le cas d'usage existe dès
   qu'il y a **deux** consommateurs de la même mémoire. Le document précise que
   BaseMyAI n'est **pas** un broker généraliste : un `tokio::sync::broadcast`
   émis par la façade `Memory`, avec les variantes
@@ -145,7 +145,7 @@ Positives :
 - Réactivité réelle sans polling : un agent re-planifie sur événement, le
   `MaintenanceWorker` peut déclencher la consolidation **à l'écriture
   d'épisodes** plutôt qu'à intervalle fixe (moins de réveils à vide, meilleure
-  latence — cf. surrealdb-gap-analysis §6).
+  latence — cf. research/surrealdb-gap-analysis §6).
 - Isolation d'ADR-006 **étendue et garantie en bibliothèque** au plan
   événementiel ; les surfaces futures en héritent sans la réimplémenter.
 - Émission après commit : pas d'état fantôme, ordre observable bien défini.
@@ -160,7 +160,7 @@ Compromis :
 - Sémantique **at-most-once avec pertes possibles** sous charge (`Lagged`) : ce
   n'est **pas** un journal d'événements durable. Un abonné qui exige zéro perte
   doit réconcilier par `recall` après un signal `Lagged`. (Les change feeds
-  persistés sont **délibérément écartés** — surrealdb-gap-analysis : `Validity`
+  persistés sont **délibérément écartés** — research/surrealdb-gap-analysis : `Validity`
   valid_from/until + audit couvrent déjà l'historique métier.)
 
 ## Alternatives rejetées

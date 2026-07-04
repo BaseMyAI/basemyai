@@ -1,6 +1,6 @@
 //! Outil `watch` : démarre le relais des événements mémoire d'un agent vers
 //! ce client MCP, via des notifications `notifications/message` (ADR-022,
-//! seconde vague — voir `docs/TODO.md` §M6.2).
+//! seconde vague — voir `docs/archive/TODO-2026-06.md` §M6.2).
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};

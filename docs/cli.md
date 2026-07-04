@@ -199,4 +199,4 @@ basemyai --db ./agent.bmai --agent demo recall "UI preference" --hybrid | jq '.r
   and `embed` together, which the CLI's default features require) and
   `remember`/`recall`/`stats`/`export`/`import`/`consolidate` are still
   untested (they load the embedding model, unavailable offline in CI). See
-  `docs/TODO.md` M5.
+  `docs/archive/TODO-2026-06.md` M5.

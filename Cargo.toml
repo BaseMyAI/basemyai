@@ -12,6 +12,19 @@ members = [
     "crates/basemyai-cli",
     "bindings/basemyai-py",
     "bindings/basemyai-node",
+    "xtask",
+]
+
+# `cargo build`/`test` sans `-p` ne compilent pas xtask (outil DX interne,
+# invoqué via l'alias `cargo xtask` — voir .cargo/config.toml).
+default-members = [
+    "crates/basemyai-core",
+    "crates/basemyai",
+    "crates/basemyai-mcp",
+    "crates/basemyai-rest",
+    "crates/basemyai-cli",
+    "bindings/basemyai-py",
+    "bindings/basemyai-node",
 ]
 
 [workspace.package]
@@ -71,7 +84,7 @@ tempfile    = "3"
 criterion   = "0.7"
 
 # Lints partagés par tout le workspace (Rust 2026).
-# Gate : `cargo clippy --workspace --all-targets -- -D warnings` (CLAUDE.md).
+# Gate : `cargo xtask check` (matrice clippy CI par crate, -D warnings — CLAUDE.md).
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }

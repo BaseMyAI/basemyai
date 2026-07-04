@@ -3,7 +3,7 @@
 //! Sidecar **HTTP/JSON** exposant le moteur de mémoire [`basemyai`] aux langages
 //! sans binding Rust natif (Python, Go, Ruby, PHP, …). 100 % local, auth Bearer.
 //!
-//! Conforme à `analayse/openapi-sidecar.yaml`. Routes sous `/v1` ; `/health`
+//! Conforme à `crates/basemyai-rest/openapi.yaml`. Routes sous `/v1` ; `/health`
 //! sans auth. Voir [`build_app`] pour monter le routeur autour d'un [`AppState`].
 
 mod config;

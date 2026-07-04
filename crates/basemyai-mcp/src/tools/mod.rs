@@ -25,7 +25,7 @@ use basemyai::MemoryLayer;
 use crate::error::{McpError, Result};
 
 /// Bornes de validation des entrées, alignées sur celles du sidecar REST
-/// (`crates/basemyai-rest/src/routes.rs`) et sur `openapi-sidecar.yaml`.
+/// (`crates/basemyai-rest/src/routes.rs`) et sur `crates/basemyai-rest/openapi.yaml`.
 pub(crate) const MAX_AGENT_ID_LEN: usize = 128;
 pub(crate) const MAX_TEXT_LEN: usize = 65_536;
 pub(crate) const MAX_QUERY_LEN: usize = 4096;

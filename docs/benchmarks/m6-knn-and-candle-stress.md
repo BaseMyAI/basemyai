@@ -9,7 +9,7 @@ including a distinct index-build-cost scalability finding for the native
 `libsql_vector_idx`; 1M was extrapolated from that data (not executed — see that doc for
 why) rather than run.
 
-This page covers the M6 proof gap from `docs/TODO.md`: native libSQL KNN at
+This page covers the M6 proof gap from `docs/archive/TODO-2026-06.md`: native libSQL KNN at
 larger cardinalities and long-running Candle embedding stability. The harnesses
 are intentionally opt-in because they can allocate large databases and run for a
 long time.

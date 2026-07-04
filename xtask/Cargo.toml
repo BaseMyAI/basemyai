@@ -1,0 +1,16 @@
+# xtask — outil DX interne (pattern cargo-xtask) : encode EXACTEMENT la matrice
+# CI (.github/workflows/ci.yml) en sous-commandes `cargo xtask ...`.
+# Zéro dépendance (pur std), jamais publié. Invoqué via l'alias `xtask` défini
+# dans `.cargo/config.toml`.
+#
+# NB : n'hérite volontairement PAS de `[lints] workspace = true` — la politique
+# workspace (clone_on_ref_ptr, etc.) vise le code lib ; xtask reste un binaire
+# outillage. La règle « pas de unwrap() sans message » est respectée à la main.
+
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]

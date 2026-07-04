@@ -260,9 +260,11 @@ impl Store {
     pub async fn ensure_vector_table_no_index(&self, table: &str, dim: usize) -> Result<()> {
         let table = ident(table)?;
         let conn = self.connect();
-        conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, emb F32_BLOB({dim}));",))
-            .await
-            .map_err(map)?;
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, emb F32_BLOB({dim}));",
+        ))
+        .await
+        .map_err(map)?;
         Ok(())
     }
 
@@ -529,11 +531,17 @@ impl Store {
         // classique, incompatible avec le modèle WAL. On repasse donc en
         // `DELETE` pour la durée du rekey, puis on restaure `WAL` (le mode
         // nominal de ce `Store`, cf. [`Store::open_with`]) juste après.
-        self.writer.execute_batch("PRAGMA journal_mode=DELETE;").await.map_err(map)?;
+        self.writer
+            .execute_batch("PRAGMA journal_mode=DELETE;")
+            .await
+            .map_err(map)?;
         let rekey_result = self.writer.execute_batch(&format!("PRAGMA rekey = '{escaped}';")).await;
         // Toujours retenter de revenir en WAL, même si le rekey a échoué : on
         // ne veut pas laisser le fichier en mode DELETE suite à une erreur.
-        self.writer.execute_batch("PRAGMA journal_mode=WAL;").await.map_err(map)?;
+        self.writer
+            .execute_batch("PRAGMA journal_mode=WAL;")
+            .await
+            .map_err(map)?;
         rekey_result.map_err(map)?;
         Ok(())
     }

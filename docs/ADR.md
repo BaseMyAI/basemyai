@@ -24,6 +24,8 @@ Un ADR documente une décision architecturale importante : pourquoi elle a été
 | [ADR-016](#adr-016) | AnythingLLM comme backend LLM de premier rang via API workspace-chat | ✅ Accepted |
 | [ADR-017](#adr-017) | Consolidation par sampling MCP (emprunter le LLM du client) + politique des modes LLM | ✅ Accepted |
 | [ADR-019](ADR-019-agent-memory-database-format-and-engine.md) | Agent Memory Database, format `.bmai` V1 et frontière StorageEngine | ✅ Accepted |
+| [ADR-024](ADR-024-native-engine.md) | Moteur natif BaseMyAI (stockage/vecteur/graphe/langage maison) — remplace le chemin Turso DB | ✅ Accepted |
+| [ADR-025](ADR-025-native-engine-storage-foundation.md) | Fondation Couche 1 du moteur natif : LSM-tree maison (clôture spike N1) | ✅ Accepted |
 
 ---
 

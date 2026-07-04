@@ -100,7 +100,10 @@ async fn rotate_key_preserves_data_and_invalidates_old_key() {
                 .is_ok(),
             Err(_) => false,
         };
-        assert!(!usable, "l'ancienne clé ne doit plus déchiffrer la mémoire après rotation");
+        assert!(
+            !usable,
+            "l'ancienne clé ne doit plus déchiffrer la mémoire après rotation"
+        );
     }
 
     // La nouvelle clé rouvre la mémoire et retrouve le souvenir intact.

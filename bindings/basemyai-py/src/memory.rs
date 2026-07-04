@@ -257,7 +257,10 @@ impl Memory {
     /// quel, elle ne refait aucun filtrage.
     #[pyo3(signature = (layer = None))]
     fn watch(&self, layer: Option<String>) -> PyResult<MemoryWatch> {
-        let layer = layer.map(|l| MemoryLayer::from_table(&l)).transpose().map_err(to_pyerr)?;
+        let layer = layer
+            .map(|l| MemoryLayer::from_table(&l))
+            .transpose()
+            .map_err(to_pyerr)?;
         let agent_id = self.inner.agent().as_str().to_string();
         let subscription = self.inner.watch(&agent_id, layer);
         Ok(MemoryWatch {

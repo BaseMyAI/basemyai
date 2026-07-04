@@ -13,7 +13,7 @@
 //! Multi-agent : une [`basemyai::Memory`] par `agent_id`, isolée au niveau SQL
 //! (ADR-006). L'audit ne logue **jamais** de contenu mémoire.
 //!
-//! Voir `analayse/mcp-blueprint.md` pour le design détaillé.
+//! Voir `docs/research/mcp-blueprint.md` pour le design détaillé.
 
 mod audit;
 mod config;

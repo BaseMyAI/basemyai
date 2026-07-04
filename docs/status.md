@@ -2,7 +2,8 @@
 
 **Date : 2026-06-22**
 **Statut : SOURCE DE VÉRITÉ.** Ce fichier réconcilie les contradictions entre les
-docs internes (TODO.md, CLAUDE.md, VISION.md, ADR-019, la recherche stratégique
+docs internes (TODO.md — archivé depuis sous `docs/archive/TODO-2026-06.md` —,
+CLAUDE.md, VISION.md, ADR-019, la recherche stratégique
 2026-06-18). Il a été recommandé par la recherche stratégique
 (`docs/strategy/2026-06-18-agent-memory-database-research.md`, « Concrete Next
 Steps Before Refactor », item 3) précisément parce que certaines docs disent
@@ -17,7 +18,8 @@ foi** et l'écart est noté.
 - ✅ **Implemented** — code présent ET testé dans le repo.
 - 🟡 **Partial** — code présent mais incomplet, non testé end-to-end, ou
   dépendant d'un chemin non couvert par la CI.
-- 📋 **Planned** — pas encore de code ; tâche ouverte dans `TODO.md`.
+- 📋 **Planned** — pas encore de code ; tâche ouverte (backlog moteur natif :
+  `docs/TODO-NATIVE-ENGINE.md` ; historique : `docs/archive/TODO-2026-06.md`).
 - ⏸️ **Deferred** — explicitement repoussé en V1.5 / V2 par ADR-019 ou VISION.
 
 **Distinction critique :** « le code existe » ≠ « publié / testé cross-platform /
@@ -106,10 +108,10 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 |---|---|---|---|
 | **Rust SDK** (crate `basemyai`) | ✅ | `Cargo.toml` (`version = 0.1.0`, keywords/categories) ; `examples/rust/*` ; `cargo search basemyai --limit 10` | API complète, examples présents, `cargo doc` propre. **Publication confirmée sur crates.io** le 2026-06-22 (`basemyai = "0.1.0"` et `basemyai-core = "0.1.0"`). |
 | **MCP server** (`basemyai-mcp`) | ✅ | `crates/basemyai-mcp/` ; outils `remember/recall/recall_hybrid/recall_graph/invalidate/consolidate/consolidate_apply/stats` ; `tests/server.rs`, `tests/sampling.rs` | Transports stdio + HTTP, auth, audit, sampling (ADR-018). **Surface la plus aboutie** — cohérent avec « MCP prioritaire » de la recherche stratégique. Non listé comme milestone TODO (TODO ne mentionne que REST en M4). |
-| **REST sidecar** (`basemyai-rest`) | ✅ | `crates/basemyai-rest/src/routes.rs` ; `tests/api.rs` | axum, `/v1/remember,recall,recall_hybrid,recall_graph`, delete memory/agent, stats ; auth Bearer (constant-time), request-id, body limit. **Plus avancé que TODO M4 (tout non coché).** `openapi-sidecar.yaml` = spec source. Pas d'image Docker (M4 ouvert). |
+| **REST sidecar** (`basemyai-rest`) | ✅ | `crates/basemyai-rest/src/routes.rs` ; `tests/api.rs` | axum, `/v1/remember,recall,recall_hybrid,recall_graph`, delete memory/agent, stats ; auth Bearer (constant-time), request-id, body limit. **Plus avancé que TODO M4 (tout non coché).** `crates/basemyai-rest/openapi.yaml` = spec source. Pas d'image Docker (M4 ouvert). |
 | **Node binding** (`bindings/basemyai-node`, NAPI-RS) | 🟡 | `bindings/basemyai-node/src/memory.rs`, `index.d.ts` ; `__tests__/roundtrip.test.js` ; workflow `node-prebuilds.yml` | Classe `Memory` complète (remember, recall, recallByLayer, recallHybrid, invalidate, forget, stats, addGraphEntity/Edge, recallGraph). **Publication npm non confirmée depuis cette machine** au 2026-06-22 : `npm view basemyai` et le registre public renvoient `404` pour `basemyai`. Vérifier le nom/scope final si besoin. |
 | **Python binding** (`bindings/basemyai-py`, PyO3) | ✅ | `bindings/basemyai-py/src/memory.rs`, `python/basemyai/__init__.pyi` ; `tests/test_roundtrip.py` ; workflow `python-wheels.yml` ; `python -m pip index versions basemyai` | Classe `Memory` async complète + stubs `.pyi` + `py.typed`. **Publication confirmée sur PyPI** (`basemyai 0.1.0` vu le 2026-06-22). Wrappers LangChain/LlamaIndex toujours absents. |
-| **Live subscriptions** (ADR-022 vague 2 : SSE/WS REST, notifications MCP, callbacks PyO3/NAPI) | 🟡 | `basemyai-rest/src/routes.rs` (`GET /v1/watch`, SSE) ; `basemyai-mcp/src/tools/watch.rs` (notification `notifications/message`) ; `bindings/basemyai-py/src/memory.rs` (`Memory.watch` → `async for`) ; tests adversariaux d'isolation par surface | Fait 2026-07-02, par-dessus `Memory::watch`/ADR-022 (mécanisme déjà en place). REST et MCP testés avec isolation adversariale agent A/B. PyO3 vérifié via `maturin develop` + pytest réel (pas juste `cargo build`) — un vrai bug Windows trouvé et documenté (crash access-violation en annulant un future en attente sur `broadcast::Receiver::recv()` via `asyncio.wait_for`, cf. `docs/TODO.md`). **NAPI/Node non fait** : pas d'équivalent direct du protocole itérateur async Python en napi-rs, nécessiterait une conception distincte (ThreadsafeFunction/EventEmitter). |
+| **Live subscriptions** (ADR-022 vague 2 : SSE/WS REST, notifications MCP, callbacks PyO3/NAPI) | 🟡 | `basemyai-rest/src/routes.rs` (`GET /v1/watch`, SSE) ; `basemyai-mcp/src/tools/watch.rs` (notification `notifications/message`) ; `bindings/basemyai-py/src/memory.rs` (`Memory.watch` → `async for`) ; tests adversariaux d'isolation par surface | Fait 2026-07-02, par-dessus `Memory::watch`/ADR-022 (mécanisme déjà en place). REST et MCP testés avec isolation adversariale agent A/B. PyO3 vérifié via `maturin develop` + pytest réel (pas juste `cargo build`) — un vrai bug Windows trouvé et documenté (crash access-violation en annulant un future en attente sur `broadcast::Receiver::recv()` via `asyncio.wait_for`, cf. `docs/archive/TODO-2026-06.md`). **NAPI/Node non fait** : pas d'équivalent direct du protocole itérateur async Python en napi-rs, nécessiterait une conception distincte (ThreadsafeFunction/EventEmitter). |
 
 > **Écart TODO.** `TODO.md` décrit M2 (Node) et M3 (Python) comme « à créer »
 > sous `crates/basemyai-node` / `crates/basemyai-python`. En réalité les deux
@@ -163,6 +165,21 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Workflows release / prebuild | 🟡 | `release.yml`, `node-prebuilds.yml`, `python-wheels.yml`, `codeql.yml`, `supply-chain.yml` | Workflows présents. **Publication effective confirmée pour crates.io et PyPI** le 2026-06-22 ; **npm reste à re-vérifier** car le registre public ne résout pas `basemyai` depuis cette machine. |
 | Bench KNN (10k/100k/1M), stress 1h | 🟡 | `crates/basemyai-core/benches/knn_scalability.rs`, `crates/basemyai-core/tests/candle_stress.rs`, `docs/benchmarks/m6-knn-results-2026-07-01.md`, `docs/benchmarks/m6-candle-stress-results-2026-07-01.md` | Stress 1h fait (✅, voir §1). KNN : 10k et 100k réels archivés le 2026-07-02 (latence quasi stable ~40-58ms entre les deux tailles, confirme un vrai ANN sous-linéaire côté requête) ; **1M non exécuté** — la construction de `libsql_vector_idx` est linéaire en coût absolu (~78-79 ms/ligne aux deux échelles mesurées), soit ~22h extrapolées pour 1M, jugé non réalisable en session. Caractéristique backend documentée, pas juste un aléa de bench. |
 
+> **Items ouverts (repris de TODO.md racine, 2026-07-02)** — CI & Release,
+> partiellement câblés mais non validés de bout en bout :
+>
+> - Ajouter `basemyai-cli` à la matrice GitHub Actions (absent de `ci.yml`).
+> - Ajouter un job dédié pour le test `p1_isolation_adversarial` (isolation
+>   adversariale ADR-018).
+> - Valider les workflows release sur un tag staging avec de vrais secrets :
+>   `release.yml` (gate crates.io présent, non prouvé sur tag live),
+>   `python-wheels.yml` (build/publish PyPI, non prouvé sur tag live),
+>   `node-prebuilds.yml` (prebuild/publish npm, non prouvé sur tag live).
+> - Dry-run de publication vers staging avant toute annonce.
+> - Cleanup optionnel : arrêter le conteneur Qdrant du bench
+>   (`docker compose -f benchmarks/p1-market/docker-compose.qdrant.yml down`)
+>   et décharger les modèles Ollama inutilisés (`ollama rm`).
+
 ---
 
 ## 9. Studio / UI
@@ -179,8 +196,7 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 
 | Feature | Statut | Preuve | Notes |
 |---|---|---|---|
-| Backend natif `.bmai` append-only | ⏸️ | — | **V2 uniquement**, et seulement si libSQL bloque une exigence réelle (recherche stratégique). Préparé par `StorageEngine`/`EngineCapabilities` + doc, pas implémenté. |
-| Migration Turso DB (pur Rust, zéro C) | ⏸️ | — | V2 (ADR-011, chemin futur). |
+| Moteur natif BaseMyAI (stockage/vecteur/graphe/langage maison) | 🟡 | `docs/ADR-024-native-engine.md` ; `docs/ADR-025-native-engine-storage-foundation.md` ; `docs/PLAN-NATIVE-ENGINE.md` ; `docs/TODO-NATIVE-ENGINE.md` ; `docs/benchmarks/n1-storage-engine-spike-2026-07-04.md` | Pari long terme **acté** (ADR-024, 2026-07-02) : remplace « migration Turso » — on construit notre propre moteur pur Rust plutôt que d'adopter celui d'un tiers. Strangler fig : libSQL reste le défaut jusqu'à parité prouvée. Chantier 0 (DX) ✅. Spike N1 (Couche 1) ✅ clos 2026-07-04 : LSM bat B-tree CoW (débit 4,1×, lecture 2,5×, amplification ×1,05 vs ×14,3, 10/10 crash-consistency) → fondation maison famille LSM actée (ADR-025), pas de fork `redb`/`fjall`. Prochaine étape : N2 (harnais crash-consistency en CI, puis `crates/basemyai-engine`). |
 | Multi-modèles d'embedding | ⏸️ | — | V2 (baseline unique en V1, compat `.idx`). |
 | Sync multi-device | ⏸️ | — | V2 (VISION §7). |
 | Mémoire partagée inter-agents | ⏸️ | — | V2 (ADR-006). |

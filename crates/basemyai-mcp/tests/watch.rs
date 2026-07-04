@@ -36,7 +36,11 @@ struct WatchClient {
 }
 
 impl ClientHandler for WatchClient {
-    async fn on_logging_message(&self, params: LoggingMessageNotificationParam, _context: NotificationContext<RoleClient>) {
+    async fn on_logging_message(
+        &self,
+        params: LoggingMessageNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
         let _ = self.events.send(params);
     }
 }

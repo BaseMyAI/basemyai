@@ -32,7 +32,7 @@ use crate::{MemoryError, RRF_K, Ranking, Result, now_unix, rrf_fuse};
 /// Borne la taille d'un texte mémorisé (octets). Au-delà, un item démesuré
 /// saturerait le prompt de consolidation (`MAX_EPISODES` ne borne que le
 /// *nombre* d'épisodes, pas leur taille individuelle) — DoS de contexte.
-/// Cohérent avec la limite documentée côté REST (`openapi-sidecar.yaml`).
+/// Cohérent avec la limite documentée côté REST (`crates/basemyai-rest/openapi.yaml`).
 pub const MAX_TEXT_LEN: usize = 65_536;
 
 /// Provenance par défaut d'un souvenir mémorisé directement par l'agent (par

@@ -39,10 +39,24 @@ Requires a recent stable Rust toolchain (edition 2024, see
 `crypto` feature (encryption at rest) needs **CMake** installed.
 
 ```bash
-# The quality gate — must pass before every commit:
-cargo clippy --workspace --all-targets -- -D warnings
+# The quality gate — must pass before every commit. `cargo xtask` reproduces
+# the exact CI matrix (.github/workflows/ci.yml): per-crate clippy/tests with
+# the right feature combinations.
+cargo xtask ci           # fmt --check + clippy + tests (the pre-commit gate)
 
-cargo test --workspace                                  # full async test suite
+cargo xtask check        # fmt --check + per-crate clippy (CI features, -D warnings)
+cargo xtask test         # per-crate tests, light config (no embed/crypto)
+cargo xtask test-embed   # CI `embed` job (Candle — heavy compile)
+cargo xtask test-crypto  # CI `crypto` job (libSQL encryption — needs CMake)
+```
+
+Note: `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo test --workspace` are useful locally but do **not** reproduce CI — CI
+targets each crate with specific feature combinations (e.g.
+`-p basemyai-mcp --no-default-features --features stdio,http,test-util`).
+Use the `cargo xtask` targets above. Other useful commands:
+
+```bash
 cargo fmt --all                                         # formatting
 cargo build -p basemyai-core --features embed           # Candle (heavy)
 cargo build -p basemyai-core --features crypto          # encryption (needs CMake)
@@ -72,8 +86,9 @@ proposing the ADR first so the direction can be agreed before you write code.
 
 1. Fork and branch from `main` (or `dev`).
 2. Keep PRs focused — one logical change per PR.
-3. Make sure `cargo clippy --workspace --all-targets -- -D warnings`,
-   `cargo test --workspace`, and `cargo fmt --all --check` all pass locally.
+3. Make sure `cargo xtask ci` passes locally (it runs `cargo fmt --all --check`
+   plus the per-crate clippy and test matrix that CI runs; `--workspace`
+   commands are not equivalent).
 4. Write a clear PR description: what changed, why, and which ADR/issue it
    relates to. Reference issues with `Fixes #123`.
 5. Use [Conventional Commits](https://www.conventionalcommits.org/) for commit
