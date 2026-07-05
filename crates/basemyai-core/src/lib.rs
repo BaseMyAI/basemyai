@@ -27,6 +27,11 @@ pub use embed::CandleEmbedder;
 pub use embed::{Device, Embedder};
 pub use error::{CoreError, Result};
 pub use maintenance::{MaintenanceTask, MaintenanceWorker};
+/// Wrapper capability-only pour le backend natif `basemyai-engine`
+/// (ADR-024/ADR-025) — gated par la feature `engine-native`. Ne fournit pas
+/// `MemoryStore` : voir `docs/TODO-NATIVE-ENGINE.md` N2.
+#[cfg(feature = "engine-native")]
+pub use storage::NativeEngine;
 pub use storage::{EncryptionKey, EngineCapabilities, EngineKind, Migration, StorageEngine, Store, WriteTxn};
 pub use storage::{Filter, Metric, Neighbor, Value};
 

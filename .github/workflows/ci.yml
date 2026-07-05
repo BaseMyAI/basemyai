@@ -71,7 +71,10 @@ jobs:
         run: |
           set -euxo pipefail
           cargo clippy -p basemyai-core --all-targets -- -D warnings
+          cargo clippy -p basemyai-core --features engine-native --all-targets -- -D warnings
+          cargo clippy -p basemyai-engine --all-targets -- -D warnings
           cargo clippy -p basemyai --features test-util --all-targets -- -D warnings
+          cargo clippy -p basemyai --features test-util,engine-native --all-targets -- -D warnings
           cargo clippy -p basemyai-mcp --no-default-features --features stdio,http,test-util --all-targets -- -D warnings
           cargo clippy -p basemyai-rest --no-default-features --features test-util --all-targets -- -D warnings
           cargo clippy -p basemyai-py --no-default-features --features test-util --all-targets -- -D warnings
@@ -81,7 +84,19 @@ jobs:
         run: |
           set -euxo pipefail
           cargo test -p basemyai-core
+          cargo test -p basemyai-core --features engine-native
+          # --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test format_lock :
+          # tests du moteur natif + harnais recall + persistance KV + churn
+          # insert/delete (tombstones + consolidation FreshDiskANN, recall APRÈS
+          # churn — ADR-026 §6) de l'index vectoriel (N3) + parité du graphe natif
+          # (N4, scénarios de crates/basemyai/tests/graph.rs portés contre RAM et
+          # persistant), SANS crash_consistency (kill-loop lent, job dédié ci-dessous)
+          cargo test -p basemyai-engine --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test format_lock
           cargo test -p basemyai --features test-util
+          # --test memory_tests : le runner déclaratif multi-backend (N2) avec le
+          # backend Native branché (N5.1, ADR-027) — mêmes scénarios rejoués
+          # contre Libsql ET le moteur natif, zéro divergence tolérée
+          cargo test -p basemyai --features test-util,engine-native --test memory_tests
           cargo test -p basemyai-mcp --no-default-features --features stdio,http,test-util
           cargo test -p basemyai-rest --no-default-features --features test-util
 
@@ -154,6 +169,33 @@ jobs:
           cargo test -p basemyai-core --features crypto
           cargo test -p basemyai --features crypto
 
+  # ── `basemyai-engine` crash-consistency harness (N2, TODO-NATIVE-ENGINE.md) ─
+  # Kill/reopen/verify loop: spawns `crash_writer`, force-kills it mid-write
+  # (`taskkill /F` on Windows, `kill -9` on Linux), reopens the Engine, checks
+  # every durably-confirmed key survives. Windows is the primary target (the
+  # WAL-truncate-after-flush bug this harness guards against was Windows-only),
+  # Linux kept for portability of the kill primitive itself.
+
+  crash-consistency:
+    name: crash-consistency (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: crash-consistency
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Kill/reopen/verify loop (basemyai-engine)
+        run: |
+          set -euxo pipefail
+          cargo test -p basemyai-engine --test crash_consistency -- --nocapture
+
   # ── Required checks gate ─────────────────────────────────────────────────────
   # Single job used as the branch-protection rule target.
   # Add / remove jobs above and mirror the change here.
@@ -167,6 +209,7 @@ jobs:
       - gate
       - embed
       - crypto
+      - crash-consistency
     steps:
       - name: Check for failures
         run: |
@@ -175,6 +218,7 @@ jobs:
             "${{ needs.gate.result }}"
             "${{ needs.embed.result }}"
             "${{ needs.crypto.result }}"
+            "${{ needs.crash-consistency.result }}"
           )
 
           failed=false

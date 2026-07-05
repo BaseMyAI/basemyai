@@ -493,7 +493,7 @@ Join our growing community around the world, for help, ideas, and discussions re
 
 We would love for you to get involved with BaseMyAI development! If you wish to help, you can learn more about how you can contribute to this project in the [contribution guide](CONTRIBUTING.md).
 
-Architecture decisions are documented in [ADR.md](ADR.md). A decision that changes always produces a **new ADR** — existing ADRs are never edited. Read the ADR before touching cross-cutting concerns.
+Architecture decisions are documented in [docs/ADR.md](docs/ADR.md) (index) with each decision in its own file under [docs/adr/](docs/adr/). A decision that changes always produces a **new ADR** — existing ADRs are never edited. Read the ADR before touching cross-cutting concerns.
 
 Rust gate before every commit:
 

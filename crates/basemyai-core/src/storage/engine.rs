@@ -11,6 +11,10 @@
 pub enum EngineKind {
     /// libSQL-compatible embedded backend.
     Libsql,
+    /// Home-grown `basemyai-engine` backend (ADR-024/ADR-025). Feature-gated
+    /// behind `engine-native`; see [`EngineCapabilities::native`] for what it
+    /// honestly supports today.
+    Native,
 }
 
 /// Capabilities exposed by a storage backend.
@@ -42,6 +46,29 @@ impl EngineCapabilities {
             recursive_queries: true,
             transactions: true,
             encrypted,
+        }
+    }
+
+    /// Capabilities of the current `basemyai-engine` (native) backend
+    /// instance.
+    ///
+    /// Honest as of N5.1 (`docs/TODO-NATIVE-ENGINE.md`, ADR-027):
+    /// `basemyai-engine` is a WAL+memtable+SST KV engine with atomic
+    /// multi-key batches (`Engine::apply_batch`, so `transactions: true`), a
+    /// persistent LM-DiskANN vector index (N3, so `vectors: true`) and a
+    /// persistent graph index whose bounded BFS traversal is the behavioral
+    /// port of the libSQL recursive CTE (N4, so `recursive_queries: true` —
+    /// the capability this flag actually gates). Still missing, deliberately
+    /// `false`: FTS/BM25 (N5.2) and at-rest encryption (N5.4).
+    #[must_use]
+    pub const fn native() -> Self {
+        Self {
+            kind: EngineKind::Native,
+            vectors: true,
+            full_text: false,
+            recursive_queries: true,
+            transactions: true,
+            encrypted: false,
         }
     }
 }

@@ -15,8 +15,12 @@
 //! implémentation prévue en V1.
 
 mod libsql_store;
+#[cfg(feature = "engine-native")]
+mod native_store;
 
 pub use libsql_store::LibsqlMemoryStore;
+#[cfg(feature = "engine-native")]
+pub use native_store::NativeMemoryStore;
 
 use basemyai_core::Metric;
 

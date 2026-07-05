@@ -62,6 +62,13 @@ cargo build -p basemyai-core --features embed           # Candle (heavy)
 cargo build -p basemyai-core --features crypto          # encryption (needs CMake)
 ```
 
+`crates/basemyai-engine/fuzz/` holds `cargo-fuzz` targets for the native
+engine's decode paths (WAL/SST/key). Like `crypto`, it needs an extra
+toolchain — **nightly**, not CMake — and is deliberately outside the
+workspace and every `cargo xtask` command; see
+`crates/basemyai-engine/fuzz/README.md` for how to run it (Linux/macOS/WSL
+only — `cargo-fuzz`/libFuzzer doesn't link on native Windows).
+
 The workspace lint policy (`[workspace.lints]` in the root `Cargo.toml`) encodes
 the Rust rules below into the compiler. Your change must keep the clippy gate
 green.
@@ -77,10 +84,11 @@ green.
 
 ## ADRs — how decisions are made
 
-Architecture decisions live in `ADR.md`. **An ADR is never edited**: a decision
-that changes is recorded as a *new* ADR that supersedes the old one. If your
-contribution changes architecture or touches an invariant above, open an issue
-proposing the ADR first so the direction can be agreed before you write code.
+Architecture decisions live under `docs/adr/` (one file per ADR), indexed by
+`docs/ADR.md`. **An ADR is never edited**: a decision that changes is recorded
+as a *new* ADR that supersedes the old one. If your contribution changes
+architecture or touches an invariant above, open an issue proposing the ADR
+first so the direction can be agreed before you write code.
 
 ## Pull requests
 

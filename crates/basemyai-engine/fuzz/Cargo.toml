@@ -1,0 +1,90 @@
+[package]
+name = "basemyai-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Not part of the workspace (see the root Cargo.toml member list) and not
+# built by `cargo xtask check`/`test`/`ci` — this crate requires a nightly
+# toolchain plus the `cargo-fuzz` subcommand (libFuzzer), neither of which the
+# default CI matrix provides. See fuzz/README.md for how to run it.
+
+[package.metadata]
+cargo-fuzz = true
+
+# Deliberately isolated from the root workspace (see
+# `docs/adr/ADR-025-native-engine-storage-foundation.md` / TODO-NATIVE-ENGINE
+# N2): this crate needs nightly + libFuzzer and must never be pulled into
+# `cargo build`/`test`/`xtask ci`. An empty `[workspace]` table here is the
+# standard cargo-fuzz way to keep a nested crate out of the parent workspace.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.basemyai-engine]
+path = ".."
+
+[[bin]]
+name = "key_roundtrip"
+path = "fuzz_targets/key_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wal_decode"
+path = "fuzz_targets/wal_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst_decode"
+path = "fuzz_targets/sst_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst_decode_structured"
+path = "fuzz_targets/sst_decode_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vector_node_decode"
+path = "fuzz_targets/vector_node_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vector_meta_decode"
+path = "fuzz_targets/vector_meta_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vector_node_decode_structured"
+path = "fuzz_targets/vector_node_decode_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph_entity_decode"
+path = "fuzz_targets/graph_entity_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph_edge_decode"
+path = "fuzz_targets/graph_edge_decode.rs"
+test = false
+doc = false
+bench = false

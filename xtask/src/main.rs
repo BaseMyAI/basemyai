@@ -18,9 +18,40 @@ const CLIPPY: &[&[&str]] = &[
     &[
         "clippy",
         "-p",
+        "basemyai-core",
+        "--features",
+        "engine-native",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ],
+    &[
+        "clippy",
+        "-p",
+        "basemyai-engine",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ],
+    &[
+        "clippy",
+        "-p",
         "basemyai",
         "--features",
         "test-util",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ],
+    &[
+        "clippy",
+        "-p",
+        "basemyai",
+        "--features",
+        "test-util,engine-native",
         "--all-targets",
         "--",
         "-D",
@@ -79,7 +110,49 @@ const CLIPPY: &[&[&str]] = &[
 /// Matrice de tests du job `gate` (config légère : ni Candle ni CMake).
 const TEST: &[&[&str]] = &[
     &["test", "-p", "basemyai-core"],
+    &["test", "-p", "basemyai-core", "--features", "engine-native"],
+    // `--lib --bins --test basic --test vector_recall --test vector_persistence
+    // --test vector_churn --test graph_parity` : les tests unitaires du
+    // moteur natif + le harnais recall de l'index vectoriel (N3, oracle
+    // brute-force, N=2000 — le N=10000 reste `#[ignore]`, run manuel) + le
+    // harnais persistance KV de l'index (N3 étape 3 : round-trip reopen,
+    // rebuild depuis les vecteurs) + le harnais churn insert/delete (N3
+    // étape 4 : tombstones, consolidation FreshDiskANN, recall@10 ≥ 0.9
+    // APRÈS churn — critère ADR-026 §6) + la parité du graphe natif (N4 :
+    // scénarios de `crates/basemyai/tests/graph.rs` portés fidèlement contre
+    // les deux flavors RAM/persistant), SANS `crash_consistency` (kill-loop
+    // lent, job CI dédié / `test-crash-consistency`) ni `format_lock` (gate
+    // dédié `FORMAT_LOCK`, inclus dans `check`/`ci`).
+    &[
+        "test",
+        "-p",
+        "basemyai-engine",
+        "--lib",
+        "--bins",
+        "--test",
+        "basic",
+        "--test",
+        "vector_recall",
+        "--test",
+        "vector_persistence",
+        "--test",
+        "vector_churn",
+        "--test",
+        "graph_parity",
+    ],
     &["test", "-p", "basemyai", "--features", "test-util"],
+    // `--test memory_tests` : le runner déclaratif multi-backend (N2) avec le
+    // backend Native branché (N5.1, ADR-027) — mêmes scénarios rejoués contre
+    // Libsql ET le moteur natif, zéro divergence tolérée.
+    &[
+        "test",
+        "-p",
+        "basemyai",
+        "--features",
+        "test-util,engine-native",
+        "--test",
+        "memory_tests",
+    ],
     &[
         "test",
         "-p",
@@ -110,6 +183,27 @@ const TEST_CRYPTO: &[&[&str]] = &[
     &["test", "-p", "basemyai", "--features", "crypto"],
 ];
 
+/// `format.lock` anti-drift check (ADR-025, `docs/PLAN-NATIVE-ENGINE.md`
+/// §3.1/§4) : chaque type persisté de `basemyai-engine` (WAL, SST) est
+/// versionné et son hash de format doit matcher `format.lock`, sinon échec.
+/// Pas de features spéciales : ce crate ne compile qu'en config par défaut.
+const FORMAT_LOCK: &[&[&str]] = &[&["test", "-p", "basemyai-engine", "--test", "format_lock"]];
+
+/// Job `crash-consistency` (N2, `docs/TODO-NATIVE-ENGINE.md` : « le harnais
+/// d'abord, le moteur ensuite ») : spawn du binaire `crash_writer`, kill
+/// forcé (`taskkill /F`/`kill -9`) en boucle (~20 cycles), réouverture +
+/// vérification d'intégrité. Séparé du gate léger : plus lent (~10-15 s),
+/// spawn/kill de process réels.
+const TEST_CRASH_CONSISTENCY: &[&[&str]] = &[&[
+    "test",
+    "-p",
+    "basemyai-engine",
+    "--test",
+    "crash_consistency",
+    "--",
+    "--nocapture",
+]];
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
@@ -118,6 +212,7 @@ fn main() {
         "check" => {
             fmt_check();
             run_all(CLIPPY);
+            run_all(FORMAT_LOCK);
         }
         "test" => run_all(TEST),
         "test-embed" => run_all(TEST_EMBED),
@@ -128,10 +223,13 @@ fn main() {
             );
             run_all(TEST_CRYPTO);
         }
+        "format-lock" => run_all(FORMAT_LOCK),
+        "test-crash-consistency" => run_all(TEST_CRASH_CONSISTENCY),
         "ci" => {
             fmt_check();
             run_all(CLIPPY);
             run_all(TEST);
+            run_all(FORMAT_LOCK);
             println!(
                 "\nGate CI léger vert. Les jobs `embed` et `crypto` sont séparés en CI :\n\
                  lance `cargo xtask test-embed` (Candle, lourd) et `cargo xtask test-crypto` \
@@ -151,11 +249,13 @@ fn usage(code: i32) -> ! {
         "cargo xtask — reproduit la matrice CI (.github/workflows/ci.yml) en local\n\n\
          USAGE : cargo xtask <SOUS-COMMANDE>\n\n\
          SOUS-COMMANDES :\n\
-         \x20 check        fmt --check + clippy par crate, features CI, -D warnings\n\
+         \x20 check        fmt --check + clippy par crate, features CI, -D warnings + format.lock\n\
          \x20 test         tests par crate, config légère (sans embed/crypto)\n\
          \x20 test-embed   tests du job CI `embed` (Candle — compilation lourde)\n\
          \x20 test-crypto  tests du job CI `crypto` (chiffrement libSQL — CMake requis)\n\
-         \x20 ci           check + test (embed/crypto restent des jobs séparés)\n\
+         \x20 format-lock  vérifie basemyai-engine/format.lock contre les specs de format actuelles\n\
+         \x20 test-crash-consistency  kill/reopen/verify en boucle sur basemyai-engine (~20 cycles)\n\
+         \x20 ci           check + test (embed/crypto/crash-consistency restent des jobs séparés)\n\
          \x20 help         affiche cette aide\n\n\
          NB : `cargo clippy --workspace` ne reproduit PAS la CI (features par crate)."
     );

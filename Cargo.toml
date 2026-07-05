@@ -10,6 +10,7 @@ members = [
     "crates/basemyai-mcp",
     "crates/basemyai-rest",
     "crates/basemyai-cli",
+    "crates/basemyai-engine",
     "bindings/basemyai-py",
     "bindings/basemyai-node",
     "xtask",
