@@ -346,6 +346,120 @@ pub mod memory_index {
     }
 }
 
+/// Keyspace reserved for the native full-text index (N5.2, ADR-028 §3).
+/// Like [`vector_index`]/[`graph_index`]/[`memory_index`], this is a
+/// *reserved* prefix: consumers must not write keys starting with
+/// `idx/fts/` themselves — they go through
+/// [`crate::idx::fts::PersistentFts`].
+///
+/// Layout:
+/// - `idx/fts/postings/<agent_len: u32 BE><agent><term_len: u32 BE><term><vec_id: u64 BE>` —
+///   the inverted index: one posting per `(agent, term, vec_id)`
+///   ([`crate::idx::fts::postings`], `FtsPosting:1`). `agent` then `term`
+///   are both length-prefixed for the same anti-collision reason as
+///   `graph_index`'s `(agent, src)`; `vec_id` is the unbounded remainder, so
+///   [`fts_index::postings_term_prefix`] prefix-scans **every document
+///   containing this term for this agent** — that scan doubles as
+///   `df(term)` (ADR-028 §3: no separate cached counter).
+/// - `idx/fts/docterms/<agent_len: u32 BE><agent><vec_id: u64 BE>` — the
+///   forward index: every `(term, tf)` pair of one document
+///   ([`crate::idx::fts::docterms`], `FtsDocTerms:1`), needed to remove
+///   exactly the right postings on delete without any state outside this
+///   keyspace, and to compute document length (`Σ tf`).
+/// - `idx/fts/meta/<agent_len: u32 BE><agent>` — the BM25 stats record for
+///   one agent ([`crate::idx::fts::stats`], `FtsStats:1`): `doc_count` and
+///   `total_terms`, from which `avgdl` is derived.
+///
+/// Isolation by agent is structural for all three, like `graph_index` and
+/// `memory_index` — no applicative filter bolted on after a broader scan.
+pub mod fts_index {
+    use super::Key;
+    use crate::error::{EngineError, Result};
+
+    /// Prefix every FTS-index key starts with (reserved, see module doc).
+    pub const INDEX_PREFIX: &[u8] = b"idx/fts/";
+    /// Prefix of all posting keys (inverted index: term -> docs).
+    pub const POSTINGS_PREFIX: &[u8] = b"idx/fts/postings/";
+    /// Prefix of all doc-terms keys (forward index: doc -> terms).
+    pub const DOCTERMS_PREFIX: &[u8] = b"idx/fts/docterms/";
+    /// Prefix of all per-agent BM25-stats keys.
+    pub const META_PREFIX: &[u8] = b"idx/fts/meta/";
+
+    /// Appends a `u32`-length-prefixed field to `buf` — same contract as
+    /// `graph_index`/`memory_index`'s helpers, with this index's own error
+    /// variant.
+    fn push_len_prefixed(buf: &mut Vec<u8>, field: &'static str, bytes: &[u8]) -> Result<()> {
+        let len = u32::try_from(bytes.len()).map_err(|_| EngineError::FtsKeyTooLong {
+            field,
+            len: bytes.len(),
+        })?;
+        buf.extend_from_slice(&len.to_be_bytes());
+        buf.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Prefix scanning every posting of `agent`, regardless of term —
+    /// not used by search (which always knows its terms), kept for parity
+    /// with the agent-wide prefixes the other two indexes expose.
+    pub fn postings_agent_prefix(agent: &str) -> Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(POSTINGS_PREFIX.len() + 4 + agent.len());
+        buf.extend_from_slice(POSTINGS_PREFIX);
+        push_len_prefixed(&mut buf, "agent", agent.as_bytes())?;
+        Ok(buf)
+    }
+
+    /// Prefix scanning every document containing `term` for `agent` — the
+    /// read behind both search (collect `tf` per doc) and `df(term)`
+    /// (the scan's length, ADR-028 §3).
+    pub fn postings_term_prefix(agent: &str, term: &str) -> Result<Vec<u8>> {
+        let mut buf = postings_agent_prefix(agent)?;
+        push_len_prefixed(&mut buf, "term", term.as_bytes())?;
+        Ok(buf)
+    }
+
+    /// Full key of one posting `(agent, term, vec_id)`.
+    pub fn postings_key(agent: &str, term: &str, vec_id: u64) -> Result<Key> {
+        let mut buf = postings_term_prefix(agent, term)?;
+        buf.extend_from_slice(&vec_id.to_be_bytes());
+        Ok(Key::new(buf))
+    }
+
+    /// Extracts the `vec_id` from a full posting key, given the byte length
+    /// of the exact `(agent, term)` prefix it was scanned under (i.e.
+    /// `postings_term_prefix(agent, term).len()`). `None` for malformed or
+    /// foreign keys — same wire-distrust discipline as `graph_index`.
+    #[must_use]
+    pub fn postings_vec_id(prefix_len: usize, key_bytes: &[u8]) -> Option<u64> {
+        let suffix = key_bytes.get(prefix_len..)?;
+        let raw: [u8; 8] = suffix.try_into().ok()?;
+        Some(u64::from_be_bytes(raw))
+    }
+
+    /// Prefix scanning every doc-terms record of `agent` — the read behind
+    /// healing an agent's [`crate::idx::fts::stats::FtsStats`] from data.
+    pub fn docterms_agent_prefix(agent: &str) -> Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(DOCTERMS_PREFIX.len() + 4 + agent.len());
+        buf.extend_from_slice(DOCTERMS_PREFIX);
+        push_len_prefixed(&mut buf, "agent", agent.as_bytes())?;
+        Ok(buf)
+    }
+
+    /// Key of the doc-terms record for `(agent, vec_id)`.
+    pub fn docterms_key(agent: &str, vec_id: u64) -> Result<Key> {
+        let mut buf = docterms_agent_prefix(agent)?;
+        buf.extend_from_slice(&vec_id.to_be_bytes());
+        Ok(Key::new(buf))
+    }
+
+    /// Key of the BM25-stats record for `agent`.
+    pub fn meta_key(agent: &str) -> Result<Key> {
+        let mut buf = Vec::with_capacity(META_PREFIX.len() + 4 + agent.len());
+        buf.extend_from_slice(META_PREFIX);
+        push_len_prefixed(&mut buf, "agent", agent.as_bytes())?;
+        Ok(Key::new(buf))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,5 +604,66 @@ mod tests {
     fn memory_meta_key_is_inside_the_reserved_prefix() {
         let meta = memory_index::meta_key();
         assert!(meta.as_bytes().starts_with(memory_index::INDEX_PREFIX));
+    }
+
+    #[test]
+    fn fts_postings_key_roundtrips_and_scopes_by_agent_and_term() {
+        let key = fts_index::postings_key("agent-a", "chat", 42).expect("encode");
+        assert!(key.as_bytes().starts_with(fts_index::POSTINGS_PREFIX));
+        let prefix = fts_index::postings_term_prefix("agent-a", "chat").expect("prefix");
+        assert!(key.as_bytes().starts_with(&prefix[..]));
+        assert_eq!(fts_index::postings_vec_id(prefix.len(), key.as_bytes()), Some(42));
+
+        // A different term's prefix must not match.
+        let other_term_prefix = fts_index::postings_term_prefix("agent-a", "chien").expect("prefix");
+        assert!(!key.as_bytes().starts_with(&other_term_prefix[..]));
+        // A different agent's prefix must not match, even with a shared
+        // textual prefix ("agent-a" vs "agent-ab") — the length prefix on
+        // `agent` is exactly what prevents that collision.
+        let other_agent_prefix = fts_index::postings_term_prefix("agent-ab", "chat").expect("prefix");
+        assert!(!key.as_bytes().starts_with(&other_agent_prefix[..]));
+    }
+
+    #[test]
+    fn fts_postings_keys_do_not_collide_across_agent_term_boundary() {
+        // agent="ab", term="c" vs agent="a", term="bc" — without the length
+        // prefix on `agent` both would encode to the same bytes.
+        let a = fts_index::postings_key("ab", "c", 0).expect("encode");
+        let b = fts_index::postings_key("a", "bc", 0).expect("encode");
+        assert_ne!(a.as_bytes(), b.as_bytes());
+    }
+
+    #[test]
+    fn fts_postings_vec_id_rejects_malformed_suffix() {
+        let prefix = fts_index::postings_term_prefix("agent-a", "chat").expect("prefix");
+        assert_eq!(fts_index::postings_vec_id(prefix.len(), &prefix), None);
+        assert_eq!(fts_index::postings_vec_id(prefix.len(), b"short"), None);
+    }
+
+    #[test]
+    fn fts_postings_keys_sort_by_vec_id_within_a_term() {
+        let a = fts_index::postings_key("agent-a", "chat", 1).expect("encode");
+        let b = fts_index::postings_key("agent-a", "chat", 2).expect("encode");
+        let big = fts_index::postings_key("agent-a", "chat", u64::from(u32::MAX) + 1).expect("encode");
+        assert!(a < b);
+        assert!(b < big);
+    }
+
+    #[test]
+    fn fts_docterms_key_roundtrips_and_scopes_by_agent() {
+        let key = fts_index::docterms_key("agent-a", 7).expect("encode");
+        assert!(key.as_bytes().starts_with(fts_index::DOCTERMS_PREFIX));
+        let prefix = fts_index::docterms_agent_prefix("agent-a").expect("prefix");
+        assert!(key.as_bytes().starts_with(&prefix[..]));
+        let other_prefix = fts_index::docterms_agent_prefix("agent-ab").expect("prefix");
+        assert!(!key.as_bytes().starts_with(&other_prefix[..]));
+    }
+
+    #[test]
+    fn fts_meta_key_is_inside_the_reserved_prefix_and_scopes_by_agent() {
+        let meta_a = fts_index::meta_key("agent-a").expect("encode");
+        let meta_b = fts_index::meta_key("agent-b").expect("encode");
+        assert!(meta_a.as_bytes().starts_with(fts_index::META_PREFIX));
+        assert_ne!(meta_a.as_bytes(), meta_b.as_bytes());
     }
 }

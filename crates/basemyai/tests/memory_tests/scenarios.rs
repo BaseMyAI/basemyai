@@ -19,6 +19,8 @@ pub(crate) fn all() -> Vec<Scenario> {
         forget_deletes_physically(),
         graph_upsert_and_traverse(),
         temporal_validity_boundary(),
+        keyword_ranking_orders_by_relevance_and_truncates(),
+        keyword_ranking_respects_temporal_validity_and_forget(),
     ]
 }
 
@@ -213,6 +215,127 @@ fn temporal_validity_boundary() -> Scenario {
                 label: "stats après expiration",
                 now: 200,
                 expect_total: 0,
+            },
+        ],
+    }
+}
+
+/// `keyword_ranking_ids` (ADR-028, BM25 natif) : un terme unique retrouve
+/// exactement le souvenir qui le contient, un terme absent ne retourne rien,
+/// et un `OR` classe par pertinence. `m1` répète son terme deux fois dans un
+/// texte de même longueur que `m2` — à `df`/longueur/`idf` égaux entre les
+/// deux termes (chacun n'apparaît que dans un seul des deux souvenirs), le
+/// classement par `tf` croissant est une propriété monotone de BM25, robuste
+/// à toute implémentation correcte (contrairement à comparer des scores
+/// entre agents différents ou provenant de `df`/`idf` distincts, plus
+/// sensible aux détails d'implémentation — évité ici volontairement).
+fn keyword_ranking_orders_by_relevance_and_truncates() -> Scenario {
+    Scenario {
+        name: "keyword_ranking_orders_by_relevance_and_truncates",
+        agent: "scenario-keyword-relevance",
+        steps: vec![
+            Step::Remember {
+                id: "m1",
+                layer: MemoryLayer::Episodic,
+                text: "chat chat oiseau jardin",
+                vector_seed: 1,
+                validity: Validity::since(0),
+                source: "user",
+            },
+            Step::Remember {
+                id: "m2",
+                layer: MemoryLayer::Episodic,
+                text: "chien oiseau jardin arbre",
+                vector_seed: 2,
+                validity: Validity::since(0),
+                source: "user",
+            },
+            Step::ExpectKeywordRankingIds {
+                label: "terme unique retrouve le bon souvenir",
+                match_expr: r#""chat""#,
+                k: 10,
+                now: 0,
+                expect_ids: &["m1"],
+            },
+            Step::ExpectKeywordRankingIds {
+                label: "terme absent : vide, jamais une erreur",
+                match_expr: r#""dinosaure""#,
+                k: 10,
+                now: 0,
+                expect_ids: &[],
+            },
+            Step::ExpectKeywordRankingIds {
+                label: "OR : tf plus élevé à longueur/idf égaux classe en tête",
+                match_expr: r#""chat" OR "chien""#,
+                k: 10,
+                now: 0,
+                expect_ids: &["m1", "m2"],
+            },
+            Step::ExpectKeywordRankingIds {
+                label: "k tronque au(x) meilleur(s) résultat(s)",
+                match_expr: r#""chat" OR "chien""#,
+                k: 1,
+                now: 0,
+                expect_ids: &["m1"],
+            },
+        ],
+    }
+}
+
+/// `keyword_ranking_ids` respecte la même fenêtre de validité temporelle que
+/// `recall_vector` (ADR-005) — porté depuis `temporal_validity_boundary` —
+/// et `forget` le supprime physiquement, y compris de l'index full-text.
+fn keyword_ranking_respects_temporal_validity_and_forget() -> Scenario {
+    Scenario {
+        name: "keyword_ranking_respects_temporal_validity_and_forget",
+        agent: "scenario-keyword-temporal",
+        steps: vec![
+            Step::Remember {
+                id: "bounded",
+                layer: MemoryLayer::Semantic,
+                text: "licorne mauve rarissime",
+                vector_seed: 7,
+                validity: Validity {
+                    valid_from: 100,
+                    valid_until: Some(200),
+                },
+                source: "user",
+            },
+            Step::ExpectKeywordRankingIds {
+                label: "avant valid_from : absent",
+                match_expr: r#""licorne""#,
+                k: 5,
+                now: 99,
+                expect_ids: &[],
+            },
+            Step::ExpectKeywordRankingIds {
+                label: "dans la fenêtre : présent",
+                match_expr: r#""licorne""#,
+                k: 5,
+                now: 150,
+                expect_ids: &["bounded"],
+            },
+            Step::ExpectKeywordRankingIds {
+                label: "juste avant valid_until : présent",
+                match_expr: r#""licorne""#,
+                k: 5,
+                now: 199,
+                expect_ids: &["bounded"],
+            },
+            Step::ExpectKeywordRankingIds {
+                label: "à valid_until (borne exclusive) : absent",
+                match_expr: r#""licorne""#,
+                k: 5,
+                now: 200,
+                expect_ids: &[],
+            },
+            Step::Forget { id: "bounded" },
+            Step::ExpectKeywordRankingIds {
+                label: "après forget : absent même dans la fenêtre",
+                match_expr: r#""licorne""#,
+                k: 5,
+                now: 150,
+                expect_ids: &[],
             },
         ],
     }

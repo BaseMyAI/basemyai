@@ -64,7 +64,7 @@ mod tests {
 
         assert_eq!(caps.kind, EngineKind::Native);
         assert!(caps.vectors, "persistent LM-DiskANN index since N3");
-        assert!(!caps.full_text, "no FTS/BM25 until N5.2");
+        assert!(caps.full_text, "hand-rolled inverted index + BM25 since N5.2 (ADR-028)");
         assert!(caps.recursive_queries, "bounded BFS graph traversal since N4");
         assert!(caps.transactions, "apply_batch gives real atomic multi-key writes");
         assert!(!caps.encrypted, "no at-rest encryption until N5.4");

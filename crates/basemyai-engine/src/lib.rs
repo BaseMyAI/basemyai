@@ -36,7 +36,12 @@
 //!   BFS traversal, a literal behavioral port of `basemyai`'s recursive-CTE
 //!   graph — shared between an in-RAM [`RamGraph`] and a KV-persisted
 //!   [`PersistentGraph`] (no metadata/rebuild machinery needed — see that
-//!   module's doc for why).
+//!   module's doc for why). [`idx::fts`] (N5.2): inverted index + BM25
+//!   scoring over the narrow `match_expr` subset `basemyai` produces —
+//!   [`PersistentFts`] stages postings/doc-terms/stats updates into the
+//!   caller's batch (never its own `apply_batch`), fused by
+//!   [`idx::memory::PersistentMemoryIndex`] into the same atomic write as
+//!   the memory record and vector node.
 //! - [`error`] — [`EngineError`] (thiserror, `#[non_exhaustive]`).
 //! - [`harness`] — deterministic key/value content shared by the
 //!   crash-consistency kill-loop harness (`src/bin/crash_writer.rs` +
@@ -51,6 +56,7 @@ pub mod key;
 pub mod store;
 
 pub use error::{EngineError, Result};
+pub use idx::fts::{FtsStats, PersistentFts};
 pub use idx::graph::{GraphEdgeMeta, GraphEntity, PersistentGraph, RamGraph, Reached};
 pub use idx::memory::{MemoryRecord, NewMemoryRecord, PersistentMemoryIndex, VecMapEntry};
 pub use idx::vector::{PersistentVectorIndex, VectorIndex, VectorIndexParams};

@@ -121,6 +121,9 @@ pub fn all_specs() -> Vec<FormatSpec> {
         crate::idx::memory::record::spec(),
         crate::idx::memory::vecmap::spec(),
         crate::idx::memory::meta::spec(),
+        crate::idx::fts::postings::spec(),
+        crate::idx::fts::docterms::spec(),
+        crate::idx::fts::stats::spec(),
     ]
 }
 
@@ -308,11 +311,12 @@ mod tests {
             &path,
             "WalRecord:1(00000000)\nSstFile:1(00000000)\nVectorNode:1(00000000)\nVectorIndexMeta:1(00000000)\n\
              GraphEntity:1(00000000)\nGraphEdge:1(00000000)\nMemoryRecord:1(00000000)\n\
-             MemoryVecMap:1(00000000)\nMemoryIndexMeta:1(00000000)\n",
+             MemoryVecMap:1(00000000)\nMemoryIndexMeta:1(00000000)\nFtsPosting:1(00000000)\n\
+             FtsDocTerms:1(00000000)\nFtsStats:1(00000000)\n",
         )
         .expect("write lock");
         let mismatches = verify_file(&path).expect("verify");
-        assert_eq!(mismatches.len(), 9);
+        assert_eq!(mismatches.len(), 12);
         assert!(mismatches.iter().all(|m| matches!(m, Mismatch::HashDiverged { .. })));
     }
 

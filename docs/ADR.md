@@ -35,3 +35,4 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-025](adr/ADR-025-native-engine-storage-foundation.md) | Fondation Couche 1 du moteur natif : LSM-tree maison (clôture spike N1) | ✅ Accepted |
 | [ADR-026](adr/ADR-026-native-vector-index-lm-diskann.md) | Index vectoriel natif : famille DiskANN (LM-DiskANN sur KV), pas HNSW | ✅ Accepted |
 | [ADR-027](adr/ADR-027-native-memory-store.md) | `MemoryStore` sur le moteur natif : mapping, atomicité et découpage N5 | ✅ Accepted |
+| [ADR-028](adr/ADR-028-native-fts-bm25.md) | Index full-text natif : BM25 sur index inversé maison (sous-ensemble `match_expr`, pas FTS5) | ✅ Accepted |

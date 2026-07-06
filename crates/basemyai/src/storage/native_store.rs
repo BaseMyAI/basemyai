@@ -1,12 +1,13 @@
 //! Seconde implémentation de [`MemoryStore`] : le moteur natif BaseMyAI
 //! (ADR-024/025/026, câblage acté par ADR-027). Enveloppe
-//! [`basemyai_engine::Engine`] + ses trois index logiques (vecteur, graphe,
-//! mémoire) et concentre toute la **politique** de requête du backend natif —
-//! fenêtres de validité, filtre de couche, oversampling — pendant que la
-//! **mécanique** crash-critique (composition de batchs atomiques, allocation
-//! d'ids) vit côté moteur (`idx::memory::PersistentMemoryIndex`).
+//! [`basemyai_engine::Engine`] + ses quatre index logiques (vecteur, graphe,
+//! mémoire, full-text) et concentre toute la **politique** de requête du
+//! backend natif — fenêtres de validité, filtre de couche, oversampling —
+//! pendant que la **mécanique** crash-critique (composition de batchs
+//! atomiques, allocation d'ids) vit côté moteur
+//! (`idx::memory::PersistentMemoryIndex`, `idx::fts::PersistentFts`).
 //!
-//! ## Parité comportementale (ADR-027 §6)
+//! ## Parité comportementale (ADR-027 §6, ADR-028)
 //!
 //! Chaque méthode reproduit la requête SQL de [`super::LibsqlMemoryStore`],
 //! y compris ses non-filtres : `hydrate` et `exact_fact_exists` ne vérifient
@@ -15,13 +16,15 @@
 //! `weight` (le `ON CONFLICT ... DO UPDATE SET weight` original). Le KNN
 //! oversample ×[`OVERSAMPLE`] puis post-filtre (ADR-012 — libSQL fait
 //! exactement cela quand un filtre est présent, et ici un filtre
-//! agent+validité est *toujours* présent).
+//! agent+validité est *toujours* présent). `keyword_ranking_ids` est BM25
+//! natif (ADR-028) sur le sous-ensemble de `match_expr` que
+//! `fts_match_expr()` produit réellement — pas de racinisation Porter (gap
+//! assumé, ADR-028 §2).
 //!
 //! Écarts assumés, actés par ADR-027 §6 : `put_memory_batch` est atomique
 //! **par item** (pas tout-ou-rien), `purge_agent` est idempotent/reprennable
-//! (pas globalement atomique), `keyword_ranking_ids` et les métriques
-//! non-cosinus retournent une **erreur franche** (respectivement N5.2 et
-//! N5.3) — jamais un faux résultat.
+//! (pas globalement atomique). Les métriques non-cosinus retournent une
+//! **erreur franche** (N5.3) — jamais un faux résultat.
 //!
 //! ## Pont sync↔async (ADR-027 §5)
 //!
@@ -35,7 +38,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use basemyai_core::Metric;
-use basemyai_engine::{Engine, NewMemoryRecord, PersistentGraph, PersistentMemoryIndex, PersistentVectorIndex};
+use basemyai_engine::{
+    Engine, NewMemoryRecord, PersistentFts, PersistentGraph, PersistentMemoryIndex, PersistentVectorIndex,
+};
 
 use super::{HydratedRecord, MemoryStore, NewMemory};
 use crate::cognition::Reached;
@@ -65,6 +70,7 @@ struct NativeInner {
     vectors: PersistentVectorIndex,
     memory: PersistentMemoryIndex,
     graph: PersistentGraph,
+    fts: PersistentFts,
 }
 
 /// Mappe une erreur du backend natif (ou du pont async) en
@@ -94,6 +100,7 @@ impl NativeMemoryStore {
                 vectors,
                 memory,
                 graph: PersistentGraph::new(),
+                fts: PersistentFts::new(),
             })),
             #[cfg(feature = "test-util")]
             _tempdir: None,
@@ -203,12 +210,14 @@ impl NativeInner {
             engine,
             vectors,
             memory,
+            fts,
             ..
         } = self;
         memory
             .put(
                 engine,
                 vectors,
+                fts,
                 agent.as_str(),
                 &item.id,
                 &NewMemoryRecord {
@@ -357,19 +366,46 @@ impl MemoryStore for NativeMemoryStore {
         .await
     }
 
-    async fn keyword_ranking_ids(
-        &self,
-        _agent: &AgentId,
-        _match_expr: &str,
-        _k: usize,
-        _now: i64,
-    ) -> Result<Vec<String>> {
-        // Erreur franche, jamais un faux vide : un RRF nourri d'un classement
-        // BM25 silencieusement absent passerait pour un résultat correct
-        // (ADR-027 §1, FTS natif = N5.2).
-        Err(storage(
-            "recherche FTS/BM25 non implémentée sur le backend natif (N5.2)",
-        ))
+    async fn keyword_ranking_ids(&self, agent: &AgentId, match_expr: &str, k: usize, now: i64) -> Result<Vec<String>> {
+        let (agent, match_expr) = (agent.clone(), match_expr.to_string());
+        self.with_inner(move |inner| {
+            let NativeInner {
+                engine, memory, fts, ..
+            } = &mut *inner;
+            // Le moteur (`search_bm25`) est agnostique de la validité
+            // temporelle (mécanisme au moteur, sens au consommateur) ; on
+            // sur-échantillonne donc comme le chemin vectoriel (ADR-012) pour
+            // ne pas sous-compter après le filtre — même raison que libSQL
+            // applique son filtre `valid_from`/`valid_until` *avant* son
+            // `LIMIT` dans la requête SQL.
+            let oversampled = k.saturating_mul(OVERSAMPLE);
+            let hits = fts
+                .search_bm25(engine, agent.as_str(), &match_expr, oversampled)
+                .map_err(storage)?;
+            let mut ids = Vec::with_capacity(k.min(hits.len()));
+            for (vec_id, _score) in hits {
+                let Some(mapping) = memory.resolve(engine, vec_id).map_err(storage)? else {
+                    // Reliquat bénin d'un forget interrompu (ADR-027 §3) —
+                    // jamais un résultat.
+                    continue;
+                };
+                if mapping.agent != agent.as_str() {
+                    continue;
+                }
+                let Some(record) = memory.get(engine, &mapping.agent, &mapping.id).map_err(storage)? else {
+                    continue;
+                };
+                if !record_valid_at(&record, now) {
+                    continue;
+                }
+                ids.push(mapping.id);
+                if ids.len() == k {
+                    break;
+                }
+            }
+            Ok(ids)
+        })
+        .await
     }
 
     async fn hydrate(&self, agent: &AgentId, ids: &[String], now: i64) -> Result<Vec<HydratedRecord>> {
@@ -418,10 +454,13 @@ impl MemoryStore for NativeMemoryStore {
                 engine,
                 vectors,
                 memory,
+                fts,
                 ..
             } = &mut *inner;
             // Parité DELETE : no-op silencieux si absent (bool ignoré).
-            memory.forget(engine, vectors, agent.as_str(), &id).map_err(storage)?;
+            memory
+                .forget(engine, vectors, fts, agent.as_str(), &id)
+                .map_err(storage)?;
             Ok(())
         })
         .await
@@ -435,8 +474,11 @@ impl MemoryStore for NativeMemoryStore {
                 vectors,
                 memory,
                 graph,
+                fts,
             } = &mut *inner;
-            memory.purge_agent(engine, vectors, agent.as_str()).map_err(storage)?;
+            memory
+                .purge_agent(engine, vectors, fts, agent.as_str())
+                .map_err(storage)?;
             graph.purge_agent(engine, agent.as_str()).map_err(storage)?;
             Ok(())
         })

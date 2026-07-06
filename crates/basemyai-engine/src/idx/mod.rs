@@ -8,7 +8,10 @@
 //!   a literal behavioral port of `basemyai`'s recursive-CTE graph.
 //! - [`memory`] — memory records + vector-id mapping + monotonic allocator
 //!   (N5.1, ADR-027), the persistence half of the `MemoryStore` wiring.
+//! - [`fts`] — inverted index + BM25 scoring (N5.2, ADR-028), scoped to the
+//!   narrow `match_expr` subset `basemyai` actually produces.
 
+pub mod fts;
 pub mod graph;
 pub mod memory;
 pub mod vector;

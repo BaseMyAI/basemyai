@@ -521,11 +521,76 @@ sync↔async mono-écrivain sérialisé, écarts de parité assumés et document
   d'affilée sans modification — sans rapport avec ce travail, mcp ne
   compile pas `engine-native`)
 
-### N5.2 — FTS/BM25 natif
+### N5.2 — FTS/BM25 natif ✅ clos 2026-07-06
 
-- [ ] Index inversé + scoring BM25 (parité `recall_hybrid` /
-  `keyword_ranking_ids` — sous-ensemble d'expressions `match_expr`
-  réellement produit par l'appelant, pas tout FTS5)
+Décisions structurantes actées par `ADR-028` (2026-07-06) : périmètre borné
+au sous-ensemble de `match_expr` réellement produit par `fts_match_expr()`
+(tokens cités joints par ` OR `, jamais la syntaxe FTS5 complète), tokenizer
+casefold+pliage d'accents par table figée (racinisation Porter différée,
+gap documenté), troisième index moteur `idx/fts` (postings + docterms +
+stats par agent), atomicité par fusion de batch comme ADR-027 §3, BM25
+Okapi `k1=1.2`/`b=0.75` (défauts FTS5).
+
+- [x] Moteur : `key::fts_index` (`idx/fts/postings/...`,
+  `idx/fts/docterms/...`, `idx/fts/meta/...`, longueurs préfixées u32 BE,
+  isolation agent structurelle, même discipline anti-collision que
+  `graph_index`/`memory_index`) (2026-07-06)
+- [x] Moteur : `idx/fts/tokenizer.rs` (découpe non-alphanumérique identique
+  à `fts_match_expr`, minuscule Unicode, table de pliage d'accents
+  Latin-1/Latin Extended-A courants — zéro dépendance nouvelle) (2026-07-06)
+- [x] Moteur : codecs `FtsPosting:1` (tf), `FtsDocTerms:1` (liste
+  `(term, tf)` bornée), `FtsStats:1` (`doc_count`/`total_terms` par agent)
+  dans `format.lock` — discipline N2/N3/N5.1 complète (comptages bornés,
+  troncature à chaque coupure, bit-flip, longueur mensongère, version
+  inconnue) (2026-07-06)
+- [x] Moteur : `PersistentFts::stage_insert`/`stage_delete` (composent dans
+  le `Batch` de l'appelant, jamais leur propre `apply_batch` — même couture
+  qu'ADR-027 §3) ; `df(t)` dérivé du scan `postings`, jamais un compteur
+  caché séparé ; stats par agent healées à la demande (paresseux, pas au
+  niveau `open()` global comme `MemoryIndexMeta`) (2026-07-06)
+- [x] Moteur : `search_bm25(engine, agent, match_expr, k)` — scoring Okapi,
+  parsing strict du sous-ensemble `match_expr` (erreur franche hors
+  périmètre, jamais un résultat partiel silencieux) (2026-07-06)
+- [x] `PersistentMemoryIndex::put`/`forget`/`purge_agent` gagnent un
+  paramètre `PersistentFts`, empilé dans le même `extra: Batch` que
+  `insert_with`/`delete_with` — un `remember` natif reste UN enregistrement
+  WAL, étendu au troisième index ; re-vérifié sous le harnais
+  crash-consistency (4 modes base/batch/vector/graph, 0 violation) (2026-07-06)
+- [x] `basemyai` : `NativeMemoryStore::keyword_ranking_ids` branché sur
+  `search_bm25` (fin de l'erreur franche N5.2) ; oversampling ×8 (ADR-012)
+  + filtre agent/validité après coup — bug de parité trouvé et corrigé en
+  cours de route (l'implémentation initiale ignorait `now`, un
+  `#[allow(unused)]` silencieux aurait laissé passer un souvenir invalidé/
+  expiré dans le classement BM25) ; `NativeInner`/`put_one`/`forget`/
+  `purge_agent` mis à jour en miroir (2026-07-06)
+- [x] `backend_suite!` : deux scénarios de parité ajoutés à
+  `tests/memory_tests/scenarios.rs`
+  (`keyword_ranking_orders_by_relevance_and_truncates`,
+  `keyword_ranking_respects_temporal_validity_and_forget` — validité
+  temporelle + forget, portés depuis `temporal_validity_boundary`/
+  `forget_deletes_physically`), rejoués contre `Libsql` ET `Native`, zéro
+  divergence (`cargo test -p basemyai --features test-util,engine-native
+  --test memory_tests`). Classements BM25 conçus pour être robustes entre
+  implémentations (`tf` croissant à `df`/longueur/`idf` égaux — propriété
+  monotone de BM25 — plutôt que des scores exacts entre termes différents,
+  plus sensibles aux détails d'implémentation) (2026-07-06)
+- [x] `EngineCapabilities::native().full_text` → `true` (honnête, plus
+  d'erreur franche pour ce chemin) (2026-07-06)
+- [x] `xtask`/`ci.yml` : aucune modification nécessaire — le nouveau module
+  vit sous des entrées déjà couvertes (`--lib` pour `basemyai-engine`,
+  `--test memory_tests` pour `basemyai --features test-util,engine-native`)
+  ; `cargo xtask ci` vert (18 étapes), harnais crash-consistency re-exécuté
+  (4 modes, 0 violation) — le triplet postings/docterms/stats n'a pas son
+  propre mode dédié dans le harnais (reste un item de suivi non bloquant,
+  N5.5) mais est exercé indirectement par le mode `batch`/`vector` puisqu'il
+  chevauche le même `apply_batch` (2026-07-06)
+- [ ] Item de suivi séparé, non bloquant : racinisation Porter (gap assumé
+  par ADR-028 §2) — à instruire seulement si mesuré comme un manque de
+  recall significatif en usage réel
+- [ ] Item de suivi séparé, non bloquant : mode `memory`/`fts` dédié du
+  harnais crash-consistency (couverture directe du triplet
+  postings/docterms/stats, comme les modes `vector`/`graph` existants) —
+  N5.5
 
 ### N5.3 — 100 % des contrats sur Native
 

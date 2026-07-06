@@ -30,6 +30,7 @@
 //! never committed (failed insert) just skips an id, which is benign.
 
 use crate::error::{EngineError, Result};
+use crate::idx::fts::PersistentFts;
 use crate::idx::vector::PersistentVectorIndex;
 use crate::key::{memory_index, vector_index};
 use crate::store::{Batch, Engine};
@@ -109,19 +110,25 @@ impl PersistentMemoryIndex {
     }
 
     /// Inserts the memory `(agent, id)` durably and **atomically** with its
-    /// vector: record block + reverse mapping + allocator bump travel as the
-    /// `extra` batch of [`PersistentVectorIndex::insert_with`] — one WAL
-    /// record, all-or-nothing under a crash (ADR-027 §3). Returns the
-    /// allocated vector id.
+    /// vector: record block + reverse mapping + allocator bump + FTS
+    /// postings/doc-terms/stats (ADR-028 §4) travel as the `extra` batch of
+    /// [`PersistentVectorIndex::insert_with`] — one WAL record,
+    /// all-or-nothing under a crash (ADR-027 §3). Returns the allocated
+    /// vector id.
     ///
     /// Errors with [`EngineError::DuplicateMemoryId`] if a record already
     /// exists for `(agent, id)` — mirroring the libSQL UNIQUE violation,
     /// never a silent overwrite (which would strand the old record's live
     /// vector node, ADR-027 §6).
+    // Composing three sibling indexes' (vector, memory, fts) crash-critical
+    // writes into one atomic batch genuinely needs a handle to each — a
+    // grouping struct would just rename this same argument list, not reduce it.
+    #[allow(clippy::too_many_arguments)]
     pub fn put(
         &mut self,
         engine: &mut Engine,
         vectors: &mut PersistentVectorIndex,
+        fts: &PersistentFts,
         agent: &str,
         id: &str,
         new: &NewMemoryRecord<'_>,
@@ -160,6 +167,7 @@ impl PersistentMemoryIndex {
                 next_vec_id: vec_id + 1,
             })?,
         );
+        fts.stage_insert(engine, agent, vec_id, new.content, &mut extra)?;
         vectors.insert_with(engine, vec_id, vector, &extra)?;
 
         self.next_vec_id = vec_id + 1;
@@ -210,17 +218,19 @@ impl PersistentMemoryIndex {
         engine.apply_batch(&batch)
     }
 
-    /// Physically forgets the memory `(agent, id)`: record + reverse mapping
-    /// removed and the vector node tombstoned, all in **one** atomic batch
-    /// via [`PersistentVectorIndex::delete_with`] (which applies the
-    /// companion deletes even when the node is already gone — leftovers of
-    /// an interrupted earlier attempt must not survive). Returns `false` (a
+    /// Physically forgets the memory `(agent, id)`: record, reverse mapping
+    /// and FTS postings/doc-terms/stats (ADR-028 §4) removed and the vector
+    /// node tombstoned, all in **one** atomic batch via
+    /// [`PersistentVectorIndex::delete_with`] (which applies the companion
+    /// deletes even when the node is already gone — leftovers of an
+    /// interrupted earlier attempt must not survive). Returns `false` (a
     /// no-op) when no record exists, mirroring the libSQL `DELETE`'s
     /// zero-row behavior.
     pub fn forget(
         &self,
         engine: &mut Engine,
         vectors: &mut PersistentVectorIndex,
+        fts: &PersistentFts,
         agent: &str,
         id: &str,
     ) -> Result<bool> {
@@ -231,6 +241,7 @@ impl PersistentMemoryIndex {
         let mut extra = Batch::new();
         extra.delete(record_key.as_bytes());
         extra.delete(memory_index::vecmap_key(stored.vec_id).as_bytes());
+        fts.stage_delete(engine, agent, stored.vec_id, &mut extra)?;
         vectors.delete_with(engine, stored.vec_id, &extra)?;
         Ok(true)
     }
@@ -270,13 +281,20 @@ impl PersistentMemoryIndex {
     /// each memory either fully present or fully gone, and re-running the
     /// purge finishes the job (ADR-027 §6). Returns the number of memories
     /// removed.
-    pub fn purge_agent(&self, engine: &mut Engine, vectors: &mut PersistentVectorIndex, agent: &str) -> Result<u64> {
+    pub fn purge_agent(
+        &self,
+        engine: &mut Engine,
+        vectors: &mut PersistentVectorIndex,
+        fts: &PersistentFts,
+        agent: &str,
+    ) -> Result<u64> {
         let mut purged = 0u64;
         for (id, stored) in self.scan_agent(engine, agent)? {
             let record_key = memory_index::record_key(agent, &id)?;
             let mut extra = Batch::new();
             extra.delete(record_key.as_bytes());
             extra.delete(memory_index::vecmap_key(stored.vec_id).as_bytes());
+            fts.stage_delete(engine, agent, stored.vec_id, &mut extra)?;
             vectors.delete_with(engine, stored.vec_id, &extra)?;
             purged += 1;
         }
@@ -310,23 +328,24 @@ mod tests {
         }
     }
 
-    fn open_all(dir: &std::path::Path) -> (Engine, PersistentVectorIndex, PersistentMemoryIndex) {
+    fn open_all(dir: &std::path::Path) -> (Engine, PersistentVectorIndex, PersistentMemoryIndex, PersistentFts) {
         let mut engine = Engine::open(dir).expect("open engine");
         let vectors =
             PersistentVectorIndex::open(&mut engine, VectorIndexParams::with_dim(DIM)).expect("open vector index");
         let memory = PersistentMemoryIndex::open(&engine).expect("open memory index");
-        (engine, vectors, memory)
+        (engine, vectors, memory, PersistentFts::new())
     }
 
     #[test]
     fn put_get_search_resolve_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
 
         let vec_id = memory
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-a",
                 "m1",
                 &new_record("bonjour", "episodic"),
@@ -357,12 +376,13 @@ mod tests {
     #[test]
     fn duplicate_put_is_a_loud_error_and_writes_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
 
         memory
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-a",
                 "m1",
                 &new_record("v1", "episodic"),
@@ -373,6 +393,7 @@ mod tests {
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-a",
                 "m1",
                 &new_record("v2", "episodic"),
@@ -391,6 +412,7 @@ mod tests {
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-b",
                 "m1",
                 &new_record("autre", "episodic"),
@@ -402,12 +424,13 @@ mod tests {
     #[test]
     fn forget_removes_record_mapping_and_search_hit() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
 
         let vec_id = memory
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-a",
                 "m1",
                 &new_record("x", "episodic"),
@@ -417,7 +440,7 @@ mod tests {
 
         assert!(
             memory
-                .forget(&mut engine, &mut vectors, "agent-a", "m1")
+                .forget(&mut engine, &mut vectors, &fts, "agent-a", "m1")
                 .expect("forget")
         );
         assert!(memory.get(&engine, "agent-a", "m1").expect("get").is_none());
@@ -432,7 +455,7 @@ mod tests {
         // Second forget is a no-op, not an error.
         assert!(
             !memory
-                .forget(&mut engine, &mut vectors, "agent-a", "m1")
+                .forget(&mut engine, &mut vectors, &fts, "agent-a", "m1")
                 .expect("re-forget")
         );
     }
@@ -440,13 +463,14 @@ mod tests {
     #[test]
     fn scan_agent_is_structurally_isolated() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
 
         for (agent, id, seed) in [("agent-a", "m1", 1u8), ("agent-a", "m2", 2), ("agent-b", "m3", 3)] {
             memory
                 .put(
                     &mut engine,
                     &mut vectors,
+                    &fts,
                     agent,
                     id,
                     &new_record(id, "semantic"),
@@ -468,12 +492,13 @@ mod tests {
     #[test]
     fn touch_last_access_batches_and_skips_absent_ids() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
 
         memory
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-a",
                 "m1",
                 &new_record("x", "episodic"),
@@ -490,12 +515,13 @@ mod tests {
     #[test]
     fn purge_agent_only_removes_that_agent() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
 
         memory
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-a",
                 "m1",
                 &new_record("a1", "episodic"),
@@ -506,6 +532,7 @@ mod tests {
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-a",
                 "m2",
                 &new_record("a2", "episodic"),
@@ -516,6 +543,7 @@ mod tests {
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-b",
                 "m1",
                 &new_record("b1", "episodic"),
@@ -524,7 +552,9 @@ mod tests {
             .expect("put");
 
         assert_eq!(
-            memory.purge_agent(&mut engine, &mut vectors, "agent-a").expect("purge"),
+            memory
+                .purge_agent(&mut engine, &mut vectors, &fts, "agent-a")
+                .expect("purge"),
             2
         );
         assert!(memory.scan_agent(&engine, "agent-a").expect("scan").is_empty());
@@ -537,11 +567,12 @@ mod tests {
     fn allocator_is_monotonic_across_reopen_and_forgets() {
         let dir = tempfile::tempdir().expect("tempdir");
         {
-            let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+            let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
             memory
                 .put(
                     &mut engine,
                     &mut vectors,
+                    &fts,
                     "agent-a",
                     "m1",
                     &new_record("x", "episodic"),
@@ -552,6 +583,7 @@ mod tests {
                 .put(
                     &mut engine,
                     &mut vectors,
+                    &fts,
                     "agent-a",
                     "m2",
                     &new_record("y", "episodic"),
@@ -562,14 +594,14 @@ mod tests {
             // would hand id 1 out again after the consolidate purge.
             assert!(
                 memory
-                    .forget(&mut engine, &mut vectors, "agent-a", "m2")
+                    .forget(&mut engine, &mut vectors, &fts, "agent-a", "m2")
                     .expect("forget")
             );
             vectors.consolidate(&mut engine).expect("consolidate");
             engine.close().expect("close");
         }
         {
-            let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+            let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
             assert_eq!(
                 memory.next_vec_id(),
                 2,
@@ -579,6 +611,7 @@ mod tests {
                 .put(
                     &mut engine,
                     &mut vectors,
+                    &fts,
                     "agent-a",
                     "m3",
                     &new_record("z", "episodic"),
@@ -592,11 +625,12 @@ mod tests {
     #[test]
     fn open_heals_a_missing_or_corrupt_allocator_from_the_data() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
         memory
             .put(
                 &mut engine,
                 &mut vectors,
+                &fts,
                 "agent-a",
                 "m1",
                 &new_record("x", "episodic"),
@@ -635,11 +669,12 @@ mod tests {
             vec_id: 0,
         };
         {
-            let (mut engine, mut vectors, mut memory) = open_all(dir.path());
+            let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
             memory
                 .put(
                     &mut engine,
                     &mut vectors,
+                    &fts,
                     "agent-a",
                     "m1",
                     &NewMemoryRecord {
@@ -656,8 +691,86 @@ mod tests {
                 .expect("put");
             engine.close().expect("close");
         }
-        let (engine, _vectors, memory) = open_all(dir.path());
+        let (engine, _vectors, memory, _fts) = open_all(dir.path());
         let stored = memory.get(&engine, "agent-a", "m1").expect("get").expect("present");
         assert_eq!(stored, expected);
+    }
+
+    #[test]
+    fn put_stages_fts_atomically_and_forget_removes_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
+
+        let vec_id = memory
+            .put(
+                &mut engine,
+                &mut vectors,
+                &fts,
+                "agent-a",
+                "m1",
+                &new_record("le chat dort", "episodic"),
+                vec_for(1),
+            )
+            .expect("put");
+
+        let hits = fts.search_bm25(&engine, "agent-a", r#""chat""#, 10).expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, vec_id);
+
+        assert!(
+            memory
+                .forget(&mut engine, &mut vectors, &fts, "agent-a", "m1")
+                .expect("forget")
+        );
+        assert!(
+            fts.search_bm25(&engine, "agent-a", r#""chat""#, 10)
+                .expect("search after forget")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn purge_agent_removes_fts_entries_too() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
+
+        memory
+            .put(
+                &mut engine,
+                &mut vectors,
+                &fts,
+                "agent-a",
+                "m1",
+                &new_record("chat", "episodic"),
+                vec_for(1),
+            )
+            .expect("put");
+        memory
+            .put(
+                &mut engine,
+                &mut vectors,
+                &fts,
+                "agent-b",
+                "m1",
+                &new_record("chat", "episodic"),
+                vec_for(2),
+            )
+            .expect("put");
+
+        memory
+            .purge_agent(&mut engine, &mut vectors, &fts, "agent-a")
+            .expect("purge");
+
+        assert!(
+            fts.search_bm25(&engine, "agent-a", r#""chat""#, 10)
+                .expect("search")
+                .is_empty()
+        );
+        assert_eq!(
+            fts.search_bm25(&engine, "agent-b", r#""chat""#, 10)
+                .expect("search")
+                .len(),
+            1
+        );
     }
 }

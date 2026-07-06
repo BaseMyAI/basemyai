@@ -91,6 +91,20 @@ pub(crate) enum Step {
         now: i64,
         expect_total: usize,
     },
+    /// Postcondition sur `MemoryStore::keyword_ranking_ids` (ADR-028) : les
+    /// ids retournés doivent correspondre exactement (ordre compris) à
+    /// `expect_ids`. `match_expr` est déjà dans le sous-ensemble que
+    /// `fts_match_expr()` produit (tokens cités joints par ` OR ` littéral) —
+    /// voir `scenarios.rs` pour pourquoi chaque scénario évite les
+    /// ex-æquo BM25 (ordre de tri non garanti entre backends en cas d'égalité
+    /// stricte de score).
+    ExpectKeywordRankingIds {
+        label: &'static str,
+        match_expr: &'static str,
+        k: usize,
+        now: i64,
+        expect_ids: &'static [&'static str],
+    },
 }
 
 /// Un scénario : une séquence d'étapes, scopée à un seul `agent` (isolation
@@ -219,6 +233,21 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
                     .await
                     .unwrap_or_else(|e| panic!("{ctx}: agent_stats a échoué: {e}"));
                 assert_eq!(stats.total(), *expect_total, "{ctx}: total inattendu");
+            }
+            Step::ExpectKeywordRankingIds {
+                label,
+                match_expr,
+                k,
+                now,
+                expect_ids,
+            } => {
+                let ctx = step_ctx(scenario.name, i, label);
+                let got = store
+                    .keyword_ranking_ids(&agent, match_expr, *k, *now)
+                    .await
+                    .unwrap_or_else(|e| panic!("{ctx}: keyword_ranking_ids a échoué: {e}"));
+                let got_ids: Vec<&str> = got.iter().map(String::as_str).collect();
+                assert_eq!(got_ids, *expect_ids, "{ctx}: keyword_ranking_ids ids inattendus");
             }
         }
     }

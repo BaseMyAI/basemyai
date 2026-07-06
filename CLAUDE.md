@@ -180,7 +180,20 @@ natif = UN enregistrement WAL, atomicité transaction-libSQL retrouvée), `Nativ
 non-cosinus en erreur franche (N5.2/N5.3). **Le diff multi-backend du runner N2 est prouvé** :
 `backend_suite!` vert sur Libsql ET Native (`cargo test -p basemyai --features
 test-util,engine-native --test memory_tests`), matrice xtask/CI étendue en miroir strict,
-capacités `NativeEngine` honnêtes (`vectors`/`recursive_queries` → true). Reste N5.2→N5.6 :
-FTS/BM25 natif, 100 % `storage_contract.rs`+`contracts.rs`, chiffrement au repos + rotation,
-barre M6 (concurrence au-delà du mono-écrivain sérialisé, crash harness mode `memory`,
-`put_memory_batch` tout-ou-rien), ADR de bascule du défaut — décision humaine séparée.
+capacités `NativeEngine` honnêtes (`vectors`/`recursive_queries` → true).
+**N5.2 (FTS/BM25 natif) ✅ clos 2026-07-06** (ADR-028) : troisième index moteur `idx/fts/`
+(inversé `FtsPosting:1` + direct `FtsDocTerms:1` + stats par agent healables `FtsStats:1`),
+tokenizer casefold+pliage d'accents (racinisation Porter différée, gap assumé et documenté) ;
+`PersistentFts::stage_insert`/`stage_delete` composent dans le `Batch` de l'appelant, fusionnés
+par `PersistentMemoryIndex::put`/`forget`/`purge_agent` dans le même `extra` batch que
+vecteur+mémoire — un `remember` natif reste UN enregistrement WAL étendu au troisième index.
+Scoring Okapi (`k1=1.2`/`b=0.75`, défauts FTS5), `df` dérivé du scan des postings.
+`NativeMemoryStore::keyword_ranking_ids` branché (fin de l'erreur franche) — un bug de parité
+(filtre de validité temporelle absent) trouvé et corrigé pendant l'implémentation. Deux
+scénarios `backend_suite!` (classement par pertinence, validité temporelle + forget) rejoués
+Libsql/Native, zéro divergence ; `EngineCapabilities::native().full_text` → `true` ; aucune
+extension xtask/CI nécessaire (nouveau module sous des entrées déjà couvertes) ; `cargo xtask ci`
+vert (18 étapes) + crash-consistency re-exécuté (4 modes, 0 violation). Reste N5.3→N5.6 :
+100 % `storage_contract.rs`+`contracts.rs`, chiffrement au repos + rotation, barre M6
+(concurrence au-delà du mono-écrivain sérialisé, crash harness mode `memory` dédié au triplet
+FTS, `put_memory_batch` tout-ou-rien), ADR de bascule du défaut — décision humaine séparée.

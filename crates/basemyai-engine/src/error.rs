@@ -158,6 +158,55 @@ pub enum EngineError {
     /// vector node unreferenced, polluting searches; ADR-027 §6).
     #[error("memory record already exists for agent {agent:?}, id {id:?}")]
     DuplicateMemoryId { agent: String, id: String },
+
+    /// A string handed to an FTS-index key encoder (`key::fts_index`) would
+    /// overflow that field's `u32` length prefix. Sibling of
+    /// [`EngineError::GraphKeyTooLong`]/[`EngineError::MemoryKeyTooLong`],
+    /// same rationale.
+    #[error("fts index key field {field} is {len} bytes, exceeding the u32 length-prefix wire field")]
+    FtsKeyTooLong { field: &'static str, len: usize },
+
+    /// A posting block (`idx::fts::postings`) failed its checksum or is
+    /// structurally malformed. Pathless, like [`EngineError::CorruptVectorNode`]
+    /// — postings are KV values, not files.
+    #[error("corrupt fts posting block: {reason}")]
+    CorruptFtsPosting { reason: String },
+
+    /// A posting block's format version is newer (or otherwise unrecognized)
+    /// than what this build of the engine understands.
+    #[error("unsupported fts posting format version {found} (this build understands {expected})")]
+    UnsupportedFtsPostingVersion { expected: u16, found: u16 },
+
+    /// A doc-terms block (`idx::fts::docterms`) failed its checksum or is
+    /// structurally malformed.
+    #[error("corrupt fts docterms block: {reason}")]
+    CorruptFtsDocTerms { reason: String },
+
+    /// A doc-terms block's format version is newer (or otherwise
+    /// unrecognized) than what this build of the engine understands.
+    #[error("unsupported fts docterms format version {found} (this build understands {expected})")]
+    UnsupportedFtsDocTermsVersion { expected: u16, found: u16 },
+
+    /// A per-agent BM25-stats record (`idx::fts::stats`) failed its checksum
+    /// or is structurally malformed. Recoverable by design: callers heal it
+    /// on demand from the agent's `docterms` (ADR-028 §3), lazily — never a
+    /// hard error surfaced to a search.
+    #[error("corrupt fts stats record: {reason}")]
+    CorruptFtsStats { reason: String },
+
+    /// A per-agent BM25-stats record's format version is newer (or
+    /// otherwise unrecognized) than what this build of the engine
+    /// understands.
+    #[error("unsupported fts stats format version {found} (this build understands {expected})")]
+    UnsupportedFtsStatsVersion { expected: u16, found: u16 },
+
+    /// A `match_expr` handed to the native FTS search fell outside the
+    /// narrow subset `fts_match_expr()` actually produces — quoted
+    /// lowercase tokens joined by literal ` OR ` (ADR-028 §1). A franc
+    /// error, never a best-effort partial parse: this engine deliberately
+    /// does not implement general FTS5 query syntax.
+    #[error("match_expr {match_expr:?} is not in the supported subset (quoted tokens joined by \" OR \"): {reason}")]
+    UnsupportedMatchExpr { match_expr: String, reason: String },
 }
 
 impl EngineError {
