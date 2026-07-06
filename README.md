@@ -120,6 +120,7 @@ forgetting, and encryption are part of the product contract. See
 - [x] Temporal RAG — retrieval filtered by `valid_until`, never returns stale facts
 - [x] Vector search natively inside libSQL (`vector_top_k` ANN, no extension required)
 - [x] Knowledge graph — entities, relations, multi-hop traversal via recursive SQL CTE
+- [x] Hybrid search — vector similarity **+** BM25 full-text (FTS5), fused with Reciprocal Rank Fusion
 - [x] Multi-signal retrieval with Reciprocal Rank Fusion (vector + graph, k = 60)
 - [x] Adaptive forgetting — hyperbolic importance × recency, capacity-bounded GC
 - [x] Episode-to-fact consolidation via injected LLM (any local runner, no hard dependency)
@@ -400,6 +401,7 @@ basemyai migrate ./agent.bmai # apply pending schema migrations (idempotent)
 basemyai remember ./agent.bmai --agent assistant-42 --layer semantic "User is on Pro plan."
 basemyai recall   ./agent.bmai --agent assistant-42 "billing plan" -k 5 --hybrid
 basemyai stats    ./agent.bmai --agent assistant-42
+basemyai forget   ./agent.bmai --agent assistant-42 <id>   # physical delete — GDPR right to erasure
 
 basemyai llm detect           # discover local LLM servers + best model
 basemyai llm suggest          # installable models matched to your hardware
@@ -495,11 +497,10 @@ We would love for you to get involved with BaseMyAI development! If you wish to 
 
 Architecture decisions are documented in [docs/ADR.md](docs/ADR.md) (index) with each decision in its own file under [docs/adr/](docs/adr/). A decision that changes always produces a **new ADR** — existing ADRs are never edited. Read the ADR before touching cross-cutting concerns.
 
-Rust gate before every commit:
+Rust gate before every commit — `cargo xtask ci` (fmt + per-crate clippy/test with the exact feature combinations CI uses; plain `cargo clippy --workspace`/`cargo test --workspace` do **not** reproduce CI):
 
 ```bash
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo xtask ci
 ```
 
 <h2><img height="20" src="./basemyai-branding/icons/security.svg">&nbsp;&nbsp;Security</h2>
