@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Tâches de maintenance en mode one-shot (`maintenance gc`,
 //! `maintenance forget-adaptive`) et consolidation (`consolidate`). Chacune
 //! appelle une tâche déjà existante (`MaintenanceTask::run`) ou la fonction

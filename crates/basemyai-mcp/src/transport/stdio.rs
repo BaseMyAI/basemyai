@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Transport stdio : le serveur parle MCP sur stdin/stdout, modèle d'intégration
 //! par défaut des agents locaux (Claude Desktop, etc.).
 //!

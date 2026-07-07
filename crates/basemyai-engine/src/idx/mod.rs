@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Logical index structures layered on top of the Layer-1 KV store
 //! (Couche 2, `docs/PLAN-NATIVE-ENGINE.md` §2) — never a second durability
 //! engine: indexes are reconstructible from the data, which stays the single

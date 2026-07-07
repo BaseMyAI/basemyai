@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Cycle de vie du conteneur `.bmai` lui-même (pas de son contenu mémoire) :
 //! `init`, `migrate`, `inspect`, `verify`. Aucune n'a besoin de l'embedder.
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Dispatch des sous-commandes vers leur implémentation. Chaque domaine a son
 //! propre fichier (`config`, `container`, `memory`, `graph`, `maintenance`,
 //! `provision`) ; ce module ne fait que router `cli::Command` vers eux.

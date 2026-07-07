@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Configuration du sidecar REST. Défauts ← `~/.basemyai/config.toml` `[rest]`
 //! ← variables d'environnement. Les secrets ne sont jamais logués.
 

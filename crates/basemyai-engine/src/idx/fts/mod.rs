@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Native full-text index — Layer 2 (N5.2, ADR-028): BM25 over a hand-rolled
 //! inverted index, scoped to the narrow `match_expr` subset
 //! `basemyai`'s `fts_match_expr()` actually produces — not general FTS5

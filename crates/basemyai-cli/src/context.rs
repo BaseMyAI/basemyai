@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Helpers partagés par toutes les commandes : ouverture de la clé/du store/
 //! de la mémoire, conversion `cli::Layer` -> `basemyai::MemoryLayer`. Isole
 //! les commandes de la mécanique d'ouverture d'un `.bmai` (ADR-007/ADR-019).

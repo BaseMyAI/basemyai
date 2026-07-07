@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Façade `Memory` exposée à Python. Chaque méthode rend un **awaitable**
 //! (coroutine asyncio) : le futur tokio Rust est piloté par l'event loop Python
 //! via `pyo3_async_runtimes`. Le moteur reste 100 % local, en process.

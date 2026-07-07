@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Outil `recall_graph` : traversée du graphe entités/relations d'un agent.
 
 use rmcp::schemars;

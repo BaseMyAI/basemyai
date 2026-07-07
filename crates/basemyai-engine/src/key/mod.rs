@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Keyspace encoding (Layer 1 per `docs/PLAN-NATIVE-ENGINE.md` §3.1).
 //!
 //! `basemyai-engine` has no notion of "entity" yet — that meaning belongs to

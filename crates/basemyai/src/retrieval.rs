@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Retrieval multi-signal par **Reciprocal Rank Fusion (RRF)** (VISION §4.4 /
 //! §5.3). Au lieu du cosine pur, un souvenir peut remonter parce qu'il est
 //! sémantiquement proche *et/ou* relié à l'entité courante *et/ou* récent

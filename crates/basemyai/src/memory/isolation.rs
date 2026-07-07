@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Isolation multi-agent. Chaque ligne porte un `agent_id` ; **toute** lecture
 //! et écriture sont filtrées par lui **au niveau SQL** (ADR-006). Une fuite
 //! cross-agent est un incident de sécurité, pas un bug fonctionnel.

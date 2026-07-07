@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Store libSQL async + migrations + recherche vectorielle **native**.
 //!
 //! libSQL est SQLite-compatible et embarque le vecteur (`F32_BLOB`,

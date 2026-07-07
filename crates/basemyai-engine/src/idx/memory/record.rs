@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Memory-record block layout (N5.1, ADR-027 §2).
 //!
 //! `format.lock` anchor: `MemoryRecord:1` — bump [`MEMORY_RECORD_VERSION`]

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Outil `remember` : mémorise un texte dans une couche pour un agent.
 
 use rmcp::schemars;

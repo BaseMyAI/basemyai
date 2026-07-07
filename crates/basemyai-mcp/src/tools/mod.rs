@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Schémas d'entrée/sortie des outils MCP (structs `*Params` / `*Result`),
 //! exposés au client via le JSON Schema généré par les macros `#[tool]` (schemars).
 //! La logique vit dans [`crate::server`].

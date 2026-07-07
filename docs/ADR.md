@@ -36,3 +36,6 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-026](adr/ADR-026-native-vector-index-lm-diskann.md) | Index vectoriel natif : famille DiskANN (LM-DiskANN sur KV), pas HNSW | ✅ Accepted |
 | [ADR-027](adr/ADR-027-native-memory-store.md) | `MemoryStore` sur le moteur natif : mapping, atomicité et découpage N5 | ✅ Accepted |
 | [ADR-028](adr/ADR-028-native-fts-bm25.md) | Index full-text natif : BM25 sur index inversé maison (sous-ensemble `match_expr`, pas FTS5) | ✅ Accepted |
+| [ADR-029](adr/ADR-029-license-split-and-trademark-policy.md) | Découpage de licence (open-core, BUSL-1.1 sur `basemyai-engine`) et politique de marque | ⛔ Superseded by ADR-031 |
+| [ADR-030](adr/ADR-030-native-encryption-at-rest.md) | Chiffrement au repos du moteur natif : AEAD XChaCha20-Poly1305 + enveloppe DEK/KEK, rotation O(1) | ✅ Accepted |
+| [ADR-031](adr/ADR-031-unified-busl-license.md) | Licence BUSL-1.1 unifiée sur tout le workspace (remplace le découpage open-core) | ✅ Accepted |

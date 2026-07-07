@@ -1,21 +1,146 @@
-MIT License
+Business Source License 1.1
 
-Copyright (c) 2026 BaseMyAI contributors
+Parameters
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Licensor:             Nathan.L ("BaseMyAI" project)
+Licensed Work:        The BaseMyAI workspace — every crate in this repository
+                      (`basemyai-core`, `basemyai`, `basemyai-cli`,
+                      `basemyai-mcp`, `basemyai-rest`, `basemyai-engine`) and
+                      the Python/Node bindings (`bindings/basemyai-py`,
+                      `bindings/basemyai-node`).
+                      The Licensed Work is (c) 2026 Nathan.L
+Additional Use Grant:  You may use, copy, modify, and create derivative works
+                      of the Licensed Work for any purpose, including
+                      internal and commercial purposes. In particular, you
+                      may freely:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+                      - embed or depend on the Licensed Work (as a library,
+                        crate, Python package, or Node package) inside your
+                        own product or service, including a commercial or
+                        closed-source one, and distribute that product or
+                        service to end users — provided your product's
+                        primary function is something other than the ones
+                        listed in (a)/(b) below;
+                      - use the Licensed Work internally, for research,
+                        evaluation, or personal projects;
+                      - use the Licensed Work within the BaseMyAI/ForgeMyAI
+                        ecosystem itself (e.g. ForgeMyAI consuming
+                        `basemyai-core` as a native Rust dependency).
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+                      You may NOT, without a commercial license from the
+                      Licensor:
+
+                      (a) offer the Licensed Work, or a derivative work whose
+                      value derives substantially from it, to third parties
+                      as a hosted or managed service (i.e., a product or
+                      service where a third party's primary benefit is
+                      remote/networked access to the Licensed Work's
+                      functionality, whether or not a fee is charged); or
+
+                      (b) publish, distribute, or sell the Licensed Work, or
+                      a derivative work substantially copied or forked from
+                      it — under any name, including a renamed or rebranded
+                      fork — as a library, SDK, or product whose primary
+                      function is to provide an AI agent memory database,
+                      agent memory storage, vector/graph/full-text memory
+                      retrieval, or an equivalent engine based substantially
+                      on BaseMyAI to third parties (i.e., to become
+                      a substitute for BaseMyAI/ForgeMyAI itself, whether or
+                      not it keeps the BaseMyAI/ForgeMyAI name — the
+                      trademark question is separate and governed by
+                      TRADEMARK_POLICY.md).
+
+                      This test is deliberately functional, not a subjective
+                      "competes with" standard: it turns on what the
+                      downstream product's primary function is, not on the
+                      Licensor's opinion of who counts as a competitor. A
+                      product that merely embeds the Licensed Work as an
+                      implementation detail, with a different primary
+                      function, is unrestricted under (c) above regardless
+                      of who built it.
+
+                      Contact security@basemyai.com (subject: "Licensing —
+                      BaseMyAI"; TODO: créer licensing@basemyai.com) for a commercial
+                      license covering (a) or (b).
+Change Date:          Four years from the date each version of the Licensed
+                      Work is first published.
+Change License:       Apache License, Version 2.0
+
+For information about alternative licensing arrangements for the Licensed
+Work, please contact security@basemyai.com (see note above).
+
+Notice
+
+The Business Source License (this document, or the "License") is not an Open
+Source license. However, the Licensed Work will eventually be made available
+under an Open Source License, as stated in this License.
+
+License text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
+
+-----------------------------------------------------------------------------
+
+Business Source License 1.1
+
+Terms
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make an Additional Use Grant, above, permitting limited
+production use.
+
+Effective on the Change Date, or the fourth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work under this
+License, whichever comes first, the Licensor hereby grants you rights under
+the terms of the Change License, and the rights granted in the paragraph
+above terminate.
+
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase a
+commercial license from the Licensor, its affiliated entities, or authorized
+resellers, or you must refrain from using the Licensed Work.
+
+All copies of the original and modified Licensed Work, and derivative works
+of the Licensed Work, are subject to this License. This License applies
+separately for each version of the Licensed Work and the Change Date may vary
+for each version of the Licensed Work released by Licensor.
+
+You must conspicuously display this License on each original or modified copy
+of the Licensed Work. If you receive the Licensed Work in original or
+modified form from a third party, the terms and conditions set forth in this
+License apply to your use of that work.
+
+Any use of the Licensed Work in violation of this License will automatically
+terminate your rights under this License for the current and all other
+versions of the Licensed Work.
+
+This License does not grant you any right in any trademark or logo of
+Licensor or its affiliates (provided that you may use a trademark or logo of
+Licensor as expressly required by this License).
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON
+AN "AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS,
+EXPRESS OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND
+TITLE.
+
+MariaDB hereby grants you permission to use this License's text to license
+your works, and to refer to it using the trademark "Business Source License",
+as long as you comply with the Covenant of the enclosed Terms and Conditions.
+
+Covenant of Governing Body of Business Source License
+
+Governing Body of Business Source License means the entity that owns the
+Business Source License trademark, or its designee.
+
+Governing Body may publish revised versions of the Business Source License
+(each additional version being a subsequent "Version") from time to time.
+Each Version will be given a distinguishing version number. In connection
+with Governing Body's ongoing evaluation of the Business Source License,
+Governing Body may make a commitment, for the benefit of the community and
+the software, that when Governing Body releases a specific Version of the
+Business Source License as the last Business Source License Version,
+Governing Body will cease all further use of the Business Source License,
+except that Governing Body may continue to use the Business Source License
+to license copyrightable materials that Governing Body owns or has explicit
+authority to license under the Business Source License.

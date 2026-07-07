@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Graph-edge relation block layout (N4, `docs/TODO-NATIVE-ENGINE.md`).
 //!
 //! `format.lock` anchor: `GraphEdge:1` — bump [`GRAPH_EDGE_VERSION`] and this

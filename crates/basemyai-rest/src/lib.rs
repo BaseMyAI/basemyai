@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! # basemyai-rest
 //!
 //! Sidecar **HTTP/JSON** exposant le moteur de mémoire [`basemyai`] aux langages

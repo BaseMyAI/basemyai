@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Vector-index parameters and persisted index metadata (ADR-026).
 //!
 //! Two things live here:

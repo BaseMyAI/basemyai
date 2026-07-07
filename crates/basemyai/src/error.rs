@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Erreurs de la couche mémoire. Enveloppe les erreurs du core via `#[from]`.
 
 use thiserror::Error;

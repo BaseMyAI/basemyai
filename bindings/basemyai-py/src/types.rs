@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Types de données exposés à Python : [`Record`], [`AgentStats`], [`Entity`].
 //! Couches mémoire représentées en `str` (jamais en `int`), conformément à la
 //! table de mapping cross-language.

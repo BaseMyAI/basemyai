@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Sortie text/JSON. Chaque commande construit sa propre `serde_json::Value`
 //! pour le mode `json` (pas de `derive(Serialize)` ajouté dans la lib
 //! `basemyai` — zéro risque sur son API publique) et imprime du texte humain

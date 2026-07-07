@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Frontière moteur de stockage (suivi ADR-019 : *« Gradually move SQL/libSQL-
 //! specific code behind an engine module… Add backend contract tests before
 //! any second backend exists »*).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Embeddings in-process. Le core **ne télécharge jamais** et **ne détecte
 //! jamais** le matériel : il reçoit un chemin de modèle et un [`Device`] déjà
 //! résolus par le setup hardware-aware du consommateur (ADR-010).

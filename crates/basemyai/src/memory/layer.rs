@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Les 4 couches mémoire (ADR-004) et les types de données associés.
 
 use crate::{MemoryError, Result};

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Erreurs du socle. `thiserror` (règle Rust 2026 : structuré et matchable en lib).
 
 use thiserror::Error;

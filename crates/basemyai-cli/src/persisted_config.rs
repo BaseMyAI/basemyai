@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Configuration du CLI développeur. Résolue par précédence : flag explicite
 //! (géré par l'appelant, pas ici) → variables d'environnement → fichier
 //! `~/.basemyai/config.toml` section `[cli]` → absent (erreur explicite côté

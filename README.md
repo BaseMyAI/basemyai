@@ -19,7 +19,7 @@
   </a>
   &nbsp;
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-00a88a.svg?style=flat-square" alt="MIT License">
+    <img src="https://img.shields.io/badge/license-BUSL--1.1-00a88a.svg?style=flat-square" alt="Business Source License 1.1">
   </a>
 </p>
 
@@ -516,10 +516,22 @@ See [SECURITY.md](SECURITY.md) for the full threat model and vulnerability repor
 
 <h2><img height="20" src="./basemyai-branding/icons/license.svg">&nbsp;&nbsp;License</h2>
 
-Source code for BaseMyAI is released under the [MIT License](LICENSE).
+BaseMyAI (every crate in this repository, plus the Python/Node bindings) is
+source-available under the **Business Source License 1.1**, converting
+automatically to Apache-2.0 four years after each version's release (see
+[ADR-031](docs/adr/ADR-031-unified-busl-license.md)).
 
-- `basemyai-core` — MIT
-- `basemyai` — MIT
-- Language SDKs (Python, Node) — MIT
+In plain terms: you're free to depend on BaseMyAI inside your own product —
+including a commercial one — use it internally, for research, or evaluation.
+What's restricted is republishing BaseMyAI itself (or a fork of it, under any
+name) as a competing memory/vector/graph/code-context engine, or reselling it
+as a hosted service. See the Additional Use Grant in [LICENSE](LICENSE) for
+the exact terms.
 
-For more information, see [LICENSE](LICENSE).
+The "BaseMyAI" and "ForgeMyAI" names and logos are trademarks, governed
+independently of the code license — see
+[TRADEMARK_POLICY.md](TRADEMARK_POLICY.md) for what's freely permitted and
+what requires permission.
+
+For more information, see [LICENSE](LICENSE) and
+[ADR-031](docs/adr/ADR-031-unified-busl-license.md).

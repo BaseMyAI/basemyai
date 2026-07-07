@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Export/import de la mémoire d'un agent (portabilité, backup, migration).
 //!
 //! Format **JSONL versionné** : une ligne d'en-tête puis une ligne JSON par

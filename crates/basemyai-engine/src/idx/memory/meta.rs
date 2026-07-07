@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Memory-index allocator-metadata record layout (N5.1, ADR-027 §4).
 //!
 //! `format.lock` anchor: `MemoryIndexMeta:1` — bump

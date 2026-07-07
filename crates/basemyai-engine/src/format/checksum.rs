@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Minimal CRC32 (IEEE 802.3, reflected polynomial) — zero external
 //! dependency. Used to detect torn/corrupt writes in WAL records and SST
 //! files. Internal to the crate: not itself a persisted "type" in the

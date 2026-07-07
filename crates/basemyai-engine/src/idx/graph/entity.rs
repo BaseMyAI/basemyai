@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Graph-entity node block layout (N4, `docs/TODO-NATIVE-ENGINE.md`).
 //!
 //! `format.lock` anchor: `GraphEntity:1` — bump [`GRAPH_ENTITY_VERSION`] and

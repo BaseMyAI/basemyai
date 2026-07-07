@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Vector-id reverse-mapping record layout (N5.1, ADR-027 §2/§4).
 //!
 //! `format.lock` anchor: `MemoryVecMap:1` — bump [`MEMORY_VECMAP_VERSION`]

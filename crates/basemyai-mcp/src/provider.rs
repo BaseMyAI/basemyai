@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Ouverture de mémoires par agent. Le serveur MCP sert plusieurs agents ; une
 //! [`Memory`] est scellée par un `agent_id` à sa construction (ADR-006), donc le
 //! pool en ouvre une par agent via un [`MemoryProvider`] injecté.

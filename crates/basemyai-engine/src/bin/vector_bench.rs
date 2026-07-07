@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Manual N3 parity-bench harness (ADR-026 §6,
 //! `docs/TODO-NATIVE-ENGINE.md` N3 "Parité bench M6"): reproduces the same
 //! scenario shape as `docs/benchmarks/m6-knn-results-2026-07-01.md`

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Cosine distance over `f32` slices (ADR-026 — same metric as the M6
 //! parity benchmarks and the libSQL backend's `vector_distance_cos`).
 //!

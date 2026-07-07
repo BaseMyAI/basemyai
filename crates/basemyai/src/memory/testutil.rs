@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Utilitaires de test (feature `test-util`) : un embedder **déterministe et
 //! sans dépendance** pour valider les bindings (Python/Node) et les spikes sans
 //! Candle, sans fichier modèle et sans CMake.

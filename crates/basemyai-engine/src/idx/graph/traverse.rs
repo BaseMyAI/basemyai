@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Shared BFS traversal algorithm (N4). Written once against a
 //! [`GraphProvider`] abstraction so the in-RAM [`super::ram::RamGraph`] and
 //! the KV-persisted [`super::persistent::PersistentGraph`] read exactly the

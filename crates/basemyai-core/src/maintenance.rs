@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Boucle de maintenance async. Le core **fait tourner la boucle** ; les tâches
 //! sont **injectées par le consommateur** (mécanisme au core, sens au
 //! consommateur). Le GC par `valid_until` est une tâche `basemyai`, pas du core.

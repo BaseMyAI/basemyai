@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Native FTS tokenizer (N5.2, ADR-028 §2).
 //!
 //! Replicates, without a new dependency, the two things SQLite FTS5's

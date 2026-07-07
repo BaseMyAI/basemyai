@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Vector-index node block layout (LM-DiskANN style, ADR-026).
 //!
 //! `format.lock` anchor: `VectorNode:2` — bump [`VECTOR_NODE_VERSION`] and

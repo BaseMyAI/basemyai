@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! KV-persisted graph index (N4, `docs/PLAN-NATIVE-ENGINE.md` §2 "Couche 3 —
 //! Graphe natif"): entities and outgoing edges each get their own
 //! self-contained KV record under the reserved `idx/graph/` keyspace

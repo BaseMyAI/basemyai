@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! # basemyai
 //!
 //! Moteur de **mémoire pour agents IA**, posé sur [`basemyai_core`].

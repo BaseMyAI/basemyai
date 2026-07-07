@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Setup **hardware-aware** (ADR-010), façon AnythingLLM. Détecte le matériel,
 //! choisit modèle + device, fait un fetch **explicite** (jamais silencieux),
 //! et persiste le choix dans `~/.local/share/basemyai/provision.json` (Linux /

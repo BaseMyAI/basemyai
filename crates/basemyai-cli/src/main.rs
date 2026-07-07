@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Binaire `basemyai` : CLI développeur de la base mémoire BaseMyAI.
 //!
 //! Donne accès en ligne de commande au cœur memory database : provisionnement

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Routeur axum + handlers conformes à la spec OpenAPI du sidecar.
 //!
 //! Toutes les routes métier sont sous `/v1` et protégées par auth Bearer

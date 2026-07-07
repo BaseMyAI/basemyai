@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Oubli adaptatif (VISION §5.2), au-delà du GC temporel V1. Éviction par score
 //! combiné **importance × récence** (et, à terme, « surprise »), **décroissance**
 //! progressive de l'importance, et plafond de capacité par agent.

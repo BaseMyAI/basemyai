@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Binaire `basemyai-mcp` : serveur MCP de production.
 //!
 //! Wiring de prod : provisioning hardware-aware de l'embedder (Candle) → provider

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Native vector index — LM-DiskANN family (flat Vamana graph), decided by
 //! `docs/adr/ADR-026-native-vector-index-lm-diskann.md`.
 //!

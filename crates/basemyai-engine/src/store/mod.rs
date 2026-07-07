@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Layer 1 store: WAL + memtable + SST + crash recovery.
 //!
 //! [`Engine`] is the public, single-writer KV store: `open` loads existing

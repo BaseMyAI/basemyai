@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Erreurs du serveur MCP. Convertibles en [`rmcp::ErrorData`] (le type d'erreur
 //! des handlers d'outils MCP) en préservant la catégorie JSON-RPC appropriée.
 

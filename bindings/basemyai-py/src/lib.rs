@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! # basemyai (bindings Python)
 //!
 //! Liaison PyO3 du moteur de mémoire [`basemyai`]. API asynchrone (asyncio) :

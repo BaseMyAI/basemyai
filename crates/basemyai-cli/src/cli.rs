@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Schéma d'arguments (`clap` derive) : structure pure, zéro logique. Le
 //! dispatch vers les commandes vit dans `crate::commands`.
 

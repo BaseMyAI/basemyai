@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Vamana graph algorithm (ADR-026 — DiskANN family, flat single-level
 //! proximity graph): greedy beam search, robust prune (α), incremental
 //! insert with bidirectional linking, tombstone deletes with lazy

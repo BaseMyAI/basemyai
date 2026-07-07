@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Posting-record layout (N5.2, ADR-028 §3).
 //!
 //! `format.lock` anchor: `FtsPosting:1` — bump [`FTS_POSTING_VERSION`] and

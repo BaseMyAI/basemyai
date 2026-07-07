@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Native graph index — Layer 2 (Couche 3 per `docs/PLAN-NATIVE-ENGINE.md`
 //! §2, N4 in `docs/TODO-NATIVE-ENGINE.md`): entities and directed edges, one
 //! KV record each under the reserved `idx/graph/` keyspace

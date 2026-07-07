@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! On-disk WAL record layout.
 //!
 //! `format.lock` anchor: `WalRecord:1` — bump [`WAL_RECORD_VERSION`] and this

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Façade mémoire. Injecte les primitives du core (`Store`, `VectorIndex`,
 //! `Embedder`) — testable en isolation via des doubles. Applique l'isolation
 //! par agent et le RAG temporel par-dessus.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Configuration du serveur MCP. Résolue par précédence : variables
 //! d'environnement (prioritaires) → `~/.basemyai/config.toml` section `[mcp]` →
 //! valeurs par défaut.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Schémas des outils `consolidate` et `consolidate_apply`.
 //!
 //! **Politique à niveaux (ADR-018, supersède ADR-017)** : `consolidate` tente,

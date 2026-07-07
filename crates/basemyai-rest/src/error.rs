@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Erreurs HTTP du sidecar : enveloppe métier → réponse JSON `{error:{code,message}}`
 //! avec le statut adéquat, conforme à `ErrorResponse` de la spec OpenAPI.
 

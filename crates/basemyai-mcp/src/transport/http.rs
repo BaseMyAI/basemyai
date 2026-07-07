@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Transport HTTP (MCP Streamable HTTP) monté sur axum, avec auth Bearer
 //! obligatoire et timeout par requête.
 //!

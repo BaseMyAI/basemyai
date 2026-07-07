@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Native memory index (N5.1, ADR-027): the third logical index on the
 //! Layer-1 KV store, next to [`super::vector`] (ADR-026) and
 //! [`super::graph`] (N4). It gives memory records a durable home

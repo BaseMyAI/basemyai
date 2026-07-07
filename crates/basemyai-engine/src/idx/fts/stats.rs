@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Per-agent BM25-stats record layout (N5.2, ADR-028 §3/§5).
 //!
 //! `format.lock` anchor: `FtsStats:1` — bump [`FTS_STATS_VERSION`] and this

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! # basemyai-mcp
 //!
 //! Serveur **MCP (Model Context Protocol)** exposant le moteur de mémoire

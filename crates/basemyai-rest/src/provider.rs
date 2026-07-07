@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Ouverture de mémoires par agent (même rôle que dans le serveur MCP). Le pool
 //! du sidecar en ouvre une par `agent_id` via un [`MemoryProvider`] injecté.
 

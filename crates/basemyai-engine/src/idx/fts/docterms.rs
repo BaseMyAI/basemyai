@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Doc-terms (forward index) block layout (N5.2, ADR-028 §3).
 //!
 //! `format.lock` anchor: `FtsDocTerms:1` — bump [`FTS_DOCTERMS_VERSION`] and

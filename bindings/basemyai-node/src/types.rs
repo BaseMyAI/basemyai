@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Types de données projetés en objets JS plein (`#[napi(object)]`). Couches en
 //! `string`, scores/compteurs en `number`, conformément à la table de mapping.
 

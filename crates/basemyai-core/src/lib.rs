@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! # basemyai-core
 //!
 //! Socle embarqué **agnostique métier** de l'écosystème BaseMyAI.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! In-RAM graph store (N4): the harness/oracle flavor, judged first against
 //! the ported scenarios in `tests/graph_parity.rs` — "le harnais d'abord, le
 //! moteur ensuite" (`docs/TODO-NATIVE-ENGINE.md`), same discipline N2 and N3

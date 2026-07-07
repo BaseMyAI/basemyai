@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Transports MCP : `stdio` (intégration agent local) et `http` (Streamable HTTP
 //! avec auth Bearer). Chacun derrière sa feature.
 

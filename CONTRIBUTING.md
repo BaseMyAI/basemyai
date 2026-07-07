@@ -90,6 +90,23 @@ as a *new* ADR that supersedes the old one. If your contribution changes
 architecture or touches an invariant above, open an issue proposing the ADR
 first so the direction can be agreed before you write code.
 
+## Licensing and sign-off (DCO)
+
+The whole workspace — `basemyai-core`, `basemyai`, CLI, MCP, REST,
+`basemyai-engine`, and the bindings — is licensed under the **Business
+Source License 1.1** (see [LICENSE](LICENSE) and
+[ADR-031](docs/adr/ADR-031-unified-busl-license.md)). To keep a clear chain of
+title, every commit must include a
+[Developer Certificate of Origin](https://developercertificate.org/)
+sign-off, certifying you wrote the contribution or otherwise have the right
+to submit it under the project's license:
+
+```bash
+git commit -s -m "feat(engine): ..."
+```
+
+PRs with unsigned commits will be asked to amend before merge.
+
 ## Pull requests
 
 1. Fork and branch from `main` (or `dev`).

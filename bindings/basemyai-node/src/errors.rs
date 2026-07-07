@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Mapping [`basemyai::MemoryError`] → [`napi::Error`].
 //!
 //! NAPI projette `napi::Error` en `Error` JS dont `.code` reflète le `Status`.

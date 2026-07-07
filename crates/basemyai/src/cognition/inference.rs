@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Couche d'inférence **model-agnostic** (VISION §5.5). La consolidation
 //! (épisodes → faits) suppose un LLM, mais BaseMyAI ne s'y couple pas : ce trait
 //! abstrait le fournisseur, exactement comme l'[`Embedder`](basemyai_core::Embedder)

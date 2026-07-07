@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! On-disk SST (sorted string table) file layout.
 //!
 //! `format.lock` anchor: `SstFile:1` — bump [`SST_FORMAT_VERSION`] and this

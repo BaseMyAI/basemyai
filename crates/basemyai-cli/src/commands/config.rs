@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Commande `config` : lit/écrit `~/.basemyai/config.toml` (voir
 //! `crate::persisted_config::CliConfig`). À ne pas confondre avec
 //! `output::Format` (le format de sortie de toutes les autres commandes).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! RAG temporel (ADR-005). Chaque mémoire porte une fenêtre de validité ; le
 //! recall ne retourne que ce qui est **pertinent ET encore valide**.
 //!
