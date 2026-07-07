@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! `format.lock` mechanism — the anti-drift guard rail for Layer 1's on-disk
 //! formats, modeled on SurrealDB's `revision.lock`
 //! (`docs/PLAN-NATIVE-ENGINE.md` §3.1/§4, `docs/adr/ADR-025-native-engine-storage-foundation.md`).
@@ -114,6 +115,9 @@ pub fn all_specs() -> Vec<FormatSpec> {
     vec![
         super::wal::spec(),
         super::sst::spec(),
+        super::crypto::crypto_meta_spec(),
+        super::crypto::wal_envelope_spec(),
+        super::crypto::sst_envelope_spec(),
         crate::idx::vector::node::spec(),
         crate::idx::vector::meta::spec(),
         crate::idx::graph::entity::spec(),
@@ -309,14 +313,15 @@ mod tests {
         let path = dir.path().join("format.lock");
         fs::write(
             &path,
-            "WalRecord:1(00000000)\nSstFile:1(00000000)\nVectorNode:1(00000000)\nVectorIndexMeta:1(00000000)\n\
+            "WalRecord:1(00000000)\nSstFile:1(00000000)\nCryptoMeta:1(00000000)\nWalEnvelope:1(00000000)\n\
+             SstEnvelope:1(00000000)\nVectorNode:1(00000000)\nVectorIndexMeta:1(00000000)\n\
              GraphEntity:1(00000000)\nGraphEdge:1(00000000)\nMemoryRecord:1(00000000)\n\
              MemoryVecMap:1(00000000)\nMemoryIndexMeta:1(00000000)\nFtsPosting:1(00000000)\n\
              FtsDocTerms:1(00000000)\nFtsStats:1(00000000)\n",
         )
         .expect("write lock");
         let mismatches = verify_file(&path).expect("verify");
-        assert_eq!(mismatches.len(), 12);
+        assert_eq!(mismatches.len(), 15);
         assert!(mismatches.iter().all(|m| matches!(m, Mismatch::HashDiverged { .. })));
     }
 

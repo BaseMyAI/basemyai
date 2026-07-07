@@ -46,12 +46,16 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use basemyai_engine::harness::{
-    BATCH_SIZE, ChurnOp, GRAPH_AGENT, GraphOp, churn_deletes_before, churn_inserts_before, churn_op, encode_key,
-    expected_value, expected_vector, graph_entity_kind, graph_entity_label, graph_op, vector_index_params,
+    BATCH_SIZE, ChurnOp, GRAPH_AGENT, GraphOp, MEMORY_AGENT, MEMORY_VECTOR_DIM, MemoryOp, churn_deletes_before,
+    churn_inserts_before, churn_op, encode_key, expected_memory_content, expected_value, expected_vector,
+    graph_entity_kind, graph_entity_label, graph_op, memory_forgets_before, memory_match_expr, memory_op,
+    memory_puts_before, memory_record_id, vector_index_params,
 };
 use basemyai_engine::idx::vector::node;
 use basemyai_engine::key::vector_index::node_key;
-use basemyai_engine::{Engine, PersistentGraph, PersistentVectorIndex};
+use basemyai_engine::{
+    Engine, PersistentFts, PersistentGraph, PersistentMemoryIndex, PersistentVectorIndex, VectorIndexParams,
+};
 
 /// Matches the earlier N1 spike's rigor (20 cycles) — see
 /// `docs/benchmarks/n1-storage-engine-spike-2026-07-04.md`.
@@ -68,7 +72,20 @@ fn kill_reopen_verify_loop() {
 /// checked without trusting the writer's own claims about what landed.
 #[test]
 fn batch_kill_reopen_verify_loop() {
-    run_batch_cycles(CYCLES);
+    run_batch_cycles(CYCLES, false);
+}
+
+/// Encrypted variant of [`batch_kill_reopen_verify_loop`] (N5.4, ADR-030):
+/// the exact same batch-atomicity proof, with the engine opened via
+/// `Engine::open_encrypted` under the fixed harness key. Batch mode is the
+/// richest coverage per cycle for the encryption layer — every WAL batch
+/// record the kill can tear is one AEAD envelope, every flush/compaction it
+/// can interrupt writes sealed SSTs, and `crypto.meta` is re-read on every
+/// reopen. The assertions are identical: encryption must be transparent to
+/// the crash guarantees.
+#[test]
+fn encrypted_batch_kill_reopen_verify_loop() {
+    run_batch_cycles(CYCLES, true);
 }
 
 /// Vector-index counterpart (N3, ADR-026 §3/§4): same spawn/kill machinery,
@@ -85,6 +102,25 @@ fn vector_kill_reopen_verify_loop() {
 #[test]
 fn graph_kill_reopen_verify_loop() {
     run_graph_cycles(CYCLES);
+}
+
+/// Memory-triplet counterpart (N5.5, ADR-027 §3/ADR-028 §4): same spawn/kill
+/// machinery, `crash_writer` in `"memory"` mode — puts and forgets against
+/// `PersistentMemoryIndex`, the composed record+vector+FTS atomic write.
+/// See [`run_memory_cycles`] for exactly what is asserted after each kill.
+#[test]
+fn memory_kill_reopen_verify_loop() {
+    run_memory_cycles(CYCLES, false);
+}
+
+/// Encrypted variant (N5.4, ADR-030) of [`memory_kill_reopen_verify_loop`] —
+/// the memory triplet is the mode that touches every one of the engine's
+/// four logical indexes (vector, memory, FTS — plus WAL/SST underneath) per
+/// op, so it is the richest per-cycle coverage for "encryption must be
+/// transparent to crash guarantees" left untried by `encrypted_batch_*`.
+#[test]
+fn encrypted_memory_kill_reopen_verify_loop() {
+    run_memory_cycles(CYCLES, true);
 }
 
 /// Exposed at a small cycle count so this file can also serve as a fast
@@ -164,7 +200,7 @@ fn run_cycles(cycles: u32) {
 ///    though it was never confirmed) and asserts the count of *present* keys
 ///    in it is either 0 or `BATCH_SIZE`, never in between, and that every
 ///    present one has the exact expected value.
-fn run_batch_cycles(cycles: u32) {
+fn run_batch_cycles(cycles: u32, encrypted: bool) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let engine_dir = tmp.path().join("engine");
     let confirm_log = tmp.path().join("confirmed.log");
@@ -174,7 +210,11 @@ fn run_batch_cycles(cycles: u32) {
     let mut any_in_flight_batch_observed = false;
 
     for cycle in 0..cycles {
-        let child = spawn_writer(bin, &engine_dir, &confirm_log, "batch");
+        let child = if encrypted {
+            spawn_writer_encrypted(bin, &engine_dir, &confirm_log, "batch")
+        } else {
+            spawn_writer(bin, &engine_dir, &confirm_log, "batch")
+        };
         kill_after_jitter(child, cycle);
 
         let last_confirmed_end = read_last_confirmed_batch_end(&confirm_log);
@@ -196,8 +236,12 @@ fn run_batch_cycles(cycles: u32) {
             );
             max_confirmed_seen = Some(end);
 
-            let engine = Engine::open(&engine_dir)
-                .unwrap_or_else(|e| panic!("cycle {cycle}: engine failed to reopen after kill: {e}"));
+            let engine = if encrypted {
+                Engine::open_encrypted(&engine_dir, basemyai_engine::harness::CRYPTO_KEY)
+            } else {
+                Engine::open(&engine_dir)
+            }
+            .unwrap_or_else(|e| panic!("cycle {cycle}: engine failed to reopen after kill: {e}"));
 
             // 1. Every confirmed batch must be fully present.
             for counter in 0..=end {
@@ -327,7 +371,7 @@ fn run_vector_cycles(cycles: u32) {
 
         let mut engine = Engine::open(&engine_dir)
             .unwrap_or_else(|e| panic!("cycle {cycle}: engine failed to reopen after kill: {e}"));
-        let mut index = PersistentVectorIndex::open(&mut engine, vector_index_params())
+        let index = PersistentVectorIndex::open(&mut engine, vector_index_params())
             .unwrap_or_else(|e| panic!("cycle {cycle}: vector index failed to reopen after kill: {e}"));
         assert!(
             !index.rebuilt_on_open(),
@@ -611,6 +655,185 @@ fn run_graph_cycles(cycles: u32) {
     );
 }
 
+/// Memory-triplet kill loop (N5.5): same spawn/sleep/kill sequence as
+/// [`run_cycles`], against `crash_writer`'s `"memory"` mode — the
+/// deterministic put/forget schedule of `harness::memory_op`, which
+/// exercises `PersistentMemoryIndex::put`'s composed record+vector+FTS
+/// atomic write (ADR-027 §3, ADR-028 §4) under a real kill, not just the
+/// vector index alone (`vector` mode) or a synthetic key/value stream
+/// (`batch` mode).
+///
+/// The schedule is a pure function of the step number and the writer
+/// confirms one `step <n>` line per completed op, so from the last
+/// confirmed step `S` alone the driver recomputes, without trusting the
+/// writer: the exact set of confirmed-put ids, the exact set of
+/// confirmed-forgotten ids, and the single op (`S + 1`) that may have been
+/// in flight — durable or not, but never partially — when the kill landed.
+/// After each kill the driver:
+///
+/// 1. Reopens the engine (encrypted under `harness::CRYPTO_KEY` when
+///    `encrypted`) and the persistent vector index, asserting the open is
+///    **clean** — `rebuilt_on_open() == false`: every put/forget is a single
+///    atomic batch (this test's whole point), so the rebuild escape hatch
+///    must never trigger from a crash alone.
+/// 2. For every confirmed-put, non-forgotten, non-in-flight id: the memory
+///    record is present with the exact expected content and `vec_id`, the
+///    reverse mapping resolves, a vector search over its exact vector finds
+///    it, and a BM25 search for its unique term finds it — the whole
+///    triplet, not just one index.
+/// 3. For every confirmed-forgotten id: the memory record is gone, the
+///    reverse mapping is gone, it never resurfaces in a vector search over
+///    its exact vector, and its BM25 term returns nothing — the delete's
+///    companion removals (ADR-027 §3/ADR-028 §4) all landed together.
+/// 4. The single possibly-in-flight id (whichever op `S + 1` would have
+///    been) is excluded from both checks — its outcome is genuinely
+///    ambiguous (may or may not have landed before the kill).
+fn run_memory_cycles(cycles: u32, encrypted: bool) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let engine_dir = tmp.path().join("engine");
+    let confirm_log = tmp.path().join("confirmed.log");
+    let bin = env!("CARGO_BIN_EXE_crash_writer");
+
+    let mut max_confirmed_seen: Option<u64> = None;
+
+    for cycle in 0..cycles {
+        let child = if encrypted {
+            spawn_writer_encrypted(bin, &engine_dir, &confirm_log, "memory")
+        } else {
+            spawn_writer(bin, &engine_dir, &confirm_log, "memory")
+        };
+        kill_after_jitter(child, cycle);
+
+        let Some(last_step) = read_last_confirmed_step(&confirm_log) else {
+            continue;
+        };
+        assert!(
+            max_confirmed_seen.is_none_or(|prev| last_step >= prev),
+            "cycle {cycle}: confirmed step regressed ({last_step} < {prev:?})",
+            prev = max_confirmed_seen
+        );
+        max_confirmed_seen = Some(last_step);
+
+        let confirmed_puts = memory_puts_before(last_step + 1);
+        let confirmed_forgotten: HashSet<u64> = (0..memory_forgets_before(last_step + 1)).map(|k| 2 * k).collect();
+        let in_flight = memory_op(last_step + 1);
+        let (ambiguous_id, in_flight_is_forget) = match in_flight {
+            MemoryOp::Put { id } => (id, false),
+            MemoryOp::Forget { id } => (id, true),
+        };
+
+        let mut engine = if encrypted {
+            Engine::open_encrypted(&engine_dir, basemyai_engine::harness::CRYPTO_KEY)
+        } else {
+            Engine::open(&engine_dir)
+        }
+        .unwrap_or_else(|e| panic!("cycle {cycle}: engine failed to reopen after kill: {e}"));
+        let vectors = PersistentVectorIndex::open(&mut engine, VectorIndexParams::with_dim(MEMORY_VECTOR_DIM))
+            .unwrap_or_else(|e| panic!("cycle {cycle}: vector index failed to reopen after kill: {e}"));
+        assert!(
+            !vectors.rebuilt_on_open(),
+            "cycle {cycle}: vector index needed a rebuild after a kill (in-flight op: {in_flight:?}) — \
+             every memory put/forget is one atomic batch, the rebuild escape hatch must never \
+             trigger from a crash alone"
+        );
+        let memory = PersistentMemoryIndex::open(&engine)
+            .unwrap_or_else(|e| panic!("cycle {cycle}: memory index failed to reopen after kill: {e}"));
+        let fts = PersistentFts::new();
+
+        for id in 0..confirmed_puts {
+            if id == ambiguous_id {
+                continue; // genuinely ambiguous — may or may not have landed
+            }
+            let record_id = memory_record_id(id);
+            if confirmed_forgotten.contains(&id) {
+                assert!(
+                    memory
+                        .get(&engine, MEMORY_AGENT, &record_id)
+                        .unwrap_or_else(|e| panic!("cycle {cycle}: get(forgotten {id}) errored: {e}"))
+                        .is_none(),
+                    "cycle {cycle}: id {id} was confirmed forgotten before the kill but its record \
+                     reopened present — crash-consistency violation"
+                );
+                assert!(
+                    memory
+                        .resolve(&engine, id)
+                        .unwrap_or_else(|e| panic!("cycle {cycle}: resolve(forgotten {id}) errored: {e}"))
+                        .is_none(),
+                    "cycle {cycle}: id {id}'s reverse mapping survived a confirmed forget"
+                );
+                let hits = vectors
+                    .search(&engine, &expected_vector(id), 10)
+                    .unwrap_or_else(|e| panic!("cycle {cycle}: search(forgotten vector {id}) errored: {e}"));
+                assert!(
+                    !hits.contains(&id),
+                    "cycle {cycle}: confirmed-forgotten id {id} RESURFACED in vector search {hits:?}"
+                );
+                let bm25 = fts
+                    .search_bm25(&engine, MEMORY_AGENT, &memory_match_expr(id), 10)
+                    .unwrap_or_else(|e| panic!("cycle {cycle}: bm25(forgotten {id}) errored: {e}"));
+                assert!(
+                    bm25.is_empty(),
+                    "cycle {cycle}: confirmed-forgotten id {id}'s FTS entry survived: {bm25:?}"
+                );
+            } else {
+                let record = memory
+                    .get(&engine, MEMORY_AGENT, &record_id)
+                    .unwrap_or_else(|e| panic!("cycle {cycle}: get(live {id}) errored: {e}"))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "cycle {cycle}: id {id} was confirmed put (and never forgotten) before \
+                             the kill but its record is missing after reopen — crash-consistency \
+                             violation"
+                        )
+                    });
+                assert_eq!(
+                    record.content,
+                    expected_memory_content(id),
+                    "cycle {cycle}: id {id}'s content diverged from what was confirmed durable"
+                );
+                assert_eq!(record.vec_id, id, "cycle {cycle}: id {id}'s vec_id diverged");
+                let mapping = memory
+                    .resolve(&engine, id)
+                    .unwrap_or_else(|e| panic!("cycle {cycle}: resolve(live {id}) errored: {e}"))
+                    .unwrap_or_else(|| panic!("cycle {cycle}: id {id}'s reverse mapping is missing after reopen"));
+                assert_eq!(mapping.id, record_id);
+                assert_eq!(mapping.agent, MEMORY_AGENT);
+                let hits = vectors
+                    .search(&engine, &expected_vector(id), 10)
+                    .unwrap_or_else(|e| panic!("cycle {cycle}: search(live vector {id}) errored: {e}"));
+                assert!(
+                    hits.contains(&id),
+                    "cycle {cycle}: id {id} was confirmed durable but a vector search over its \
+                     exact vector does not return it (top-10: {hits:?})"
+                );
+                let bm25 = fts
+                    .search_bm25(&engine, MEMORY_AGENT, &memory_match_expr(id), 10)
+                    .unwrap_or_else(|e| panic!("cycle {cycle}: bm25(live {id}) errored: {e}"));
+                assert!(
+                    bm25.iter().any(|&(hit_id, _)| hit_id == id),
+                    "cycle {cycle}: id {id} was confirmed durable but its unique FTS term does not \
+                     find it (hits: {bm25:?})"
+                );
+            }
+        }
+
+        let _ = in_flight_is_forget; // recomputed for readability/symmetry; not asserted on directly
+        engine
+            .close()
+            .unwrap_or_else(|e| panic!("cycle {cycle}: close after verify failed: {e}"));
+    }
+
+    assert!(
+        max_confirmed_seen.is_some(),
+        "no cycle ever confirmed a single step — the harness or writer is broken, not the engine"
+    );
+    eprintln!(
+        "{}memory_kill_reopen_verify_loop: {} steps confirmed over {cycles} cycles",
+        if encrypted { "encrypted_" } else { "" },
+        max_confirmed_seen.unwrap_or(0) + 1
+    );
+}
+
 /// Bounded deterministic sample of a sorted id slice: the `recent` newest
 /// entries plus an evenly-strided `spread`-point sweep of the older range.
 /// Returns references into `ids` (no allocation beyond the output Vec).
@@ -650,6 +873,20 @@ fn spawn_writer(bin: &str, engine_dir: &Path, confirm_log: &Path, mode: &str) ->
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("failed to spawn crash_writer in {mode} mode: {e}"))
+}
+
+/// [`spawn_writer`] with the `--encrypted` flag (N5.4, ADR-030): the writer
+/// opens the engine under the fixed harness key.
+fn spawn_writer_encrypted(bin: &str, engine_dir: &Path, confirm_log: &Path, mode: &str) -> Child {
+    Command::new(bin)
+        .arg(engine_dir)
+        .arg(confirm_log)
+        .arg(mode)
+        .arg("--encrypted")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to spawn encrypted crash_writer in {mode} mode: {e}"))
 }
 
 fn kill_after_jitter(mut child: Child, cycle: u32) {

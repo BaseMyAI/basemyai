@@ -587,29 +587,124 @@ Okapi `k1=1.2`/`b=0.75` (défauts FTS5).
 - [ ] Item de suivi séparé, non bloquant : racinisation Porter (gap assumé
   par ADR-028 §2) — à instruire seulement si mesuré comme un manque de
   recall significatif en usage réel
-- [ ] Item de suivi séparé, non bloquant : mode `memory`/`fts` dédié du
-  harnais crash-consistency (couverture directe du triplet
-  postings/docterms/stats, comme les modes `vector`/`graph` existants) —
-  N5.5
+- [x] Mode `memory` dédié du harnais crash-consistency (couverture directe
+  du triplet record+vecteur+FTS via `PersistentMemoryIndex::put`/`forget`,
+  comme les modes `vector`/`graph` existants) — voir N5.5 ci-dessous, clos
+  2026-07-07
 
 ### N5.3 — 100 % des contrats sur Native
 
-- [ ] 100 % de `storage_contract.rs` + `contracts.rs` verts sur `Native`
-  (portage des scénarios restants dans le runner déclaratif)
+- [x] 100 % de `storage_contract.rs` verts sur `Native` — les 12 scénarios
+  restants (isolation multi-agent recall/hydrate/purge/exact-fact, batch
+  atomique+vide, filtre de couche, expiration/pas-encore-valide, stats par
+  couche, classement vecteur+mot-clé isolé, traversée graphe scopée agent,
+  épisodes récents) portés dans le runner déclaratif (`memory_tests/
+  scenarios.rs`, 7→19 scénarios), `Step`/`Scenario` étendus d'un champ
+  `agent: Option<&'static str>` par étape pour les séquences multi-agent, 6
+  nouvelles variantes (`RememberBatch`/`PurgeAgent`/`ExpectVectorRankingIds`/
+  `ExpectHydrate`/`ExpectAgentStatsByLayer`/`ExpectRecentEpisodes`/
+  `ExpectExactFactExists`) ; 16/16 tests de `storage_contract.rs` rejoués
+  verbatim contre Libsql ET Native, zéro divergence. `contracts.rs` hors
+  scope (teste `Memory`/`Store` libSQL directement, aucune variation par
+  backend). `cargo xtask check`/`test` verts (2026-07-06).
 
 ### N5.4 — Chiffrement au repos natif
 
-- [ ] Chiffrement au repos (équivalent ADR-007 — chantier crypto sérieux,
-  WAL + SST + blocs d'index) + rotation de clé (parité `rotate_key` M6)
+- [x] Chiffrement au repos (équivalent ADR-007) + rotation de clé (parité
+  `rotate_key` M6) — **ADR-030** : AEAD XChaCha20-Poly1305 pur Rust (pas de
+  feature gate, contrairement au `crypto` libSQL/CMake), enveloppe DEK/KEK
+  (`crypto.meta`, la clé utilisateur n'encrypte jamais la donnée),
+  enveloppes `WalEnvelope:1` par enregistrement (torn-tail préservé,
+  batch = une enveloppe) et `SstEnvelope:1` fichier entier — WAL + SST
+  couvrent mécaniquement tous les blocs d'index. Mauvaise clé / clé
+  absente / clé sur store en clair = erreurs franches typées à l'ouverture.
+  `Engine::rotate_key` = re-scellement O(1), commit atomique un-fichier,
+  **instance utilisable après rotation** (mieux que le `PRAGMA rekey`
+  libSQL) ; écart DEK-inchangée documenté honnêtement (ADR-030 §4).
+  Surfaces : `EngineCapabilities::native(encrypted)` (dernière capacité
+  `false` levée), `NativeEngine::open_encrypted`,
+  `NativeMemoryStore::{open_encrypted,rotate_key,open_ephemeral_encrypted}`.
+  Trois formats de plus dans `format.lock` (`CryptoMeta:1`/`WalEnvelope:1`/
+  `SstEnvelope:1`). Vérifié : la suite complète des 19 scénarios
+  `backend_suite!` rejouée contre un backend `native_encrypted` (zéro
+  divergence avec Libsql/Native en clair), rotation roundtrip niveau
+  `MemoryStore`, et crash harness kill réel étendu d'un 5e mode
+  `encrypted_batch` (20 cycles, 0 violation, cas batch-en-vol observé).
+  `cargo xtask check`/`test`/`test-crash-consistency` verts (2026-07-06).
 
-### N5.5 — Barre hardening M6
+### N5.5 — Barre hardening M6 ✅ clos 2026-07-07
 
-- [ ] Modèle de concurrence au-delà du mono-écrivain sérialisé de N5.1
-  (pool/lecteurs, équivalent ADR-021), mesuré
-- [ ] Bench KNN via le chemin `MemoryStore` complet (pas l'index nu),
-  stress long, harnais crash étendu mode `memory`
-- [ ] `put_memory_batch` tout-ou-rien (composition multi-plans Vamana dans
-  un seul batch — écart assumé d'ADR-027 §6 à résorber ou re-documenter)
+- [x] `put_memory_batch` tout-ou-rien : `PersistentVectorIndex::insert_many_with`
+  (plan chaque insert du groupe contre l'état des inserts précédents via un
+  `OverlayProvider` — pending par-dessus le cache par-dessus le store —, un
+  seul `apply_batch` pour tout le groupe) + `PersistentFts::stage_insert_many`
+  (une seule mise à jour des stats BM25 agrégée sur le groupe, pas un
+  read-modify-write par document qui lirait les stats obsolètes du document
+  précédent non encore commité) + `PersistentMemoryIndex::put_many` (les
+  compose : vérifie tous les doublons — contre le store ET entre eux dans le
+  lot — *avant* d'écrire quoi que ce soit, alloue les `vec_id` séquentiels,
+  un seul enregistrement WAL pour tout le groupe). `put` devient un
+  `put_many` à un seul item (plus de duplication de logique). Résorbe
+  l'écart initial d'ADR-027 §6 : un `put_memory_batch` natif est désormais
+  tout-ou-rien, comme la transaction libSQL qu'il remplace. Vérifié : nouveau
+  test `put_many_duplicate_anywhere_writes_nothing_at_all` (doublon contre le
+  store ET intra-lot, rien ne survit dans les deux cas) +
+  `assert_put_memory_batch_is_all_or_nothing` générique sur `MemoryStore`
+  rejouée verbatim contre Libsql ET Native (`tests/memory_tests.rs`).
+- [x] Mode `memory` du harnais crash-consistency : schéma déterministe
+  put/forget (`harness::memory_op`, période 5 — un forget toutes les 5
+  étapes sur un id déjà mis en place, jamais réutilisé) exerçant le triplet
+  composé record+vecteur+FTS de `PersistentMemoryIndex::put`/`forget` sous
+  kill réel. Après chaque kill : `PersistentVectorIndex::rebuilt_on_open()
+  == false` (chaque put/forget est un batch atomique, jamais de
+  reconstruction après un crash seul), chaque id confirmé-mis-en-place a son
+  triplet complet intact (record exact, `vec_id` exact, mapping inverse,
+  trouvable par recherche vectorielle sur son vecteur exact ET par terme
+  BM25 unique), chaque id confirmé-oublié a les trois retirés (jamais un
+  reliquat partiel). Variante chiffrée `encrypted_memory_kill_reopen_verify_loop`
+  (ADR-030) — c'est le mode qui touche les quatre index logiques du moteur
+  par opération, donc la couverture la plus riche par cycle pour « le
+  chiffrement doit être transparent aux garanties crash ». 20 cycles réels
+  × 2 (clair/chiffré), 0 violation, ~1200/580 étapes confirmées.
+- [x] Modèle de concurrence au-delà du mono-écrivain sérialisé de N5.1,
+  mesuré : le cache borné de `PersistentVectorIndex` devient interior-mutable
+  (`Mutex<HashMap>`) — ce qui était la seule raison pour laquelle
+  `search`/`search_scored` exigeaient `&mut self` — donc ces deux méthodes
+  passent à `&self`. Côté `basemyai`, `NativeMemoryStore` passe d'`Arc<Mutex<
+  NativeInner>>` à `Arc<RwLock<NativeInner>>` : les lectures pures
+  (`vector_ranking_ids`, `keyword_ranking_ids`, `agent_stats`,
+  `graph_traverse`, `recent_episodes`, `exact_fact_exists`) prennent un
+  verrou de lecture et s'exécutent concurremment entre elles ; les chemins
+  hybrides (`recall_vector`, `recall_graph_filtered`, `hydrate`) font deux
+  passes — recherche sous verrou de lecture, `touch` de `last_access` sous
+  un bref verrou d'écriture séparé — plutôt qu'une passe unique sous verrou
+  exclusif qui bloquerait tout lecteur concurrent pendant toute la
+  recherche. Les écritures restent sérialisées entre elles (`Engine` reste
+  mono-écrivain sync, ADR-025 inchangée) — lever *ça* exigerait un moteur
+  multi-écrivain, explicitement hors périmètre. **Mesuré**, pas juste
+  affirmé : `tests/memory_tests.rs
+  native_concurrent_reads_are_correct_and_faster_than_sequential` — 64
+  lectures mixtes (classement vecteur/mot-clé, stats, fait exact)
+  concurrentes toutes correctes, puis 64 lectures séquentielles vs.
+  concurrentes chronométrées : **~3× plus rapide** en concurrent sur cette
+  machine (ratio journalisé, pas un seuil dur — trop bruyant pour une
+  assertion stricte en CI).
+- [x] Bench KNN via le chemin `MemoryStore` complet (pas l'index nu) —
+  `crates/basemyai/tests/native_memory_store_bench.rs` (même discipline que
+  `vector_recall.rs`/`vector_bench.rs` : chiffres réels chronométrés, pas de
+  Criterion). Variante rapide N=2 000 dans le gate par défaut (`cargo xtask
+  test`, signal de régression continu) ; variante N=10 000 `#[ignore]`,
+  manuelle, exécutée `--release` :
+  `docs/benchmarks/n5.5-memorystore-knn-bench-2026-07-07.md` — insert
+  ~12.96 ms/`put_memory` (cohérent avec la fourchette déjà mesurée sur
+  l'index nu par N3, 5.7–17.3 ms/ligne — le chemin `MemoryStore` complet
+  n'ajoute pas de surcoût significatif), `recall_vector` ~17.03 ms/requête
+  (oversampling ×8 + hydratation + filtre + `touch` inclus) contre ~48.98 ms
+  pour le `vector_top_k` **nu** libSQL au même N — malgré plus de travail
+  par requête, le chemin natif reste ~2.9× plus rapide en bout de chaîne.
+  Stress long à plus grande échelle (100k+) resté hors scope de cette passe
+  — item de suivi si un chiffre à cette échelle devient nécessaire.
+  `cargo xtask check`/`test`/`test-crash-consistency` verts.
 
 ### N5.6 — Bascule du défaut
 

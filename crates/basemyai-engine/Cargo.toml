@@ -21,6 +21,11 @@ engine-native = []
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+# Chiffrement au repos (ADR-030) : AEAD XChaCha20-Poly1305 + dérivation
+# SHA-256 de la clé d'enveloppe. Inconditionnel (pur Rust, léger) — pas de
+# feature gate, contrairement au `crypto` libSQL qui exige CMake.
+chacha20poly1305.workspace = true
+sha2.workspace = true
 
 # `vector_bench` (src/bin, N3.1 follow-up) in-process RAM sampler only —
 # not used by the library itself. Windows has no portable std API for

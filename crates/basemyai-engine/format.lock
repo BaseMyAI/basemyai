@@ -18,6 +18,9 @@
 #   (b) you didn't mean to change it — revert.
 WalRecord:2(b4570df1)
 SstFile:1(b83440b2)
+CryptoMeta:1(cee13d7b)
+WalEnvelope:1(4911cece)
+SstEnvelope:1(7b3db092)
 VectorNode:2(1ba6b40f)
 VectorIndexMeta:1(e0277ef0)
 GraphEntity:1(ef8b395c)

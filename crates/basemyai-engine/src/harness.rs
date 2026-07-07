@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Deterministic, checksummable key/value content shared by the
 //! crash-consistency harness (N2, `docs/TODO-NATIVE-ENGINE.md`): the
 //! `crash_writer` child binary (`src/bin/crash_writer.rs`) writes values
@@ -11,6 +12,13 @@
 
 /// Payload size in bytes for [`expected_value`].
 pub const VALUE_LEN: usize = 64;
+
+/// Fixed user key shared by the encrypted crash-consistency variant (N5.4,
+/// ADR-030): the writer opens the engine with it, the driver reopens and
+/// verifies with it. A constant, not a secret — the harness proves that
+/// kill-time atomicity/durability survive the AEAD envelopes, not key
+/// management.
+pub const CRYPTO_KEY: &[u8] = b"crash-harness-encryption-key";
 
 /// Number of keys per batch used by the batch-atomicity crash-consistency
 /// harness (`src/bin/crash_writer.rs` batch mode + `tests/crash_consistency.rs`).
@@ -215,6 +223,94 @@ pub fn graph_entity_label(id: u64) -> String {
     format!("node-{id}")
 }
 
+/// Agent scope used by the memory-triplet crash-consistency harness
+/// (`crash_writer` mode `memory`, N5.5) — a single constant, same rationale
+/// as [`GRAPH_AGENT`].
+pub const MEMORY_AGENT: &str = "crash-harness-memory";
+
+/// Vector dimension for the memory-triplet harness — deliberately the same
+/// as [`VECTOR_DIM`] so [`expected_vector`] can be reused directly instead
+/// of a second near-duplicate generator.
+pub const MEMORY_VECTOR_DIM: usize = VECTOR_DIM;
+
+/// The record id string of the `id`-th memory op — also its vec-id, since
+/// [`memory_op`]'s schedule assigns sequential vec-ids to puts in the same
+/// order it assigns `id`s (no forget ever consumes a vec-id, ADR-027 §4:
+/// the allocator only advances on put).
+#[must_use]
+pub fn memory_record_id(id: u64) -> String {
+    format!("m{id}")
+}
+
+/// Deterministic content for memory `id`, containing exactly one token
+/// unique to `id` (`term<id>tag`, alphanumeric — never split by the
+/// tokenizer's `!is_alphanumeric` boundary, ADR-028 §1) so a BM25 search for
+/// that exact term is a precise, independently-recomputable oracle.
+#[must_use]
+pub fn expected_memory_content(id: u64) -> String {
+    format!("memory harness payload term{id}tag")
+}
+
+/// The `match_expr` (already in the subset `fts_match_expr()` produces,
+/// ADR-028 §1) that finds exactly the document [`expected_memory_content`]
+/// produces for `id`, and no other.
+#[must_use]
+pub fn memory_match_expr(id: u64) -> String {
+    format!(r#""term{id}tag""#)
+}
+
+/// One step of the deterministic memory-triplet crash schedule (see
+/// [`memory_op`]): puts interleaved with forgets, exercising the composed
+/// record+vector+FTS atomic write ([`crate::idx::memory::PersistentMemoryIndex::put`])
+/// and its companion delete under a real kill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryOp {
+    /// Put [`memory_record_id`]`(id)` with [`expected_memory_content`]`(id)`
+    /// and `expected_vector(id)` (reusing the vector-churn generator, see
+    /// [`MEMORY_VECTOR_DIM`]).
+    Put { id: u64 },
+    /// Forget an earlier, already-put, never-yet-forgotten id.
+    Forget { id: u64 },
+}
+
+/// Every [`MEMORY_FORGET_PERIOD`]-th step is a forget.
+pub const MEMORY_FORGET_PERIOD: u64 = 5;
+
+/// Number of `Forget` ops among steps `0..step`. Same closed-form technique
+/// as [`churn_deletes_before`]: forget steps are exactly `x ≡ 4 (mod 5)`,
+/// the largest residue of the modulus, so the count of such `x < step` is
+/// `step / 5`.
+#[must_use]
+pub fn memory_forgets_before(step: u64) -> u64 {
+    step / MEMORY_FORGET_PERIOD
+}
+
+/// Number of `Put` ops among steps `0..step` — everything that isn't a
+/// forget. Also the vec-id the *next* put will receive (ADR-027 §4: the
+/// allocator only advances on put), and the count of ids the schedule has
+/// assigned so far.
+#[must_use]
+pub fn memory_puts_before(step: u64) -> u64 {
+    step - memory_forgets_before(step)
+}
+
+/// The deterministic memory-triplet op for `step`. The `k`-th forget
+/// (`step = 5k + 4`) targets id `2k`: always already put
+/// (`memory_puts_before(step) = 4k + 4 > 2k` for every `k ≥ 0`), never
+/// forgotten twice (targets `2k` are distinct across `k`), never re-put (put
+/// ids are the fresh sequential counter [`memory_puts_before`] itself).
+#[must_use]
+pub fn memory_op(step: u64) -> MemoryOp {
+    if step % MEMORY_FORGET_PERIOD == MEMORY_FORGET_PERIOD - 1 {
+        return MemoryOp::Forget {
+            id: 2 * memory_forgets_before(step),
+        };
+    }
+    MemoryOp::Put {
+        id: memory_puts_before(step),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +395,43 @@ mod tests {
     fn graph_entity_label_is_deterministic_and_distinct() {
         assert_eq!(graph_entity_label(9), graph_entity_label(9));
         assert_ne!(graph_entity_label(1), graph_entity_label(2));
+    }
+
+    /// Same discipline as `churn_schedule_closed_forms_match_sequential_replay`:
+    /// the closed-form counters must match a straight sequential replay.
+    #[test]
+    fn memory_schedule_closed_forms_match_sequential_replay() {
+        let mut puts = 0u64;
+        let mut forgets = 0u64;
+        let mut put_ids = std::collections::HashSet::new();
+        let mut forgotten_ids = std::collections::HashSet::new();
+        for step in 0..5_000u64 {
+            assert_eq!(memory_puts_before(step), puts, "puts drift at step {step}");
+            assert_eq!(memory_forgets_before(step), forgets, "forgets drift at step {step}");
+            match memory_op(step) {
+                MemoryOp::Put { id } => {
+                    assert_eq!(id, puts);
+                    assert!(put_ids.insert(id), "put id {id} reused at step {step}");
+                    puts += 1;
+                }
+                MemoryOp::Forget { id } => {
+                    assert!(put_ids.contains(&id), "step {step} forgets {id} before it was put");
+                    assert!(forgotten_ids.insert(id), "step {step} forgets {id} twice");
+                    forgets += 1;
+                }
+            }
+        }
+        assert!(forgets > 0, "schedule must exercise forgets");
+    }
+
+    #[test]
+    fn memory_record_id_and_content_are_deterministic_and_distinct() {
+        assert_eq!(memory_record_id(7), memory_record_id(7));
+        assert_ne!(memory_record_id(1), memory_record_id(2));
+        assert_eq!(expected_memory_content(7), expected_memory_content(7));
+        assert_ne!(expected_memory_content(1), expected_memory_content(2));
+        assert!(expected_memory_content(42).contains("term42tag"));
+        assert_eq!(memory_match_expr(42), r#""term42tag""#);
     }
 
     #[test]

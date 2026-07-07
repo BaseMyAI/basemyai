@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Seconde implémentation de [`MemoryStore`] : le moteur natif BaseMyAI
 //! (ADR-024/025/026, câblage acté par ADR-027). Enveloppe
 //! [`basemyai_engine::Engine`] + ses quatre index logiques (vecteur, graphe,
@@ -21,21 +22,37 @@
 //! `fts_match_expr()` produit réellement — pas de racinisation Porter (gap
 //! assumé, ADR-028 §2).
 //!
-//! Écarts assumés, actés par ADR-027 §6 : `put_memory_batch` est atomique
-//! **par item** (pas tout-ou-rien), `purge_agent` est idempotent/reprennable
-//! (pas globalement atomique). Les métriques non-cosinus retournent une
-//! **erreur franche** (N5.3) — jamais un faux résultat.
+//! `put_memory_batch` est **tout-ou-rien** depuis N5.5
+//! (`PersistentMemoryIndex::put_many`, résorbant l'écart initial d'ADR-027
+//! §6). Écart restant, assumé et documenté : `purge_agent` est
+//! idempotent/reprennable (pas globalement atomique — un crash au milieu se
+//! répare en relançant, ADR-027 §6). Les métriques non-cosinus retournent
+//! une **erreur franche** (N5.3) — jamais un faux résultat.
 //!
-//! ## Pont sync↔async (ADR-027 §5)
+//! ## Pont sync↔async et concurrence (ADR-027 §5, N5.5)
 //!
-//! Le moteur est sync mono-écrivain ; le trait est async. Chaque méthode
-//! s'exécute dans `tokio::task::spawn_blocking`, le verrou pris à
-//! l'intérieur de la closure bloquante — jamais tenu à travers un `.await`
-//! (lint `await_holding_lock`). Mono-écrivain sérialisé assumé jusqu'à la
-//! barre de concurrence N5.5.
+//! Le moteur (`basemyai_engine::Engine`) est sync **mono-écrivain** — ça ne
+//! change pas ici, `apply_batch`/`put`/`delete` exigent `&mut Engine`. Le
+//! trait est async ; chaque méthode s'exécute dans `tokio::task::
+//! spawn_blocking`, le verrou pris à l'intérieur de la closure bloquante —
+//! jamais tenu à travers un `.await` (lint `await_holding_lock`). Depuis
+//! N5.5, `inner` est un `RwLock` : les lectures pures (`vector_ranking_ids`,
+//! `keyword_ranking_ids`, `agent_stats`, `graph_traverse`,
+//! `recent_episodes`, `exact_fact_exists`) prennent un verrou de lecture et
+//! s'exécutent concurremment entre elles (mesuré : ~3× plus rapide que
+//! séquentiel sur 64 lectures mixtes, `tests/memory_tests.rs
+//! native_concurrent_reads_are_correct_and_faster_than_sequential`). Les
+//! chemins hybrides (`recall_vector`, `recall_graph_filtered`, `hydrate`)
+//! font deux passes — recherche sous verrou de lecture, `touch` de
+//! `last_access` sous un verrou d'écriture bref séparé — plutôt qu'une passe
+//! unique sous verrou exclusif qui bloquerait tout lecteur concurrent
+//! pendant toute la recherche. Les écritures restent sérialisées entre elles
+//! (verrou d'écriture exclusif) : lever *ça* exigerait de faire du moteur
+//! lui-même un multi-écrivain, hors périmètre N5.5 (voir
+//! `docs/adr/ADR-027-native-memory-store.md` §5).
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 use basemyai_core::Metric;
 use basemyai_engine::{
@@ -57,8 +74,25 @@ const OVERSAMPLE: usize = 8;
 const DEFAULT_IMPORTANCE: f64 = 1.0;
 
 /// Moteur de stockage natif — ADR-024/ADR-027, feature `engine-native`.
+///
+/// Concurrence (N5.5, barre hardening M6) : `inner` est un `RwLock`, pas un
+/// `Mutex` — les chemins de lecture pure (`vector_ranking_ids`,
+/// `keyword_ranking_ids`, `agent_stats`, `graph_traverse`,
+/// `recent_episodes`, `exact_fact_exists`) prennent un verrou de **lecture**
+/// et s'exécutent concurremment entre eux. Les chemins hybrides
+/// (`recall_vector`, `recall_graph_filtered`, `hydrate`) font deux passes
+/// séparées : la recherche sous verrou de lecture, puis le `touch`
+/// (`last_access`) sous un bref verrou d'écriture — jamais une passe unique
+/// sous verrou d'écriture qui bloquerait les lecteurs pendant toute la
+/// recherche. Les écritures (`put_memory*`, `invalidate`, `forget`,
+/// `purge_agent`, `graph_upsert_*`, `rotate_key`) restent sous verrou
+/// d'écriture exclusif — `Engine` lui-même reste mono-écrivain (ADR-025) ;
+/// ce `RwLock` ne change rien à ça, il ne fait qu'arrêter de sérialiser les
+/// lecteurs entre eux. Voir `docs/adr/ADR-027-native-memory-store.md` §5
+/// pour le contexte : ce `RwLock` remplace le `Mutex` que ce paragraphe
+/// décrivait comme la barre à lever en N5.5.
 pub struct NativeMemoryStore {
-    inner: Arc<Mutex<NativeInner>>,
+    inner: Arc<RwLock<NativeInner>>,
     /// Garde de vie du répertoire temporaire d'[`Self::open_ephemeral`] —
     /// supprimé au drop du store, comme un `open_in_memory` libSQL.
     #[cfg(feature = "test-util")]
@@ -90,12 +124,28 @@ impl NativeMemoryStore {
     /// (I/O, corruption non réparable, dimension incompatible avec un index
     /// existant).
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let mut engine = Engine::open(path).map_err(storage)?;
+        Self::from_engine(Engine::open(path).map_err(storage)?)
+    }
+
+    /// Ouvre (en le créant au besoin) un store natif **chiffré au repos**
+    /// (ADR-030) : WAL et SST scellés sous la DEK du store, `key` vérifiée
+    /// contre `crypto.meta` à l'ouverture — une mauvaise clé échoue ici,
+    /// typée, jamais en corruption inexplicable plus loin.
+    ///
+    /// # Errors
+    /// Erreur de stockage si la clé est fausse, si `path` contient déjà un
+    /// store en clair (pas de chiffrement a posteriori, ADR-030 §2), ou sur
+    /// toute erreur I/O/corruption d'ouverture.
+    pub fn open_encrypted(path: impl AsRef<Path>, key: &str) -> Result<Self> {
+        Self::from_engine(Engine::open_encrypted(path, key.as_bytes()).map_err(storage)?)
+    }
+
+    fn from_engine(mut engine: Engine) -> Result<Self> {
         let params = basemyai_engine::VectorIndexParams::with_dim(crate::EMBEDDING_DIM);
         let vectors = PersistentVectorIndex::open(&mut engine, params).map_err(storage)?;
         let memory = PersistentMemoryIndex::open(&engine).map_err(storage)?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(NativeInner {
+            inner: Arc::new(RwLock::new(NativeInner {
                 engine,
                 vectors,
                 memory,
@@ -105,6 +155,23 @@ impl NativeMemoryStore {
             #[cfg(feature = "test-util")]
             _tempdir: None,
         })
+    }
+
+    /// Fait tourner la clé de chiffrement **en place** (ADR-030 §4) : la DEK
+    /// du store est ré-enveloppée sous une KEK dérivée de `new_key`,
+    /// `crypto.meta` remplacé atomiquement. O(1), et contrairement à
+    /// [`Memory::rotate_key`](crate::Memory::rotate_key) côté libSQL,
+    /// **cette instance reste pleinement utilisable après l'appel** — pas de
+    /// réouverture requise.
+    ///
+    /// # Errors
+    /// Erreur de stockage si le store n'a pas été ouvert chiffré (rien à
+    /// rotater — parité de posture avec `CoreError::Encryption`, ADR-007) ou
+    /// si le remplacement atomique échoue.
+    pub async fn rotate_key(&self, new_key: &str) -> Result<()> {
+        let new_key = new_key.to_string();
+        self.with_inner(move |inner| inner.engine.rotate_key(new_key.as_bytes()).map_err(storage))
+            .await
     }
 
     /// Store natif jetable dans un répertoire temporaire, supprimé au drop —
@@ -122,8 +189,27 @@ impl NativeMemoryStore {
         Ok(store)
     }
 
-    /// Exécute `f` sur l'état natif dans le pool bloquant de tokio, verrou
-    /// pris à l'intérieur de la closure (jamais à travers un `.await`).
+    /// Variante chiffrée d'[`Self::open_ephemeral`] — même répertoire
+    /// temporaire jetable, ouvert via [`Self::open_encrypted`]. Réservé aux
+    /// tests (le diff multi-backend rejoue la suite complète des scénarios
+    /// contre un store natif chiffré, N5.4).
+    ///
+    /// # Errors
+    /// Erreur de stockage si le répertoire temporaire ou le store ne se
+    /// crée pas.
+    #[cfg(feature = "test-util")]
+    pub fn open_ephemeral_encrypted(key: &str) -> Result<Self> {
+        let dir = tempfile::tempdir().map_err(storage)?;
+        let mut store = Self::open_encrypted(dir.path(), key)?;
+        store._tempdir = Some(dir);
+        Ok(store)
+    }
+
+    /// Exécute `f` sur l'état natif dans le pool bloquant de tokio sous
+    /// verrou d'**écriture** (exclusif), pris à l'intérieur de la closure
+    /// (jamais à travers un `.await`) — les mutations (`put_memory*`,
+    /// `invalidate`, `forget`, `purge_agent`, `graph_upsert_*`,
+    /// `rotate_key`, et le `touch` des chemins hybrides) passent par ici.
     async fn with_inner<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
@@ -131,8 +217,30 @@ impl NativeMemoryStore {
     {
         let inner = Arc::clone(&self.inner);
         tokio::task::spawn_blocking(move || {
-            let mut guard = inner.lock().map_err(|_| storage("verrou du store natif empoisonné"))?;
+            let mut guard = inner
+                .write()
+                .map_err(|_| storage("verrou d'écriture du store natif empoisonné"))?;
             f(&mut guard)
+        })
+        .await
+        .map_err(|e| storage(format!("tâche bloquante du store natif interrompue : {e}")))?
+    }
+
+    /// [`Self::with_inner`], sous verrou de **lecture** partagé (N5.5) : `f`
+    /// n'a droit qu'à `&NativeInner` — plusieurs lectures peuvent s'exécuter
+    /// concurremment tant qu'aucune écriture n'est en cours. Réservé aux
+    /// chemins qui ne mutent rien (ni les index, ni `last_access`).
+    async fn with_inner_read<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&NativeInner) -> Result<T> + Send + 'static,
+    {
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            let guard = inner
+                .read()
+                .map_err(|_| storage("verrou de lecture du store natif empoisonné"))?;
+            f(&guard)
         })
         .await
         .map_err(|e| storage(format!("tâche bloquante du store natif interrompue : {e}")))?
@@ -151,7 +259,7 @@ impl NativeInner {
     /// plus proches souvenirs **de cet agent, valides à `now`**, couche
     /// optionnelle — la brique commune de tous les chemins vectoriels.
     fn search_filtered(
-        &mut self,
+        &self,
         agent: &AgentId,
         query: &[f32],
         k: usize,
@@ -206,6 +314,15 @@ impl NativeInner {
     }
 
     fn put_one(&mut self, agent: &AgentId, item: &NewMemory<'_>) -> Result<()> {
+        self.put_many(agent, std::slice::from_ref(item))
+    }
+
+    /// Insère plusieurs souvenirs de `agent` en **un seul** batch atomique
+    /// (N5.5, `PersistentMemoryIndex::put_many`) : plus l'écart « atomique
+    /// par item » d'ADR-027 §6 — un `put_memory_batch` natif est désormais
+    /// UN enregistrement WAL, tout-ou-rien, comme la transaction libSQL qu'il
+    /// remplace.
+    fn put_many(&mut self, agent: &AgentId, items: &[NewMemory<'_>]) -> Result<()> {
         let Self {
             engine,
             vectors,
@@ -213,24 +330,26 @@ impl NativeInner {
             fts,
             ..
         } = self;
+        let entries: Vec<(&str, NewMemoryRecord<'_>, Vec<f32>)> = items
+            .iter()
+            .map(|item| {
+                (
+                    item.id.as_str(),
+                    NewMemoryRecord {
+                        layer: item.layer.table(),
+                        content: item.text,
+                        source: item.source,
+                        valid_from: item.validity.valid_from,
+                        valid_until: item.validity.valid_until,
+                        importance: DEFAULT_IMPORTANCE,
+                        last_access: item.validity.valid_from,
+                    },
+                    item.vector.to_vec(),
+                )
+            })
+            .collect();
         memory
-            .put(
-                engine,
-                vectors,
-                fts,
-                agent.as_str(),
-                &item.id,
-                &NewMemoryRecord {
-                    layer: item.layer.table(),
-                    content: item.text,
-                    source: item.source,
-                    valid_from: item.validity.valid_from,
-                    valid_until: item.validity.valid_until,
-                    importance: DEFAULT_IMPORTANCE,
-                    last_access: item.validity.valid_from,
-                },
-                item.vector.to_vec(),
-            )
+            .put_many(engine, vectors, fts, agent.as_str(), &entries)
             .map_err(storage)?;
         Ok(())
     }
@@ -265,14 +384,13 @@ impl MemoryStore for NativeMemoryStore {
         if items.is_empty() {
             return Ok(());
         }
-        // Écart assumé (ADR-027 §6) : atomique par item, pas tout-ou-rien.
+        // Tout-ou-rien (N5.5) : un seul batch atomique côté moteur — voir
+        // `NativeInner::put_many`.
         let agent = agent.clone();
         let owned_items: Vec<OwnedNewMemory> = items.iter().map(owned).collect();
         self.with_inner(move |inner| {
-            for item in &owned_items {
-                inner.put_one(&agent, &item.borrowed())?;
-            }
-            Ok(())
+            let borrowed: Vec<NewMemory<'_>> = owned_items.iter().map(OwnedNewMemory::borrowed).collect();
+            inner.put_many(&agent, &borrowed)
         })
         .await
     }
@@ -295,68 +413,75 @@ impl MemoryStore for NativeMemoryStore {
             )));
         }
         let (agent, query) = (agent.clone(), query.to_vec());
-        self.with_inner(move |inner| {
-            let found = inner.search_filtered(&agent, &query, k, layer, now)?;
-            let ids: Vec<String> = found.iter().map(|(id, _, _)| id.clone()).collect();
-            inner.touch(&agent, &ids, now)?;
-            found
-                .into_iter()
-                .map(|(id, record, distance)| {
-                    Ok(Record {
-                        id,
-                        text: record.content,
-                        layer: MemoryLayer::from_table(&record.layer)?,
-                        score: distance,
-                    })
+        // Deux passes (N5.5) : la recherche sous verrou de lecture (partagé
+        // avec tout autre lecteur concurrent), le `touch` de `last_access`
+        // seul sous verrou d'écriture bref — jamais toute la recherche sous
+        // verrou exclusif.
+        let (agent2, query2) = (agent.clone(), query.clone());
+        let found = self
+            .with_inner_read(move |inner| inner.search_filtered(&agent2, &query2, k, layer, now))
+            .await?;
+        let ids: Vec<String> = found.iter().map(|(id, _, _)| id.clone()).collect();
+        self.with_inner(move |inner| inner.touch(&agent, &ids, now)).await?;
+        found
+            .into_iter()
+            .map(|(id, record, distance)| {
+                Ok(Record {
+                    id,
+                    text: record.content,
+                    layer: MemoryLayer::from_table(&record.layer)?,
+                    score: distance,
                 })
-                .collect()
-        })
-        .await
+            })
+            .collect()
     }
 
     async fn recall_graph_filtered(&self, agent: &AgentId, query: &[f32], k: usize, now: i64) -> Result<Vec<Record>> {
         let (agent, query) = (agent.clone(), query.to_vec());
-        self.with_inner(move |inner| {
-            // Les labels des entités valides de l'agent (comme l'EXISTS
-            // original, seule `valid_until` gate la visibilité d'une entité).
-            let labels: Vec<String> = {
-                let NativeInner { engine, graph, .. } = &mut *inner;
-                graph
-                    .entities(engine, agent.as_str())
+        // Même découpage lecture/écriture que `recall_vector` (N5.5).
+        let (agent2, query2) = (agent.clone(), query.clone());
+        let found = self
+            .with_inner_read(move |inner| {
+                // Les labels des entités valides de l'agent (comme l'EXISTS
+                // original, seule `valid_until` gate la visibilité d'une entité).
+                let labels: Vec<String> = inner
+                    .graph
+                    .entities(&inner.engine, agent2.as_str())
                     .map_err(storage)?
                     .into_iter()
                     .filter(|(_, e)| e.valid_until.is_none_or(|until| until > now))
                     .map(|(_, e)| e.label)
-                    .collect()
-            };
-            // Oversample large puis filtre « le contenu mentionne un label »
-            // (l'`instr(content, entity.label) > 0` original).
-            let candidates = inner.search_filtered(&agent, &query, k.saturating_mul(OVERSAMPLE), None, now)?;
-            let found: Vec<(String, basemyai_engine::MemoryRecord, f32)> = candidates
-                .into_iter()
-                .filter(|(_, record, _)| labels.iter().any(|label| record.content.contains(label.as_str())))
-                .take(k)
-                .collect();
-            let ids: Vec<String> = found.iter().map(|(id, _, _)| id.clone()).collect();
-            inner.touch(&agent, &ids, now)?;
-            found
-                .into_iter()
-                .map(|(id, record, distance)| {
-                    Ok(Record {
-                        id,
-                        text: record.content,
-                        layer: MemoryLayer::from_table(&record.layer)?,
-                        score: distance,
-                    })
+                    .collect();
+                // Oversample large puis filtre « le contenu mentionne un
+                // label » (l'`instr(content, entity.label) > 0` original).
+                let candidates = inner.search_filtered(&agent2, &query2, k.saturating_mul(OVERSAMPLE), None, now)?;
+                Ok(candidates
+                    .into_iter()
+                    .filter(|(_, record, _)| labels.iter().any(|label| record.content.contains(label.as_str())))
+                    .take(k)
+                    .collect::<Vec<(String, basemyai_engine::MemoryRecord, f32)>>())
+            })
+            .await?;
+        let ids: Vec<String> = found.iter().map(|(id, _, _)| id.clone()).collect();
+        self.with_inner(move |inner| inner.touch(&agent, &ids, now)).await?;
+        found
+            .into_iter()
+            .map(|(id, record, distance)| {
+                Ok(Record {
+                    id,
+                    text: record.content,
+                    layer: MemoryLayer::from_table(&record.layer)?,
+                    score: distance,
                 })
-                .collect()
-        })
-        .await
+            })
+            .collect()
     }
 
     async fn vector_ranking_ids(&self, agent: &AgentId, query: &[f32], k: usize, now: i64) -> Result<Vec<String>> {
         let (agent, query) = (agent.clone(), query.to_vec());
-        self.with_inner(move |inner| {
+        // Lecture pure — aucun `touch` (parité avec l'original, ADR-027
+        // §6) — verrou de lecture partagé (N5.5).
+        self.with_inner_read(move |inner| {
             Ok(inner
                 .search_filtered(&agent, &query, k, None, now)?
                 .into_iter()
@@ -368,10 +493,11 @@ impl MemoryStore for NativeMemoryStore {
 
     async fn keyword_ranking_ids(&self, agent: &AgentId, match_expr: &str, k: usize, now: i64) -> Result<Vec<String>> {
         let (agent, match_expr) = (agent.clone(), match_expr.to_string());
-        self.with_inner(move |inner| {
+        // Lecture pure — verrou de lecture partagé (N5.5).
+        self.with_inner_read(move |inner| {
             let NativeInner {
                 engine, memory, fts, ..
-            } = &mut *inner;
+            } = inner;
             // Le moteur (`search_bm25`) est agnostique de la validité
             // temporelle (mécanisme au moteur, sens au consommateur) ; on
             // sur-échantillonne donc comme le chemin vectoriel (ADR-012) pour
@@ -410,14 +536,15 @@ impl MemoryStore for NativeMemoryStore {
 
     async fn hydrate(&self, agent: &AgentId, ids: &[String], now: i64) -> Result<Vec<HydratedRecord>> {
         let (agent, ids) = (agent.clone(), ids.to_vec());
-        self.with_inner(move |inner| {
-            let mut out = Vec::with_capacity(ids.len());
-            {
-                let NativeInner { engine, memory, .. } = &mut *inner;
-                for id in &ids {
+        // Même découpage lecture/écriture que `recall_vector` (N5.5).
+        let (agent2, ids2) = (agent.clone(), ids.clone());
+        let out = self
+            .with_inner_read(move |inner| {
+                let mut out = Vec::with_capacity(ids2.len());
+                for id in &ids2 {
                     // Parité : pas de filtre de validité ici (l'original n'en
                     // a pas) ; un id absent ou d'un autre agent est omis.
-                    if let Some(record) = memory.get(engine, agent.as_str(), id).map_err(storage)? {
+                    if let Some(record) = inner.memory.get(&inner.engine, agent2.as_str(), id).map_err(storage)? {
                         out.push(HydratedRecord {
                             id: id.clone(),
                             text: record.content,
@@ -425,12 +552,12 @@ impl MemoryStore for NativeMemoryStore {
                         });
                     }
                 }
-            }
-            let touched: Vec<String> = out.iter().map(|r| r.id.clone()).collect();
-            inner.touch(&agent, &touched, now)?;
-            Ok(out)
-        })
-        .await
+                Ok(out)
+            })
+            .await?;
+        let touched: Vec<String> = out.iter().map(|r| r.id.clone()).collect();
+        self.with_inner(move |inner| inner.touch(&agent, &touched, now)).await?;
+        Ok(out)
     }
 
     async fn invalidate(&self, agent: &AgentId, id: &str, now: i64) -> Result<()> {
@@ -487,8 +614,9 @@ impl MemoryStore for NativeMemoryStore {
 
     async fn agent_stats(&self, agent: &AgentId, now: i64) -> Result<AgentStats> {
         let agent = agent.clone();
-        self.with_inner(move |inner| {
-            let NativeInner { engine, memory, .. } = &mut *inner;
+        // Lecture pure — verrou de lecture partagé (N5.5).
+        self.with_inner_read(move |inner| {
+            let NativeInner { engine, memory, .. } = inner;
             let mut stats = AgentStats::default();
             for (_, record) in memory.scan_agent(engine, agent.as_str()).map_err(storage)? {
                 if !record_valid_at(&record, now) {
@@ -569,8 +697,9 @@ impl MemoryStore for NativeMemoryStore {
 
     async fn graph_traverse(&self, agent: &AgentId, start: &str, max_depth: u32, now: i64) -> Result<Vec<Reached>> {
         let (agent, start) = (agent.clone(), start.to_string());
-        self.with_inner(move |inner| {
-            let NativeInner { engine, graph, .. } = &mut *inner;
+        // Lecture pure — verrou de lecture partagé (N5.5).
+        self.with_inner_read(move |inner| {
+            let NativeInner { engine, graph, .. } = inner;
             Ok(graph
                 .traverse(engine, agent.as_str(), &start, max_depth, now)
                 .map_err(storage)?
@@ -588,8 +717,9 @@ impl MemoryStore for NativeMemoryStore {
 
     async fn recent_episodes(&self, agent: &AgentId, limit: usize, now: i64) -> Result<Vec<String>> {
         let agent = agent.clone();
-        self.with_inner(move |inner| {
-            let NativeInner { engine, memory, .. } = &mut *inner;
+        // Lecture pure — verrou de lecture partagé (N5.5).
+        self.with_inner_read(move |inner| {
+            let NativeInner { engine, memory, .. } = inner;
             let mut episodes: Vec<basemyai_engine::MemoryRecord> = memory
                 .scan_agent(engine, agent.as_str())
                 .map_err(storage)?
@@ -608,8 +738,9 @@ impl MemoryStore for NativeMemoryStore {
 
     async fn exact_fact_exists(&self, agent: &AgentId, content: &str) -> Result<bool> {
         let (agent, content) = (agent.clone(), content.to_string());
-        self.with_inner(move |inner| {
-            let NativeInner { engine, memory, .. } = &mut *inner;
+        // Lecture pure — verrou de lecture partagé (N5.5).
+        self.with_inner_read(move |inner| {
+            let NativeInner { engine, memory, .. } = inner;
             // Parité : pas de filtre de validité (l'original n'en a pas).
             Ok(memory
                 .scan_agent(engine, agent.as_str())

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! The public single-writer KV engine: WAL + memtable + SST, with crash
 //! recovery on `open`. See the `store` module docs for the write-path
 //! ordering guarantee.
@@ -6,6 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::crypto::{self, CryptoContext};
 use crate::error::{EngineError, Result};
 use crate::format::wal::{BatchOp, WalOp};
 use crate::key::Key;
@@ -99,6 +101,10 @@ pub struct Engine {
     ssts: Vec<SstFile>,
     next_sst_id: u64,
     options: EngineOptions,
+    /// `Some` = encrypted at rest (ADR-030): WAL records and SST files are
+    /// sealed under the store's DEK; `crypto.meta` holds the DEK wrapped by
+    /// the user key.
+    crypto: Option<CryptoContext>,
 }
 
 impl Engine {
@@ -106,20 +112,69 @@ impl Engine {
     /// [`EngineOptions`]: loads existing SSTs, then replays the WAL
     /// (tolerating a torn trailing record) to rebuild whatever memtable
     /// state hadn't been flushed yet.
+    ///
+    /// # Errors
+    /// Besides I/O and corruption: [`EngineError::MissingEncryptionKey`] if
+    /// the store at `path` is encrypted (`crypto.meta` present) — use
+    /// [`Engine::open_encrypted`] for it.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_options(path, EngineOptions::default())
     }
 
     /// Same as [`Engine::open`] with explicit tunables.
     pub fn open_with_options(path: impl AsRef<Path>, options: EngineOptions) -> Result<Self> {
-        let dir = path.as_ref().to_path_buf();
+        Self::open_inner(path.as_ref(), options, None)
+    }
+
+    /// Opens (creating if absent) an **encrypted** store at `path`
+    /// (ADR-030). On first open of a fresh directory, generates the store's
+    /// DEK and writes `crypto.meta`; on reopen, unwrapping the DEK verifies
+    /// `key` — a wrong key fails here, fast and typed, never as
+    /// inexplicable corruption further in.
+    ///
+    /// # Errors
+    /// [`EngineError::WrongEncryptionKey`] if `key` doesn't unwrap the
+    /// store's DEK; [`EngineError::PlaintextStoreKeySupplied`] if `path`
+    /// already holds a plaintext store (encrypting a posteriori is
+    /// deliberately unsupported, ADR-030 §2); plus the usual I/O/corruption
+    /// errors.
+    pub fn open_encrypted(path: impl AsRef<Path>, key: &[u8]) -> Result<Self> {
+        Self::open_encrypted_with_options(path, key, EngineOptions::default())
+    }
+
+    /// Same as [`Engine::open_encrypted`] with explicit tunables.
+    pub fn open_encrypted_with_options(path: impl AsRef<Path>, key: &[u8], options: EngineOptions) -> Result<Self> {
+        Self::open_inner(path.as_ref(), options, Some(key))
+    }
+
+    fn open_inner(path: &Path, options: EngineOptions, key: Option<&[u8]>) -> Result<Self> {
+        let dir = path.to_path_buf();
         fs::create_dir_all(&dir).map_err(|e| EngineError::io(dir.clone(), e))?;
 
-        let ssts = sst::scan_existing(&dir)?;
+        // `crypto.meta`'s presence is the single source of truth for the
+        // store's mode (ADR-030 §2) — never guessed from file contents.
+        let meta_exists = crypto::crypto_meta_path(&dir).exists();
+        let crypto = match (meta_exists, key) {
+            (true, Some(key)) => Some(crypto::load_meta(&dir, key)?),
+            (true, None) => return Err(EngineError::MissingEncryptionKey { path: dir }),
+            (false, Some(key)) => {
+                // Refuse to mix modes: a directory that already holds
+                // plaintext artifacts cannot be encrypted a posteriori.
+                let has_wal = dir.join("wal.log").exists();
+                let has_sst = sst_files_present(&dir)?;
+                if has_wal || has_sst {
+                    return Err(EngineError::PlaintextStoreKeySupplied { path: dir });
+                }
+                Some(crypto::create_meta(&dir, key)?)
+            }
+            (false, None) => None,
+        };
+
+        let ssts = sst::scan_existing(&dir, crypto.as_ref())?;
         let next_sst_id = ssts.iter().map(|s| s.id + 1).max().unwrap_or(0);
 
         let wal_path = dir.join("wal.log");
-        let wal = Wal::open_for_append(wal_path)?;
+        let wal = Wal::open_for_append(wal_path, crypto.clone())?;
         let mut memtable = Memtable::new();
         for record in wal.replay()? {
             match record.op {
@@ -144,7 +199,39 @@ impl Engine {
             ssts,
             next_sst_id,
             options,
+            crypto,
         })
+    }
+
+    /// `true` if this instance is encrypted at rest (ADR-030).
+    #[must_use]
+    pub fn is_encrypted(&self) -> bool {
+        self.crypto.is_some()
+    }
+
+    /// Rotates the user key **in place** (ADR-030 §4): the store's DEK is
+    /// re-wrapped under a KEK derived from `new_key` (fresh salt) and
+    /// `crypto.meta` is atomically replaced (tmp + fsync + rename). O(1) —
+    /// no data file is rewritten — and crash-safe by construction: after a
+    /// crash, `crypto.meta` is either the old wrap (old key opens) or the
+    /// new one (new key opens), never a mixed state.
+    ///
+    /// Unlike libSQL's `Store::rotate_key`, **this instance stays fully
+    /// usable after the call** (the DEK itself never changes). The assumed,
+    /// documented deviation: an attacker holding the old key *and* a copy
+    /// of the old `crypto.meta` can still unwrap the DEK — see ADR-030 §4
+    /// for the threat-model discussion and the deferred full-re-encryption
+    /// follow-up.
+    ///
+    /// # Errors
+    /// [`EngineError::NotEncrypted`] if this store was opened without
+    /// encryption (nothing to rotate — parity with ADR-007's posture);
+    /// otherwise I/O errors from the atomic replace.
+    pub fn rotate_key(&mut self, new_key: &[u8]) -> Result<()> {
+        let Some(crypto) = &self.crypto else {
+            return Err(EngineError::NotEncrypted { path: self.dir.clone() });
+        };
+        crypto::write_meta(&self.dir, new_key, crypto)
     }
 
     /// Inserts or overwrites `key`. Durable once this returns `Ok` — the WAL
@@ -256,7 +343,7 @@ impl Engine {
         let entries: Vec<(Key, Option<Value>)> = self.memtable.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
         let id = self.next_sst_id;
-        let new_sst = SstFile::write_new(&self.dir, id, entries)?;
+        let new_sst = SstFile::write_new(&self.dir, id, entries, self.crypto.as_ref())?;
         // The new SST is fsynced and durably renamed at this point — only
         // now is it safe to truncate the WAL (ADR-025 ordering rule).
         self.wal.reset()?;
@@ -286,7 +373,7 @@ impl Engine {
         let entries: Vec<(Key, Option<Value>)> = merged.into_iter().filter(|(_, v)| v.is_some()).collect();
 
         let id = self.next_sst_id;
-        let new_sst = SstFile::write_new(&self.dir, id, entries)?;
+        let new_sst = SstFile::write_new(&self.dir, id, entries, self.crypto.as_ref())?;
         self.next_sst_id += 1;
 
         let old_ssts = std::mem::replace(&mut self.ssts, vec![new_sst]);
@@ -314,5 +401,171 @@ impl Engine {
             self.flush()?;
         }
         Ok(())
+    }
+}
+
+/// `true` if `dir` contains at least one `*.sst` file — the "existing
+/// plaintext store" half of the mode check in `Engine::open_inner` (the
+/// other half is `wal.log`'s existence).
+fn sst_files_present(dir: &Path) -> Result<bool> {
+    if !dir.exists() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(dir).map_err(|e| EngineError::io(dir.to_path_buf(), e))? {
+        let entry = entry.map_err(|e| EngineError::io(dir.to_path_buf(), e))?;
+        if entry.path().extension().and_then(|e| e.to_str()) == Some("sst") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: &[u8] = b"test user key";
+
+    /// Options that force flush + compaction quickly, so the encrypted
+    /// roundtrip exercises SST envelopes and compaction, not just the WAL.
+    fn small_options() -> EngineOptions {
+        EngineOptions {
+            memtable_flush_threshold: 4,
+            compaction_sst_threshold: 2,
+        }
+    }
+
+    #[test]
+    fn encrypted_roundtrip_survives_flush_compaction_and_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted_with_options(dir.path(), KEY, small_options()).expect("open");
+            assert!(engine.is_encrypted());
+            for i in 0..20u32 {
+                engine
+                    .put(format!("key-{i:03}").as_bytes(), format!("value-{i}").as_bytes())
+                    .expect("put");
+            }
+            engine.delete(b"key-003").expect("delete");
+            // Unflushed tail stays in the WAL on purpose: reopen must
+            // replay encrypted WAL records, not just load SSTs.
+            engine.put(b"tail", b"unflushed").expect("put tail");
+        }
+        let engine = Engine::open_encrypted_with_options(dir.path(), KEY, small_options()).expect("reopen");
+        assert_eq!(engine.get(b"key-000").expect("get").as_deref(), Some(&b"value-0"[..]));
+        assert_eq!(engine.get(b"key-019").expect("get").as_deref(), Some(&b"value-19"[..]));
+        assert_eq!(engine.get(b"key-003").expect("get"), None);
+        assert_eq!(engine.get(b"tail").expect("get").as_deref(), Some(&b"unflushed"[..]));
+    }
+
+    #[test]
+    fn encrypted_batch_is_atomic_across_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(dir.path(), KEY).expect("open");
+            let mut batch = Batch::new();
+            batch.put(b"a", b"1");
+            batch.put(b"b", b"2");
+            batch.delete(b"a");
+            engine.apply_batch(&batch).expect("apply");
+        }
+        let engine = Engine::open_encrypted(dir.path(), KEY).expect("reopen");
+        assert_eq!(engine.get(b"a").expect("get"), None);
+        assert_eq!(engine.get(b"b").expect("get").as_deref(), Some(&b"2"[..]));
+    }
+
+    #[test]
+    fn wrong_key_fails_fast_and_typed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(dir.path(), KEY).expect("open");
+            engine.put(b"a", b"1").expect("put");
+        }
+        let Err(err) = Engine::open_encrypted(dir.path(), b"not the key") else {
+            panic!("wrong key must fail")
+        };
+        assert!(matches!(err, EngineError::WrongEncryptionKey { .. }));
+    }
+
+    #[test]
+    fn encrypted_store_without_key_is_missing_key_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            Engine::open_encrypted(dir.path(), KEY).expect("open");
+        }
+        let Err(err) = Engine::open(dir.path()) else {
+            panic!("plaintext open of an encrypted store must fail")
+        };
+        assert!(matches!(err, EngineError::MissingEncryptionKey { .. }));
+    }
+
+    #[test]
+    fn key_on_existing_plaintext_store_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open(dir.path()).expect("open plaintext");
+            engine.put(b"a", b"1").expect("put");
+        }
+        let Err(err) = Engine::open_encrypted(dir.path(), KEY) else {
+            panic!("a posteriori encryption is refused")
+        };
+        assert!(matches!(err, EngineError::PlaintextStoreKeySupplied { .. }));
+    }
+
+    #[test]
+    fn rotate_key_switches_keys_without_reopen_and_preserves_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted_with_options(dir.path(), KEY, small_options()).expect("open");
+            for i in 0..10u32 {
+                engine
+                    .put(format!("k{i}").as_bytes(), format!("v{i}").as_bytes())
+                    .expect("put");
+            }
+            engine.rotate_key(b"the new key").expect("rotate");
+            // The instance stays fully usable after rotation (ADR-030 §4) —
+            // unlike libSQL, no drop-and-reopen dance.
+            engine
+                .put(b"post-rotation", b"still writable")
+                .expect("put after rotate");
+            assert_eq!(engine.get(b"k5").expect("get").as_deref(), Some(&b"v5"[..]));
+        }
+
+        let Err(err) = Engine::open_encrypted(dir.path(), KEY) else {
+            panic!("old key must no longer open")
+        };
+        assert!(matches!(err, EngineError::WrongEncryptionKey { .. }));
+
+        let engine = Engine::open_encrypted_with_options(dir.path(), b"the new key", small_options()).expect("reopen");
+        assert_eq!(engine.get(b"k0").expect("get").as_deref(), Some(&b"v0"[..]));
+        assert_eq!(engine.get(b"k9").expect("get").as_deref(), Some(&b"v9"[..]));
+        assert_eq!(
+            engine.get(b"post-rotation").expect("get").as_deref(),
+            Some(&b"still writable"[..])
+        );
+    }
+
+    #[test]
+    fn rotate_key_on_plaintext_store_is_not_encrypted_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut engine = Engine::open(dir.path()).expect("open plaintext");
+        assert!(!engine.is_encrypted());
+        let err = engine.rotate_key(b"whatever").expect_err("nothing to rotate");
+        assert!(matches!(err, EngineError::NotEncrypted { .. }));
+    }
+
+    #[test]
+    fn rotation_orphan_tmp_is_ignored_on_reopen() {
+        // A crash between tmp-write and rename during rotation leaves a
+        // `crypto.meta.tmp` orphan; the store must reopen on the committed
+        // wrap as if the rotation never started.
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(dir.path(), KEY).expect("open");
+            engine.put(b"a", b"1").expect("put");
+        }
+        std::fs::write(dir.path().join("crypto.meta.tmp"), b"torn rotation garbage").expect("write orphan");
+        let engine = Engine::open_encrypted(dir.path(), KEY).expect("reopen ignores the orphan");
+        assert_eq!(engine.get(b"a").expect("get").as_deref(), Some(&b"1"[..]));
     }
 }

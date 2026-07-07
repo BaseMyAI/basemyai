@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Storage engine identity and capability contract.
 //!
 //! This is intentionally small: it describes what the current embedded backend
@@ -50,29 +51,31 @@ impl EngineCapabilities {
     }
 
     /// Capabilities of the current `basemyai-engine` (native) backend
-    /// instance.
+    /// instance. `encrypted` reflects the opened instance, same contract as
+    /// [`EngineCapabilities::libsql`].
     ///
-    /// Honest as of N5.2 (`docs/TODO-NATIVE-ENGINE.md`, ADR-027/ADR-028):
+    /// Honest as of N5.4 (`docs/TODO-NATIVE-ENGINE.md`, ADR-027/028/030):
     /// `basemyai-engine` is a WAL+memtable+SST KV engine with atomic
     /// multi-key batches (`Engine::apply_batch`, so `transactions: true`), a
     /// persistent LM-DiskANN vector index (N3, so `vectors: true`), a
     /// persistent graph index whose bounded BFS traversal is the behavioral
     /// port of the libSQL recursive CTE (N4, so `recursive_queries: true` —
-    /// the capability this flag actually gates) and a hand-rolled inverted
+    /// the capability this flag actually gates), a hand-rolled inverted
     /// index with BM25 scoring over the narrow `match_expr` subset
     /// `basemyai` actually produces (N5.2, so `full_text: true` — Porter
     /// stemming is a documented, assumed gap, ADR-028 §2, not a reason to
-    /// report this `false`). Still missing, deliberately `false`: at-rest
-    /// encryption (N5.4).
+    /// report this `false`) and at-rest encryption via AEAD envelopes over
+    /// WAL/SST with DEK/KEK key wrapping (N5.4, ADR-030 — per-instance,
+    /// hence the parameter).
     #[must_use]
-    pub const fn native() -> Self {
+    pub const fn native(encrypted: bool) -> Self {
         Self {
             kind: EngineKind::Native,
             vectors: true,
             full_text: true,
             recursive_queries: true,
             transactions: true,
-            encrypted: false,
+            encrypted,
         }
     }
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! KV-persisted full-text index (N5.2, ADR-028): postings, forward index and
 //! per-agent BM25 stats under the reserved `idx/fts/` keyspace
 //! ([`crate::key::fts_index`]). Isolation by agent is **structural**, same
@@ -56,11 +57,11 @@ impl PersistentFts {
     /// Reads the agent's current stats via `engine` to compute the updated
     /// aggregate; does not itself call `engine.apply_batch` (see module doc).
     /// This read-modify-write means two documents of the **same agent**
-    /// must not be staged into one shared `batch` before either is applied
-    /// — the second call would read stale (pre-first-insert) stats. Callers
-    /// (`PersistentMemoryIndex::put`) already apply one memory at a time,
-    /// so this is never a real sequencing hazard in production; it only
-    /// bites a test harness that batches multiple inserts by hand.
+    /// must not be staged into one shared `batch` through two *separate*
+    /// calls before either is applied — the second call would read stale
+    /// (pre-first-insert) stats. Staging several same-agent documents into
+    /// one batch is [`Self::stage_insert_many`]'s job (it accumulates the
+    /// aggregate across documents and stages the stats record once).
     pub fn stage_insert(
         &self,
         engine: &Engine,
@@ -69,23 +70,46 @@ impl PersistentFts {
         content: &str,
         batch: &mut Batch,
     ) -> Result<()> {
-        let doc = docterms::from_content(content);
-        if doc.terms.is_empty() {
-            return Ok(());
-        }
+        self.stage_insert_many(engine, agent, &[(vec_id, content)], batch)
+    }
 
-        for term in &doc.terms {
-            let key = fts_index::postings_key(agent, &term.term, vec_id)?;
-            batch.put(key.as_bytes(), &postings::encode(&FtsPosting { tf: term.tf })?);
-        }
-        let docterms_key = fts_index::docterms_key(agent, vec_id)?;
-        batch.put(docterms_key.as_bytes(), &docterms::encode(&doc)?);
-
+    /// Stages the postings + forward-index entries of **several** documents
+    /// of one `agent`, plus a **single** stats record carrying the whole
+    /// group's aggregate, into `batch` — the batched sibling of
+    /// [`Self::stage_insert`], and what makes an all-or-nothing
+    /// `put_memory_batch` possible (N5.5): the per-document
+    /// read-modify-write on the stats record would otherwise make later
+    /// stagings in the same (not yet applied) batch read stale stats and
+    /// silently lose the earlier documents' counts. Documents tokenizing to
+    /// zero terms stage nothing, like the single-document path.
+    pub fn stage_insert_many(
+        &self,
+        engine: &Engine,
+        agent: &str,
+        docs: &[(u64, &str)],
+        batch: &mut Batch,
+    ) -> Result<()> {
         let mut agent_stats = self.load_stats(engine, agent)?;
-        agent_stats.doc_count += 1;
-        agent_stats.total_terms += docterms::doc_length(&doc);
-        let meta_key = fts_index::meta_key(agent)?;
-        batch.put(meta_key.as_bytes(), &stats::encode(&agent_stats)?);
+        let mut staged_any = false;
+        for (vec_id, content) in docs {
+            let doc = docterms::from_content(content);
+            if doc.terms.is_empty() {
+                continue;
+            }
+            for term in &doc.terms {
+                let key = fts_index::postings_key(agent, &term.term, *vec_id)?;
+                batch.put(key.as_bytes(), &postings::encode(&FtsPosting { tf: term.tf })?);
+            }
+            let docterms_key = fts_index::docterms_key(agent, *vec_id)?;
+            batch.put(docterms_key.as_bytes(), &docterms::encode(&doc)?);
+            agent_stats.doc_count += 1;
+            agent_stats.total_terms += docterms::doc_length(&doc);
+            staged_any = true;
+        }
+        if staged_any {
+            let meta_key = fts_index::meta_key(agent)?;
+            batch.put(meta_key.as_bytes(), &stats::encode(&agent_stats)?);
+        }
         Ok(())
     }
 

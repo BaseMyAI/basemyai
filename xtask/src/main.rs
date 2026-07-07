@@ -153,6 +153,19 @@ const TEST: &[&[&str]] = &[
         "--test",
         "memory_tests",
     ],
+    // `--test native_memory_store_bench` : KNN via le chemin `MemoryStore`
+    // complet (N5.5) — la variante N=2000 seule tourne ici (rapide) ; la
+    // variante N=10000 reste `#[ignore]`, run manuel (même convention que
+    // `vector_recall`).
+    &[
+        "test",
+        "-p",
+        "basemyai",
+        "--features",
+        "test-util,engine-native",
+        "--test",
+        "native_memory_store_bench",
+    ],
     &[
         "test",
         "-p",

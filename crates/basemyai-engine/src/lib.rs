@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! `basemyai-engine` — home-grown LSM-tree storage foundation for BaseMyAI's
 //! native engine (Layer 1 per `docs/PLAN-NATIVE-ENGINE.md` §3.1, decided by
 //! `docs/adr/ADR-025-native-engine-storage-foundation.md`).
@@ -54,6 +55,8 @@ pub mod harness;
 pub mod idx;
 pub mod key;
 pub mod store;
+
+pub(crate) mod crypto;
 
 pub use error::{EngineError, Result};
 pub use idx::fts::{FtsStats, PersistentFts};

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! KV-persisted memory index (N5.1, ADR-027): memory records, their
 //! vector-id mappings and the monotonic id allocator, under the reserved
 //! `idx/memory/` keyspace ([`crate::key::memory_index`]). Isolation by agent
@@ -134,44 +135,82 @@ impl PersistentMemoryIndex {
         new: &NewMemoryRecord<'_>,
         vector: Vec<f32>,
     ) -> Result<u64> {
-        let record_key = memory_index::record_key(agent, id)?;
-        if engine.get(record_key.as_bytes())?.is_some() {
-            return Err(EngineError::DuplicateMemoryId {
-                agent: agent.to_string(),
-                id: id.to_string(),
-            });
+        // Single source of truth: a put is a one-item put_many (same
+        // duplicate check, same staging, same single WAL record).
+        let allocated = self.put_many(engine, vectors, fts, agent, &[(id, new.clone(), vector)])?;
+        Ok(allocated[0])
+    }
+
+    /// Inserts **several** memories of one `agent` in one single atomic
+    /// batch — the all-or-nothing `put_memory_batch` (N5.5), closing the
+    /// per-item-atomicity gap ADR-027 §6 documented: every record block,
+    /// reverse mapping, FTS staging ([`PersistentFts::stage_insert_many`],
+    /// one aggregated stats record), the single final allocator bump and
+    /// every vector node ride **one** WAL record via
+    /// [`PersistentVectorIndex::insert_many_with`]. After a crash the whole
+    /// group is visible or none of it is — the native equivalent of the
+    /// multi-row libSQL transaction, at last for N > 1 too.
+    ///
+    /// Any error — including [`EngineError::DuplicateMemoryId`] for an
+    /// existing `(agent, id)` **or a duplicate id within `items`** — is
+    /// returned before anything is written. Returns the allocated vector
+    /// ids, in item order. An empty `items` writes nothing.
+    pub fn put_many(
+        &mut self,
+        engine: &mut Engine,
+        vectors: &mut PersistentVectorIndex,
+        fts: &PersistentFts,
+        agent: &str,
+        items: &[(&str, NewMemoryRecord<'_>, Vec<f32>)],
+    ) -> Result<Vec<u64>> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        for (i, (id, _, _)) in items.iter().enumerate() {
+            let record_key = memory_index::record_key(agent, id)?;
+            if engine.get(record_key.as_bytes())?.is_some() || items[..i].iter().any(|(prior, _, _)| prior == id) {
+                return Err(EngineError::DuplicateMemoryId {
+                    agent: agent.to_string(),
+                    id: (*id).to_string(),
+                });
+            }
         }
 
-        let vec_id = self.next_vec_id;
-        let stored = MemoryRecord {
-            layer: new.layer.to_string(),
-            content: new.content.to_string(),
-            source: new.source.to_string(),
-            valid_from: new.valid_from,
-            valid_until: new.valid_until,
-            importance: new.importance,
-            last_access: new.last_access,
-            vec_id,
-        };
-        let mapping = VecMapEntry {
-            agent: agent.to_string(),
-            id: id.to_string(),
-        };
-
+        let first_vec_id = self.next_vec_id;
         let mut extra = Batch::new();
-        extra.put(record_key.as_bytes(), &record::encode(&stored)?);
-        extra.put(memory_index::vecmap_key(vec_id).as_bytes(), &vecmap::encode(&mapping)?);
-        extra.put(
-            memory_index::META_KEY,
-            &meta::encode(&MemoryIndexMeta {
-                next_vec_id: vec_id + 1,
-            })?,
-        );
-        fts.stage_insert(engine, agent, vec_id, new.content, &mut extra)?;
-        vectors.insert_with(engine, vec_id, vector, &extra)?;
+        let mut fts_docs: Vec<(u64, &str)> = Vec::with_capacity(items.len());
+        let mut vector_items: Vec<(u64, Vec<f32>)> = Vec::with_capacity(items.len());
+        for (offset, (id, new, vector)) in items.iter().enumerate() {
+            let vec_id = first_vec_id + offset as u64;
+            let stored = MemoryRecord {
+                layer: new.layer.to_string(),
+                content: new.content.to_string(),
+                source: new.source.to_string(),
+                valid_from: new.valid_from,
+                valid_until: new.valid_until,
+                importance: new.importance,
+                last_access: new.last_access,
+                vec_id,
+            };
+            let mapping = VecMapEntry {
+                agent: agent.to_string(),
+                id: (*id).to_string(),
+            };
+            extra.put(
+                memory_index::record_key(agent, id)?.as_bytes(),
+                &record::encode(&stored)?,
+            );
+            extra.put(memory_index::vecmap_key(vec_id).as_bytes(), &vecmap::encode(&mapping)?);
+            fts_docs.push((vec_id, new.content));
+            vector_items.push((vec_id, vector.clone()));
+        }
+        let next_vec_id = first_vec_id + items.len() as u64;
+        extra.put(memory_index::META_KEY, &meta::encode(&MemoryIndexMeta { next_vec_id })?);
+        fts.stage_insert_many(engine, agent, &fts_docs, &mut extra)?;
+        vectors.insert_many_with(engine, vector_items, &extra)?;
 
-        self.next_vec_id = vec_id + 1;
-        Ok(vec_id)
+        self.next_vec_id = next_vec_id;
+        Ok((first_vec_id..next_vec_id).collect())
     }
 
     /// The memory record `(agent, id)`, if any — regardless of its validity
@@ -694,6 +733,131 @@ mod tests {
         let (engine, _vectors, memory, _fts) = open_all(dir.path());
         let stored = memory.get(&engine, "agent-a", "m1").expect("get").expect("present");
         assert_eq!(stored, expected);
+    }
+
+    #[test]
+    fn put_many_is_one_batch_and_everything_is_queryable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
+
+        let items = vec![
+            ("m1", new_record("le chat dort", "episodic"), vec_for(1)),
+            ("m2", new_record("le chien court", "episodic"), vec_for(2)),
+            ("m3", new_record("chat et chien", "semantic"), vec_for(3)),
+        ];
+        let ids = memory
+            .put_many(&mut engine, &mut vectors, &fts, "agent-a", &items)
+            .expect("put_many");
+        assert_eq!(ids, vec![0, 1, 2]);
+        assert_eq!(memory.next_vec_id(), 3);
+
+        // Records, mappings, vector search and FTS all see the whole group.
+        for (id, expected_content) in [
+            ("m1", "le chat dort"),
+            ("m2", "le chien court"),
+            ("m3", "chat et chien"),
+        ] {
+            let stored = memory.get(&engine, "agent-a", id).expect("get").expect("present");
+            assert_eq!(stored.content, expected_content);
+        }
+        assert_eq!(vectors.len(), 3);
+        assert_eq!(vectors.search_scored(&engine, &vec_for(2), 1).expect("search")[0].0, 1);
+        // FTS stats aggregated once for the whole group: 3 docs, 9 terms.
+        let hits = fts.search_bm25(&engine, "agent-a", r#""chat""#, 10).expect("bm25");
+        assert_eq!(hits.len(), 2, "m1 et m3 contiennent 'chat'");
+    }
+
+    #[test]
+    fn put_many_duplicate_anywhere_writes_nothing_at_all() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
+
+        memory
+            .put(
+                &mut engine,
+                &mut vectors,
+                &fts,
+                "agent-a",
+                "existing",
+                &new_record("déjà là", "episodic"),
+                vec_for(9),
+            )
+            .expect("seed");
+
+        // Duplicate against the store (middle item) — the valid first item
+        // must NOT survive: all-or-nothing on the error path too.
+        let err = memory
+            .put_many(
+                &mut engine,
+                &mut vectors,
+                &fts,
+                "agent-a",
+                &[
+                    ("fresh-1", new_record("un", "episodic"), vec_for(1)),
+                    ("existing", new_record("dup", "episodic"), vec_for(2)),
+                    ("fresh-2", new_record("deux", "episodic"), vec_for(3)),
+                ],
+            )
+            .expect_err("duplicate must error");
+        assert!(matches!(err, EngineError::DuplicateMemoryId { .. }));
+        assert!(memory.get(&engine, "agent-a", "fresh-1").expect("get").is_none());
+        assert!(memory.get(&engine, "agent-a", "fresh-2").expect("get").is_none());
+        assert_eq!(memory.next_vec_id(), 1, "allocator untouched by the failed group");
+        assert_eq!(vectors.len(), 1, "no vector from the failed group");
+
+        // Duplicate WITHIN the group: same guarantee.
+        let err = memory
+            .put_many(
+                &mut engine,
+                &mut vectors,
+                &fts,
+                "agent-a",
+                &[
+                    ("twin", new_record("a", "episodic"), vec_for(4)),
+                    ("twin", new_record("b", "episodic"), vec_for(5)),
+                ],
+            )
+            .expect_err("intra-group duplicate must error");
+        assert!(matches!(err, EngineError::DuplicateMemoryId { .. }));
+        assert!(memory.get(&engine, "agent-a", "twin").expect("get").is_none());
+    }
+
+    #[test]
+    fn put_many_group_survives_reopen_and_empty_group_is_noop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let (mut engine, mut vectors, mut memory, fts) = open_all(dir.path());
+            assert!(
+                memory
+                    .put_many(&mut engine, &mut vectors, &fts, "agent-a", &[])
+                    .expect("empty group")
+                    .is_empty()
+            );
+            memory
+                .put_many(
+                    &mut engine,
+                    &mut vectors,
+                    &fts,
+                    "agent-a",
+                    &[
+                        ("m1", new_record("un chat", "episodic"), vec_for(1)),
+                        ("m2", new_record("un chien", "episodic"), vec_for(2)),
+                    ],
+                )
+                .expect("put_many");
+            engine.close().expect("close");
+        }
+        let (engine, vectors, memory, fts) = open_all(dir.path());
+        assert!(!vectors.rebuilt_on_open(), "clean reopen after a batched insert");
+        assert_eq!(memory.next_vec_id(), 2);
+        assert_eq!(memory.scan_agent(&engine, "agent-a").expect("scan").len(), 2);
+        assert_eq!(vectors.search_scored(&engine, &vec_for(1), 1).expect("search")[0].0, 0);
+        assert_eq!(
+            fts.search_bm25(&engine, "agent-a", r#""chien""#, 10)
+                .expect("bm25")
+                .len(),
+            1
+        );
     }
 
     #[test]

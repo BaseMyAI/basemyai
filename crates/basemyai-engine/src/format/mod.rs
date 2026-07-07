@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Versioned on-disk record layouts (Layer 1).
 //!
 //! Every persisted type in this module carries an explicit version constant
@@ -7,6 +8,7 @@
 //! doc comment together whenever a layout changes — never silently.
 
 pub(crate) mod checksum;
+pub mod crypto;
 pub mod lock;
 pub mod sst;
 pub mod wal;

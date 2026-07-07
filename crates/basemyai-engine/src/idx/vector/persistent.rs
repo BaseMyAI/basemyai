@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! KV-persisted LM-DiskANN vector index (ADR-026 §Décision 2/3/5): the
 //! Vamana graph of [`super::graph`], stored one-node-one-KV-record inside
 //! the Layer-1 [`Engine`] under the reserved `idx/vector/` keyspace
@@ -79,6 +80,7 @@
 //! (ADR-026 §5).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use super::graph::{self, NodeProvider, VectorIndex};
 use super::meta::{self, VectorIndexMeta, VectorIndexParams};
@@ -100,15 +102,53 @@ const CACHE_CAP: usize = 4096;
 const REBUILD_CHUNK: usize = 512;
 
 /// Read-through provider over `Engine::get`: decodes node blocks on demand
-/// and caches them (bounded, see [`CACHE_CAP`]).
+/// and caches them (bounded, see [`CACHE_CAP`]). Takes the cache by shared
+/// reference to an interior-mutable [`Mutex`] (N5.5, concurrency barre M6):
+/// this is what lets [`PersistentVectorIndex::search_scored`] take `&self`
+/// instead of `&mut self` — concurrent reads no longer need exclusive
+/// access to the index, only to the small cache map for the instant of a
+/// hit/insert.
 struct EngineProvider<'a> {
     engine: &'a Engine,
-    cache: &'a mut HashMap<u64, VectorNode>,
+    cache: &'a Mutex<HashMap<u64, VectorNode>>,
 }
 
 impl NodeProvider for EngineProvider<'_> {
     fn node(&mut self, id: u64) -> Result<Option<VectorNode>> {
-        if let Some(hit) = self.cache.get(&id) {
+        if let Some(hit) = lock_cache(self.cache).get(&id) {
+            return Ok(Some(hit.clone()));
+        }
+        let Some(bytes) = self.engine.get(node_key(id).as_bytes())? else {
+            return Ok(None);
+        };
+        let decoded = node::decode(&bytes)?;
+        cache_put(self.cache, id, decoded.clone());
+        Ok(Some(decoded))
+    }
+}
+
+/// Read-through provider with an overlay of **pending** (planned but not
+/// yet committed) node blocks — what lets [`PersistentVectorIndex::insert_many_with`]
+/// plan insert *i+1* against the state inserts *0..=i* will have produced,
+/// while every block still travels in one single uncommitted batch (N5.5,
+/// all-or-nothing `put_memory_batch`). Lookup order: pending first (it
+/// shadows both the cache and the store — those only know the committed
+/// state), then the shared bounded cache, then `Engine::get`. Used only from
+/// `&mut self` call sites (an insert is already exclusive), but shares the
+/// same [`Mutex`]-backed cache type as [`EngineProvider`] for one shared
+/// `cache_put` helper.
+struct OverlayProvider<'a> {
+    engine: &'a Engine,
+    cache: &'a Mutex<HashMap<u64, VectorNode>>,
+    pending: &'a HashMap<u64, VectorNode>,
+}
+
+impl NodeProvider for OverlayProvider<'_> {
+    fn node(&mut self, id: u64) -> Result<Option<VectorNode>> {
+        if let Some(hit) = self.pending.get(&id) {
+            return Ok(Some(hit.clone()));
+        }
+        if let Some(hit) = lock_cache(self.cache).get(&id) {
             return Ok(Some(hit.clone()));
         }
         let Some(bytes) = self.engine.get(node_key(id).as_bytes())? else {
@@ -134,8 +174,18 @@ impl NodeProvider for SnapshotProvider<'_> {
     }
 }
 
+/// Locks the bounded cache, recovering the guard even if a prior holder
+/// panicked while it was locked (a panic elsewhere must not permanently wedge
+/// every future search behind a poisoned mutex — the cache is a pure
+/// performance aid, never a source of truth, so continuing with whatever
+/// state it holds is always safe).
+fn lock_cache(cache: &Mutex<HashMap<u64, VectorNode>>) -> std::sync::MutexGuard<'_, HashMap<u64, VectorNode>> {
+    cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Bounded cache insert: clear-when-full, then insert (see [`CACHE_CAP`]).
-fn cache_put(cache: &mut HashMap<u64, VectorNode>, id: u64, node: VectorNode) {
+fn cache_put(cache: &Mutex<HashMap<u64, VectorNode>>, id: u64, node: VectorNode) {
+    let mut cache = lock_cache(cache);
     if !cache.contains_key(&id) && cache.len() >= CACHE_CAP {
         cache.clear();
     }
@@ -161,7 +211,7 @@ pub struct PersistentVectorIndex {
     /// corrupt, or inconsistent). `false` on every clean open — the crash
     /// harness asserts exactly that after every kill.
     rebuilt_on_open: bool,
-    cache: HashMap<u64, VectorNode>,
+    cache: Mutex<HashMap<u64, VectorNode>>,
 }
 
 impl PersistentVectorIndex {
@@ -201,7 +251,7 @@ impl PersistentVectorIndex {
                         epoch: stored.epoch,
                         count: stored.count,
                         rebuilt_on_open: false,
-                        cache: HashMap::new(),
+                        cache: Mutex::new(HashMap::new()),
                     })
                 }
                 Err(
@@ -217,7 +267,7 @@ impl PersistentVectorIndex {
                         epoch: 0,
                         count: 0,
                         rebuilt_on_open: false,
-                        cache: HashMap::new(),
+                        cache: Mutex::new(HashMap::new()),
                     })
                 } else {
                     // Node blocks without metadata: a lost/torn meta record
@@ -282,7 +332,7 @@ impl PersistentVectorIndex {
         let plan = {
             let mut provider = EngineProvider {
                 engine,
-                cache: &mut self.cache,
+                cache: &self.cache,
             };
             graph::plan_insert(&mut provider, &self.params, self.entry_point, id, vector)?
         };
@@ -304,7 +354,65 @@ impl PersistentVectorIndex {
         self.count += 1;
         self.entry_point = Some(plan.entry_point);
         for (node_id, node) in plan.changed {
-            cache_put(&mut self.cache, node_id, node);
+            cache_put(&self.cache, node_id, node);
+        }
+        Ok(())
+    }
+
+    /// Inserts **several** vectors in one single [`Engine::apply_batch`] —
+    /// all-or-nothing under a crash for the *whole group*, plus the caller's
+    /// companion `extra` batch (N5.5, closing the per-item-atomicity gap
+    /// ADR-027 §6 documented for `put_memory_batch`). Insert *i+1* is
+    /// planned against the state inserts *0..=i* will have produced, via an
+    /// overlay of the pending blocks over the committed store
+    /// ([`OverlayProvider`]) — later stagings of the same block key in the
+    /// batch overwrite earlier ones, exactly like sequential commits would.
+    ///
+    /// Any error (dimension mismatch, duplicate id — including a duplicate
+    /// *within* `items`) is returned **before anything is written**: the
+    /// planning phase touches no disk state, so the all-or-nothing property
+    /// holds on the error path too. An empty `items` applies only `extra`
+    /// (itself a no-op when empty).
+    pub fn insert_many_with(&mut self, engine: &mut Engine, items: Vec<(u64, Vec<f32>)>, extra: &Batch) -> Result<()> {
+        if items.is_empty() {
+            if !extra.is_empty() {
+                engine.apply_batch(extra)?;
+            }
+            return Ok(());
+        }
+        let added = items.len() as u64;
+        let mut pending: HashMap<u64, VectorNode> = HashMap::new();
+        let mut entry_point = self.entry_point;
+        let mut batch = Batch::new();
+        for (id, vector) in items {
+            let plan = {
+                let mut provider = OverlayProvider {
+                    engine,
+                    cache: &self.cache,
+                    pending: &pending,
+                };
+                graph::plan_insert(&mut provider, &self.params, entry_point, id, vector)?
+            };
+            entry_point = Some(plan.entry_point);
+            for (node_id, node) in plan.changed {
+                batch.put(node_key(node_id).as_bytes(), &node::encode(&node)?);
+                pending.insert(node_id, node);
+            }
+        }
+        let new_meta = VectorIndexMeta {
+            params: self.params,
+            epoch: self.epoch,
+            count: self.count + added,
+            entry_point,
+        };
+        batch.put(META_KEY, &meta::encode(&new_meta)?);
+        batch.extend_from(extra);
+        engine.apply_batch(&batch)?;
+
+        self.count += added;
+        self.entry_point = entry_point;
+        for (node_id, node) in pending {
+            cache_put(&self.cache, node_id, node);
         }
         Ok(())
     }
@@ -339,7 +447,7 @@ impl PersistentVectorIndex {
         let existing = {
             let mut provider = EngineProvider {
                 engine,
-                cache: &mut self.cache,
+                cache: &self.cache,
             };
             provider.node(id)?
         };
@@ -370,7 +478,7 @@ impl PersistentVectorIndex {
         engine.apply_batch(&batch)?;
 
         self.count = self.count.saturating_sub(1);
-        cache_put(&mut self.cache, id, tombstoned);
+        cache_put(&self.cache, id, tombstoned);
         Ok(true)
     }
 
@@ -378,8 +486,13 @@ impl PersistentVectorIndex {
     /// neighbors of `query`, ordered by ascending cosine distance, reading
     /// node blocks on demand through `Engine::get` (never a full load — see
     /// the module doc). Tombstones route but are filtered out of the
-    /// results. `&mut self` because reads populate the bounded block cache.
-    pub fn search(&mut self, engine: &Engine, query: &[f32], k: usize) -> Result<Vec<u64>> {
+    /// results. `&self` (N5.5, concurrency barre M6): the bounded block
+    /// cache the read populates is interior-mutable ([`Mutex`]), so a search
+    /// no longer needs exclusive access to the index — concurrent searches
+    /// (and a search alongside `get`/`scan_prefix`-based reads elsewhere)
+    /// can proceed together; only the mutating methods (`insert*`,
+    /// `delete*`, `consolidate`, `rebuild`) still need `&mut self`.
+    pub fn search(&self, engine: &Engine, query: &[f32], k: usize) -> Result<Vec<u64>> {
         Ok(self
             .search_scored(engine, query, k)?
             .into_iter()
@@ -391,7 +504,7 @@ impl PersistentVectorIndex {
     /// (already computed by the greedy walk). This is what the `MemoryStore`
     /// wiring exposes as `Record::score` (ADR-027 §6) without re-reading
     /// node blocks.
-    pub fn search_scored(&mut self, engine: &Engine, query: &[f32], k: usize) -> Result<Vec<(u64, f32)>> {
+    pub fn search_scored(&self, engine: &Engine, query: &[f32], k: usize) -> Result<Vec<(u64, f32)>> {
         if query.len() != self.params.dim {
             return Err(EngineError::VectorDimensionMismatch {
                 expected: self.params.dim,
@@ -407,7 +520,7 @@ impl PersistentVectorIndex {
         let beam = self.params.beam_width.max(k);
         let mut provider = EngineProvider {
             engine,
-            cache: &mut self.cache,
+            cache: &self.cache,
         };
         graph::search_live_scored(&mut provider, entry, query, beam, k)
     }
@@ -519,7 +632,7 @@ impl PersistentVectorIndex {
 
         self.entry_point = entry_point;
         self.count = live_count;
-        self.cache.clear();
+        lock_cache(&self.cache).clear();
         Ok(dead_ids.len() as u64)
     }
 
@@ -620,7 +733,7 @@ impl PersistentVectorIndex {
             epoch,
             count,
             rebuilt_on_open: true,
-            cache: HashMap::new(),
+            cache: Mutex::new(HashMap::new()),
         })
     }
 }

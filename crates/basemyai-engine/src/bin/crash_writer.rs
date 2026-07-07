@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Crash-consistency harness child process (N2,
 //! `docs/TODO-NATIVE-ENGINE.md`).
 //!
@@ -14,7 +15,14 @@
 //! fsynced file write is visible to the driver regardless of exactly when
 //! the kill lands.
 //!
-//! Usage: `crash_writer <engine_dir> <confirm_log_path> [mode]`
+//! Usage: `crash_writer <engine_dir> <confirm_log_path> [mode] [--encrypted]`
+//!
+//! With `--encrypted` (N5.4, ADR-030), the engine is opened via
+//! `Engine::open_encrypted` under the fixed
+//! [`basemyai_engine::harness::CRYPTO_KEY`] — every WAL record the kill can
+//! tear is then an AEAD envelope, and every flush/compaction the kill can
+//! interrupt writes sealed SSTs, proving the crash guarantees survive the
+//! encryption layer unchanged.
 //!
 //! `mode` is `single` (default, omit it), `batch`, `vector`, or `graph`:
 //! - `single`: one `Engine::put` per counter, confirmed one counter per log
@@ -47,26 +55,46 @@
 //!   `apply_batch` is needed), so resume is trivially idempotent: an op
 //!   whose write landed but whose confirmation was lost to the kill just
 //!   overwrites the same bytes again on replay.
+//! - `memory`: the deterministic memory-triplet schedule
+//!   ([`basemyai_engine::harness::memory_op`], N5.5) — puts interleaved with
+//!   forgets against `PersistentMemoryIndex`, exercising the composed
+//!   record+vector+FTS atomic write (`ADR-027 §3`/`ADR-028 §4`) under a real
+//!   kill, one `step <n>` confirm-log line per completed op. Resume is
+//!   idempotent: a put whose write landed but whose confirmation was lost
+//!   replays as `DuplicateMemoryId` (already durable, treated as success);
+//!   a forget whose write landed replays as a no-op `false` (already gone).
 
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 
 use basemyai_engine::harness::{
-    BATCH_SIZE, ChurnOp, GRAPH_AGENT, GraphOp, churn_op, encode_key, expected_value, expected_vector,
-    graph_entity_kind, graph_entity_label, graph_op, vector_index_params,
+    BATCH_SIZE, CRYPTO_KEY, ChurnOp, GRAPH_AGENT, GraphOp, MEMORY_AGENT, MEMORY_VECTOR_DIM, MemoryOp, churn_op,
+    encode_key, expected_memory_content, expected_value, expected_vector, graph_entity_kind, graph_entity_label,
+    graph_op, memory_op, memory_record_id, vector_index_params,
 };
-use basemyai_engine::{Batch, Engine, EngineError, EngineOptions, PersistentGraph, PersistentVectorIndex};
+use basemyai_engine::{
+    Batch, Engine, EngineError, EngineOptions, NewMemoryRecord, PersistentFts, PersistentGraph, PersistentMemoryIndex,
+    PersistentVectorIndex, VectorIndexParams,
+};
 
 fn main() {
     let mut args = env::args().skip(1);
     let engine_dir = args
         .next()
-        .expect("usage: crash_writer <engine_dir> <confirm_log_path> [mode]");
+        .expect("usage: crash_writer <engine_dir> <confirm_log_path> [mode] [--encrypted]");
     let confirm_log_path = args
         .next()
-        .expect("usage: crash_writer <engine_dir> <confirm_log_path> [mode]");
+        .expect("usage: crash_writer <engine_dir> <confirm_log_path> [mode] [--encrypted]");
     let mode = args.next().unwrap_or_else(|| "single".to_string());
+    let encrypted = match args.next().as_deref() {
+        None => false,
+        Some("--encrypted") => true,
+        Some(other) => {
+            eprintln!("crash_writer: unknown flag {other:?} (expected \"--encrypted\")");
+            std::process::exit(1);
+        }
+    };
 
     // Small thresholds: the driver only lets this process run for a few
     // hundred milliseconds per cycle, so flush/compaction must trigger often
@@ -77,7 +105,12 @@ fn main() {
         compaction_sst_threshold: 3,
     };
 
-    let mut engine = Engine::open_with_options(&engine_dir, options).unwrap_or_else(|e| {
+    let open_result = if encrypted {
+        Engine::open_encrypted_with_options(&engine_dir, CRYPTO_KEY, options)
+    } else {
+        Engine::open_with_options(&engine_dir, options)
+    };
+    let mut engine = open_result.unwrap_or_else(|e| {
         eprintln!("crash_writer: failed to open engine at {engine_dir}: {e}");
         std::process::exit(1);
     });
@@ -96,8 +129,11 @@ fn main() {
         "single" => run_single_mode(&mut engine, &mut log, &confirm_log_path),
         "vector" => run_vector_mode(&mut engine, &mut log, &confirm_log_path),
         "graph" => run_graph_mode(&mut engine, &mut log, &confirm_log_path),
+        "memory" => run_memory_mode(&mut engine, &mut log, &confirm_log_path),
         other => {
-            eprintln!("crash_writer: unknown mode {other:?} (expected \"single\", \"batch\", \"vector\" or \"graph\")");
+            eprintln!(
+                "crash_writer: unknown mode {other:?} (expected \"single\", \"batch\", \"vector\", \"graph\" or \"memory\")"
+            );
             std::process::exit(1);
         }
     }
@@ -231,6 +267,72 @@ fn run_graph_mode(engine: &mut Engine, log: &mut File, confirm_log_path: &str) -
                 if let Err(e) = graph.upsert_edge(engine, GRAPH_AGENT, &src.to_string(), "next", &dst.to_string(), meta)
                 {
                     eprintln!("crash_writer: graph upsert_edge(step {step}, {src}->{dst}) failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        confirm_line(log, &format!("step {step}"));
+        step += 1;
+    }
+}
+
+/// One memory-triplet op per step (put / forget, per [`memory_op`]'s pure
+/// schedule), one `step <n>` confirm-log line per op — only written after
+/// the op's `apply_batch`(es) returned `Ok`. See the module doc for why
+/// resume is idempotent.
+fn run_memory_mode(engine: &mut Engine, log: &mut File, confirm_log_path: &str) -> ! {
+    let mut vectors = PersistentVectorIndex::open(engine, VectorIndexParams::with_dim(MEMORY_VECTOR_DIM))
+        .unwrap_or_else(|e| {
+            eprintln!("crash_writer: failed to open vector index: {e}");
+            std::process::exit(1);
+        });
+    let mut memory = PersistentMemoryIndex::open(engine).unwrap_or_else(|e| {
+        eprintln!("crash_writer: failed to open memory index: {e}");
+        std::process::exit(1);
+    });
+    let fts = PersistentFts::new();
+
+    let start = last_confirmed_step(confirm_log_path).map_or(0, |s| s + 1);
+    let mut step = start;
+    loop {
+        match memory_op(step) {
+            MemoryOp::Put { id } => {
+                let content = expected_memory_content(id);
+                let new = NewMemoryRecord {
+                    layer: "episodic",
+                    content: &content,
+                    source: "crash-harness",
+                    valid_from: 0,
+                    valid_until: None,
+                    importance: 1.0,
+                    last_access: 0,
+                };
+                match memory.put(
+                    engine,
+                    &mut vectors,
+                    &fts,
+                    MEMORY_AGENT,
+                    &memory_record_id(id),
+                    &new,
+                    expected_vector(id),
+                ) {
+                    Ok(_) => {}
+                    // Previous run's kill landed between apply_batch
+                    // (durable) and the confirm-log write: already durable —
+                    // confirm and move on, same replay reasoning as vector
+                    // mode's DuplicateVectorId.
+                    Err(EngineError::DuplicateMemoryId { .. }) => {}
+                    Err(e) => {
+                        eprintln!("crash_writer: memory put(step {step}, id {id}) failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            // `Ok(false)` = already forgotten (same replay reasoning) — both
+            // outcomes are confirmable.
+            MemoryOp::Forget { id } => {
+                if let Err(e) = memory.forget(engine, &mut vectors, &fts, MEMORY_AGENT, &memory_record_id(id)) {
+                    eprintln!("crash_writer: memory forget(step {step}, id {id}) failed: {e}");
                     std::process::exit(1);
                 }
             }

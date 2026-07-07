@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! `EngineError` — the single error type surfaced by this crate's public API.
 
 use std::io;
@@ -199,6 +200,46 @@ pub enum EngineError {
     /// understands.
     #[error("unsupported fts stats format version {found} (this build understands {expected})")]
     UnsupportedFtsStatsVersion { expected: u16, found: u16 },
+
+    /// The store at this directory is encrypted (`crypto.meta` present) but
+    /// no key was supplied to `open` (ADR-030 §2).
+    #[error("store at {} is encrypted — open it with Engine::open_encrypted and its key", .path.display())]
+    MissingEncryptionKey { path: PathBuf },
+
+    /// The supplied key fails to unwrap the store's DEK — an intact
+    /// `crypto.meta` whose seal doesn't open under this key. Diagnosed at
+    /// open time (fast, unambiguous), never as inexplicable WAL/SST
+    /// corruption further in.
+    #[error("wrong encryption key for store at {}", .path.display())]
+    WrongEncryptionKey { path: PathBuf },
+
+    /// A key was supplied for a store that already exists in plaintext.
+    /// Encrypting a posteriori is deliberately not supported (same posture
+    /// as libSQL's `rotate_key`, ADR-007/ADR-030 §2) — never silently mix
+    /// plaintext and encrypted artifacts in one directory.
+    #[error(
+        "store at {} already exists in plaintext — it cannot be encrypted a posteriori (ADR-030 §2)",
+        .path.display()
+    )]
+    PlaintextStoreKeySupplied { path: PathBuf },
+
+    /// `rotate_key` was called on a store opened without encryption —
+    /// nothing to rotate (parity with `Store::rotate_key`'s
+    /// `CoreError::Encryption`, ADR-007).
+    #[error("store at {} is not encrypted — rotate_key has nothing to rotate", .path.display())]
+    NotEncrypted { path: PathBuf },
+
+    /// The `crypto.meta` key-wrap file failed its checksum or is
+    /// structurally malformed — distinct from [`Self::WrongEncryptionKey`]
+    /// (intact file, wrong key): two very different diagnoses for a user.
+    #[error("corrupt crypto.meta at {}: {reason}", .path.display())]
+    CorruptCryptoMeta { path: PathBuf, reason: String },
+
+    /// An AEAD seal operation failed — not reachable through corruption of
+    /// on-disk data (those surface as `CorruptWal`/`CorruptSst`), only
+    /// through an internal cipher failure at write time.
+    #[error("encryption failure: {reason}")]
+    CryptoFailure { reason: String },
 
     /// A `match_expr` handed to the native FTS search fell outside the
     /// narrow subset `fts_match_expr()` actually produces — quoted

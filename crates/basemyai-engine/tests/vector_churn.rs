@@ -305,14 +305,14 @@ fn persistent_resurrection_survives_reopen() {
         index.insert(&mut engine, 1, new.clone()).expect("resurrection");
         assert_eq!(index.len(), 2);
         let err = index
-            .insert(&mut engine, 1, old.clone())
+            .insert(&mut engine, 1, old)
             .expect_err("live duplicate must be rejected");
         assert!(matches!(err, basemyai_engine::EngineError::DuplicateVectorId { id: 1 }));
         engine.close().expect("close");
     }
 
     let mut engine = Engine::open(dir.path()).expect("reopen");
-    let mut index = PersistentVectorIndex::open(&mut engine, VectorIndexParams::with_dim(DIM)).expect("reopen index");
+    let index = PersistentVectorIndex::open(&mut engine, VectorIndexParams::with_dim(DIM)).expect("reopen index");
     assert!(!index.rebuilt_on_open());
     assert_eq!(index.len(), 2);
     let results = index.search(&engine, &new, 1).expect("search");
