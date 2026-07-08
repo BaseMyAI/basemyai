@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Schéma SQL de la couche mémoire. C'est **ici** (et pas dans le core) que
 //! vivent `agent_id`, `valid_from`/`valid_until` et la notion de couche : le
 //! core ne connaît que des tables + un index vecteur natif.

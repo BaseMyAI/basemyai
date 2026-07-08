@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! # basemyai (bindings Node.js)
 //!
 //! Liaison NAPI-RS du moteur de mémoire [`basemyai`]. API asynchrone : chaque

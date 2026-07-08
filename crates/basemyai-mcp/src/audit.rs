@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Journal d'audit des appels d'outils MCP.
 //!
 //! **Invariant de confidentialité** : on ne logue **jamais** le contenu —

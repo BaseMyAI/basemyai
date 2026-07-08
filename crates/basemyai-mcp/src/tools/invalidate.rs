@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Outil `invalidate` : soft-delete d'un souvenir (fixe `valid_until = now`).
 
 use rmcp::schemars;

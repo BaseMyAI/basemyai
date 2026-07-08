@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Graphe entités/relations (VISION §4.1, Phase 2 — Cognition).
 //!
 //! « Alice travaille chez Acme, qui a racheté Beta » est trois faits liés. Le

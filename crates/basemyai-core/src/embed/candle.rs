@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Implémentation réelle de l'[`Embedder`] via **Candle** (architecture BERT).
 //!
 //! Invariant ADR : cet `Embedder` **ne télécharge jamais** et **ne détecte

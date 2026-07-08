@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Authentification Bearer pour le transport HTTP, en **temps constant**
 //! (`subtle::ConstantTimeEq`) pour ne pas fuiter d'information par timing.
 //!

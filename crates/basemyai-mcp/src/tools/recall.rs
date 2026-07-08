@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Outil `recall` : recall temporel sémantique borné à un agent.
 
 use rmcp::schemars;

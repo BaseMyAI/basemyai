@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Seule implémentation V1 de [`MemoryStore`] : enveloppe
 //! [`basemyai_core::Store`] et concentre tout le SQL/`Filter` brut du crate.
 //! Le SQL ici est un **déplacement**, pas une réécriture, des requêtes qui

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Serveur MCP : pool multi-agent + les cinq outils mémoire.
 //!
 //! Une [`Memory`] est scellée par un `agent_id` (ADR-006) ; le serveur en

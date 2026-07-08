@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Commandes graphe entités/relations : `graph add-entity`, `graph add-edge`,
 //! `graph traverse`. Chacune appelle une méthode déjà existante de `basemyai::Graph`.
 

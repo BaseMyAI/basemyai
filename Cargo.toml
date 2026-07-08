@@ -10,6 +10,20 @@ members = [
     "crates/basemyai-mcp",
     "crates/basemyai-rest",
     "crates/basemyai-cli",
+    "crates/basemyai-engine",
+    "bindings/basemyai-py",
+    "bindings/basemyai-node",
+    "xtask",
+]
+
+# `cargo build`/`test` sans `-p` ne compilent pas xtask (outil DX interne,
+# invoqué via l'alias `cargo xtask` — voir .cargo/config.toml).
+default-members = [
+    "crates/basemyai-core",
+    "crates/basemyai",
+    "crates/basemyai-mcp",
+    "crates/basemyai-rest",
+    "crates/basemyai-cli",
     "bindings/basemyai-py",
     "bindings/basemyai-node",
 ]
@@ -18,7 +32,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
-license = "MIT"
+license = "BUSL-1.1"
 authors = ["BaseMyAI contributors"]
 repository = "https://github.com/basemyai/basemyai"
 
@@ -46,6 +60,10 @@ dirs = "6"
 # OpenSSL sur Windows (pas de dep système supplémentaire).
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 sha2 = "0.11"
+# AEAD XChaCha20-Poly1305 (ADR-030 : chiffrement au repos du moteur natif).
+# Pur Rust (RustCrypto), sans feature gate côté moteur — contrairement au
+# `crypto` libSQL, il n'y a aucun coût d'installation (CMake) à éviter.
+chacha20poly1305 = "0.10"
 # HTTP framework — basemyai-mcp (transport HTTP) et basemyai-rest.
 axum        = { version = "0.8", features = ["macros"] }
 tower       = { version = "0.5", features = ["util"] }
@@ -71,7 +89,7 @@ tempfile    = "3"
 criterion   = "0.7"
 
 # Lints partagés par tout le workspace (Rust 2026).
-# Gate : `cargo clippy --workspace --all-targets -- -D warnings` (CLAUDE.md).
+# Gate : `cargo xtask check` (matrice clippy CI par crate, -D warnings — CLAUDE.md).
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }

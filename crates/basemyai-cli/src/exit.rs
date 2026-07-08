@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Codes de sortie stables du CLI. Un script qui appelle `basemyai` peut
 //! brancher sur ces codes sans parser de message — c'est le contrat, donc ils
 //! ne changent jamais de sens une fois publiés (on en ajoute, on n'en réutilise

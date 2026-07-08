@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Routeur axum + handlers conformes à la spec OpenAPI du sidecar.
 //!
 //! Toutes les routes métier sont sous `/v1` et protégées par auth Bearer
@@ -88,7 +89,7 @@ fn bearer_ok(headers: &axum::http::HeaderMap, api_key: &str) -> bool {
     token.as_bytes().ct_eq(api_key.as_bytes()).into()
 }
 
-// --- Bornes de validation (conformes à `openapi-sidecar.yaml`) -------------
+// --- Bornes de validation (conformes à `openapi.yaml`, racine du crate) ----
 
 const MAX_AGENT_ID_LEN: usize = 128;
 const MAX_TEXT_LEN: usize = 65_536;

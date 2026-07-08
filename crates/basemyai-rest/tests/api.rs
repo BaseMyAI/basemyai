@@ -534,19 +534,17 @@ async fn watch_delivers_remembered_event_for_same_agent() {
     assert_eq!(remember_resp.status(), StatusCode::CREATED);
     let id = json_body(remember_resp).await["id"].as_str().expect("id").to_string();
 
-    let received = read_sse_until(
-        &mut body,
-        |acc| acc.contains("\"remembered\""),
-        Duration::from_secs(5),
-    )
-    .await;
+    let received = read_sse_until(&mut body, |acc| acc.contains("\"remembered\""), Duration::from_secs(5)).await;
 
     assert!(
         received.contains("\"remembered\""),
         "expected a remembered event, got: {received:?}"
     );
     assert!(received.contains(&id), "event should carry the memory id: {received:?}");
-    assert!(received.contains("\"agent_id\":\"a\""), "event should carry agent_id: {received:?}");
+    assert!(
+        received.contains("\"agent_id\":\"a\""),
+        "event should carry agent_id: {received:?}"
+    );
 }
 
 #[tokio::test]

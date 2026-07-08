@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! État applicatif partagé : pool de mémoires par agent + provider + config.
 
 use std::collections::{HashMap, VecDeque};

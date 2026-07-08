@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Façade `Memory` exposée à Node. Les méthodes `async` deviennent des `Promise`
 //! JS, exécutées sur le runtime tokio interne de NAPI-RS. Moteur 100 % local.
 

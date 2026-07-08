@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Frontière moteur de stockage (suivi ADR-019 : *« Gradually move SQL/libSQL-
 //! specific code behind an engine module… Add backend contract tests before
 //! any second backend exists »*).
@@ -15,8 +16,12 @@
 //! implémentation prévue en V1.
 
 mod libsql_store;
+#[cfg(feature = "engine-native")]
+mod native_store;
 
 pub use libsql_store::LibsqlMemoryStore;
+#[cfg(feature = "engine-native")]
+pub use native_store::NativeMemoryStore;
 
 use basemyai_core::Metric;
 

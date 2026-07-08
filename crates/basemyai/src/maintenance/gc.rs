@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! GC des mémoires expirées (ADR-005/ADR-008). La sémantique `valid_until`
 //! est portée par `basemyai`, jamais par le core.
 

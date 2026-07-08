@@ -18,6 +18,10 @@ default = []
 embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:serde_json"]
 # Chiffrement au repos (libSQL/SQLite3MultipleCiphers) — exige CMake.
 crypto = ["libsql/encryption"]
+# Backend natif basemyai-engine (ADR-024/ADR-025) — capability discovery only
+# (StorageEngine), pas de MemoryStore : bloqué sur N3 (index vecteur) et N4
+# (graphe). Jamais par défaut.
+engine-native = ["dep:basemyai-engine"]
 
 [dependencies]
 thiserror.workspace = true
@@ -34,10 +38,14 @@ serde_json = { workspace = true, optional = true }
 # libSQL : vecteur natif (pas d'extension à linker), SQLite-compat, async.
 # Le cœur compile sans CMake ; `crypto` ajoute le chiffrement (qui l'exige).
 libsql = { version = "0.9.30", default-features = false, features = ["core"] }
+# Backend natif (ADR-024/ADR-025) — capability discovery seulement, feature
+# `engine-native`. Interne, non publié (voir crates/basemyai-engine/Cargo.toml).
+basemyai-engine = { path = "../basemyai-engine", optional = true }
 
 [dev-dependencies]
 tokio.workspace = true
 criterion.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "knn_scalability"

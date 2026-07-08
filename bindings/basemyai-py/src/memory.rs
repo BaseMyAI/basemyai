@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Façade `Memory` exposée à Python. Chaque méthode rend un **awaitable**
 //! (coroutine asyncio) : le futur tokio Rust est piloté par l'event loop Python
 //! via `pyo3_async_runtimes`. Le moteur reste 100 % local, en process.
@@ -257,7 +258,10 @@ impl Memory {
     /// quel, elle ne refait aucun filtrage.
     #[pyo3(signature = (layer = None))]
     fn watch(&self, layer: Option<String>) -> PyResult<MemoryWatch> {
-        let layer = layer.map(|l| MemoryLayer::from_table(&l)).transpose().map_err(to_pyerr)?;
+        let layer = layer
+            .map(|l| MemoryLayer::from_table(&l))
+            .transpose()
+            .map_err(to_pyerr)?;
         let agent_id = self.inner.agent().as_str().to_string();
         let subscription = self.inner.watch(&agent_id, layer);
         Ok(MemoryWatch {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Tâches de maintenance **sémantiques**, injectées dans le worker agnostique
 //! du core. Le GC par `valid_until` vit ici (ADR-005/ADR-008) : le core fait
 //! tourner la boucle, mais ignore le sens de l'expiration.

@@ -7,7 +7,7 @@ name            = "basemyai"
 version         = "0.1.0"
 description     = "Local memory engine for AI agents — Python bindings"
 requires-python = ">=3.10"
-license         = { text = "MIT" }
+license         = { text = "BUSL-1.1" }
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

@@ -2,7 +2,7 @@
 
 Real, on-hardware Criterion output for `basemyai-core`'s native libSQL `vector_top_k`
 KNN path, gathered per the rules in `m6-knn-and-candle-stress.md`. This closes the
-`docs/TODO.md` M6 row "Résultats KNN 10k/100k/1M" — with 1M **documented, not executed**
+`docs/archive/TODO-2026-06.md` M6 row "Résultats KNN 10k/100k/1M" — with 1M **documented, not executed**
 (see "1M — not run this session" below).
 
 ## Machine specs

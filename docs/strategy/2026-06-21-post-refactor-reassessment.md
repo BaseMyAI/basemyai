@@ -68,7 +68,7 @@ Sources internes relues (postérieures à la recherche d'origine) :
   `docs/zero-network-after-setup.md`
 - `docs/benchmarks/local-memory-vs-mem0-qdrant.md` (**run faisant autorité
   2026-06-21**)
-- `docs/TODO.md` (plan M0→M7), `docs/PRD.md`
+- `docs/TODO.md` (plan M0→M7 ; archivé depuis sous `docs/archive/TODO-2026-06.md`), `docs/PRD.md`
 
 Limite assumée : pas de nouvelle revue concurrentielle exhaustive. Le paysage
 (Mem0, Zep/Graphiti, Letta, LangMem, Cognee, Supermemory, Hindsight, Qdrant /

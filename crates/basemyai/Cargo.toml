@@ -21,11 +21,21 @@ embed = ["basemyai-core/embed"]
 crypto = ["basemyai-core/crypto"]
 # `test-util` : expose `HashEmbedder` + `Memory::open_in_memory` — embedder
 # déterministe sans modèle pour tests/spikes des bindings (ni Candle ni CMake).
+# `tempfile` sert `NativeMemoryStore::open_ephemeral` (l'équivalent natif
+# d'`open_in_memory` — le moteur LSM n'a pas de mode in-memory).
 # Jamais en production.
-test-util = []
+test-util = ["dep:tempfile"]
+# Backend natif basemyai-engine (ADR-024, câblage `MemoryStore` ADR-027/N5.1).
+# Jamais par défaut : libSQL reste le backend V1 tant que N5.6 (ADR de bascule)
+# n'est pas instruit.
+engine-native = ["dep:basemyai-engine"]
 
 [dependencies]
 basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
+# Backend natif (ADR-024/ADR-027) — feature `engine-native`. Interne, non
+# publié (même précédent que la dépendance optionnelle de basemyai-core).
+basemyai-engine = { path = "../basemyai-engine", optional = true }
+tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 serde.workspace = true
 tokio.workspace = true

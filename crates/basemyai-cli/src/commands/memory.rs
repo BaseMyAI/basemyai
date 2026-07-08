@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Commandes de cycle de vie mémoire : `remember`, `recall`, `list`, `forget`,
 //! `invalidate`, `purge`, `export`, `import`. Chacune appelle une méthode déjà
 //! existante de `basemyai::Memory` — pas de nouvelle logique métier ici.

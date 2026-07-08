@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Provisioning LLM **hardware-aware** (ADR-010 appliqué aux LLM, VISION §5.5).
 //!
 //! Même philosophie que le setup des embeddings :

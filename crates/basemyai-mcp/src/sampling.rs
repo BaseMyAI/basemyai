@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Backend d'inférence **par sampling MCP** (ADR-017).
 //!
 //! Au lieu d'appeler un serveur LLM local (Ollama, AnythingLLM…) ou une API

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Erreur centralisée du CLI. Chaque variante porte un code stable
 //! (`code()`) et un exit code (`exit_code()`, voir `exit.rs`) — même pattern
 //! que `RestError::parts()` dans `basemyai-rest`, adapté à un process CLI

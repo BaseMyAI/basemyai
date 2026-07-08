@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Pipeline de **consolidation** (VISION §5.1, Phase 2) : transforme des
 //! **épisodes** bruts (couche `episodic`) en **faits sémantiques** durables et
 //! peuple le **graphe** entités/relations (§4.1).

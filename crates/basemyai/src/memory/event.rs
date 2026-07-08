@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Abonnements mémoire en temps réel (ADR — *live subscriptions*).
 //!
 //! Mécanisme de domaine **propre à `basemyai`** (jamais dans `basemyai-core`,

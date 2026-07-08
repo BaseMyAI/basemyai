@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Provisionnement hardware-aware (ADR-010) : `setup`, `status`, `llm
 //! detect`/`llm suggest`. Jamais de téléchargement implicite — `--fetch` est
 //! le seul déclencheur.

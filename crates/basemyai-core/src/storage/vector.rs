@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Types de la recherche vectorielle. Les opérations (`vector_upsert`,
 //! `vector_knn`) sont **natives** sur [`Store`](crate::Store) via libSQL — pas
 //! de trait/backend à abstraire (ADR : pivot libSQL).

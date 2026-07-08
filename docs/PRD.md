@@ -269,7 +269,7 @@ Configuration de référence : 4 cœurs, 8 GB RAM, sans GPU (inférence CPU).
 
 **Contrainte réseau** : zéro réseau par défaut. L'`Embedder` ne télécharge jamais le modèle lui-même.
 
-**Contrainte licence** : MIT. Toutes les dépendances compatibles MIT ou Apache 2.0.
+**Contrainte licence** : BUSL-1.1 (précédemment MIT). Toutes les dépendances compatibles MIT, Apache 2.0 ou autres licences permissives.
 
 ---
 

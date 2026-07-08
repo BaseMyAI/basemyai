@@ -1,0 +1,33 @@
+# format.lock — versioned on-disk wire formats for basemyai-engine (Layer 1).
+#
+# Modeled on SurrealDB's `revision.lock` (docs/PLAN-NATIVE-ENGINE.md §3.1/§4,
+# docs/adr/ADR-025-native-engine-storage-foundation.md). Every persisted type
+# gets one line here: `TypeName:version(hash)`. `hash` is a CRC32 (hex) of
+# the type's canonical wire-format spec — field name + wire-type tag, in
+# on-disk order — defined by the `spec()` function next to that type's
+# `encode`/`decode` in `src/format/{wal,sst}.rs` and
+# `src/idx/vector/{node,meta}.rs`; see `src/format/lock.rs` for exactly
+# what's hashed and why.
+#
+# Verified by `cargo test -p basemyai-engine --test format_lock`, wired into
+# `cargo xtask check` and `cargo xtask ci`. A mismatch means one of two
+# things:
+#   (a) you changed the wire format on purpose — bump the `*_VERSION`
+#       constant, update the byte-layout doc comment AND `spec()` together,
+#       then update the hash below in the same commit.
+#   (b) you didn't mean to change it — revert.
+WalRecord:2(b4570df1)
+SstFile:1(b83440b2)
+CryptoMeta:1(cee13d7b)
+WalEnvelope:1(4911cece)
+SstEnvelope:1(7b3db092)
+VectorNode:2(1ba6b40f)
+VectorIndexMeta:1(e0277ef0)
+GraphEntity:1(ef8b395c)
+GraphEdge:1(462924ad)
+MemoryRecord:1(5c1bf048)
+MemoryVecMap:1(2566216c)
+MemoryIndexMeta:1(7407a893)
+FtsPosting:1(b42edb3e)
+FtsDocTerms:1(284229f5)
+FtsStats:1(ebe0c98b)

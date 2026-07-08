@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Binaire du sidecar REST. Wiring de production : provisioning hardware-aware
 //! de l'embedder (Candle) → provider chiffré → serveur axum sur `127.0.0.1`.
 //!

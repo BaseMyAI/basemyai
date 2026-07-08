@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BUSL-1.1
 //! Outil `stats` : compte des souvenirs valides d'un agent, par couche.
 
 use rmcp::schemars;
