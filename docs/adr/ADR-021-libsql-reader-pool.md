@@ -1,10 +1,9 @@
 # ADR-021 — Pool de connexions lecteur libSQL + writer unique sérialisé, sous WAL
 
-**Status**: Accepted
+**Status**: 🔵 Superseded by ADR-032
 **Date**: 2026-06-21
-**Context**: suivi d'ADR-011 (backend libSQL V1) ; n'amende ni ne supersède
-ADR-011 ni ADR-019 (`.bmai` libSQL-compatible). Cible le hardening M6 (« bench
-KNN, stress test, pool, key rotation ») listé ouvert dans `docs/status.md`.
+**Context**: suivi d'ADR-011 (backend libSQL V1). Rendu obsolète par ADR-032
+qui retire le backend libSQL du workspace actif.
 
 ## Contexte
 

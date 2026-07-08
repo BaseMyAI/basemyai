@@ -1,4 +1,4 @@
-# Skill: security — BaseMyAI / ForgeMyAI
+# Skill: security — BaseMyAI
 
 ## Surface d'attaque principale
 

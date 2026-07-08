@@ -212,4 +212,4 @@ The default `:root` applies the **Blacksite dark** theme. Wrap any section in `.
 
 ## License
 
-Assets in this branding kit are proprietary to the BaseMyAI project. Do not redistribute, resell, or use outside of the BaseMyAI / ForgeMyAI ecosystem without explicit written permission.
+Assets in this branding kit are proprietary to the BaseMyAI project. Do not redistribute, resell, or use outside of the BaseMyAI ecosystem without explicit written permission.

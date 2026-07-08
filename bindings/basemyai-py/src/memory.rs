@@ -3,7 +3,7 @@
 //! (coroutine asyncio) : le futur tokio Rust est piloté par l'event loop Python
 //! via `pyo3_async_runtimes`. Le moteur reste 100 % local, en process.
 
-#[cfg(any(all(feature = "crypto", feature = "embed"), feature = "test-util"))]
+#[cfg(feature = "embed")]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,16 +12,16 @@ use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::Mutex as AsyncMutex;
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
+#[cfg(feature = "embed")]
 use basemyai::AgentId;
 use basemyai::{MemoryLayer, MemorySubscription};
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
-use basemyai_core::Store;
-#[cfg(all(feature = "crypto", feature = "embed"))]
-use basemyai_core::{CandleEmbedder, Device, Embedder, EncryptionKey};
+#[cfg(feature = "embed")]
+use basemyai_core::EncryptionKey;
+#[cfg(feature = "embed")]
+use basemyai_core::{CandleEmbedder, Device, Embedder};
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
+#[cfg(feature = "embed")]
 use crate::errors::ValidationError;
 use crate::errors::to_pyerr;
 use crate::types::{AgentStats, Entity, Record, WatchEvent};
@@ -44,11 +44,12 @@ impl Memory {
 
 #[pymethods]
 impl Memory {
-    /// Ouvre une mémoire persistante chiffrée avec l'embedder Candle local.
+    /// Ouvre une mémoire persistante chiffrée (moteur natif, ADR-032) avec
+    /// l'embedder Candle local.
     ///
     /// Si `model_dir` est absent, le provisioning ne télécharge le modèle que si
     /// `consent_to_fetch=True`. Par défaut, aucun accès réseau n'est déclenché.
-    #[cfg(all(feature = "crypto", feature = "embed"))]
+    #[cfg(feature = "embed")]
     #[staticmethod]
     #[pyo3(signature = (path, agent_id, encryption_key, *, model_dir = None, device = "auto".to_string(), consent_to_fetch = false))]
     fn open(
@@ -78,35 +79,21 @@ impl Memory {
                     .map_err(basemyai::MemoryError::from)
                     .map_err(to_pyerr)?,
             );
-            let store = Store::open(&PathBuf::from(path), Some(EncryptionKey::new(encryption_key)))
+            let key = EncryptionKey::new(encryption_key);
+            let mem = basemyai::Memory::open_native(PathBuf::from(path), &key, embedder, agent)
                 .await
-                .map_err(basemyai::MemoryError::from)
                 .map_err(to_pyerr)?;
-            let mem = basemyai::Memory::open(store, embedder, agent).await.map_err(to_pyerr)?;
             Ok(Self { inner: Arc::new(mem) })
         })
     }
 
-    /// Ouvre une mémoire **éphémère, non chiffrée** (`:memory:`) avec un embedder
+    /// Ouvre une mémoire **éphémère, non chiffrée** avec un embedder
     /// déterministe sans modèle. Réservé aux tests/spikes (pas de CMake/Candle).
     #[cfg(feature = "test-util")]
     #[staticmethod]
     fn open_in_memory(py: Python<'_>, agent_id: String) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
             let mem = basemyai::Memory::open_in_memory(&agent_id).await.map_err(to_pyerr)?;
-            Ok(Memory::wrap(mem))
-        })
-    }
-
-    /// Ouvre un fichier libSQL partagé avec l'embedder déterministe de test.
-    /// Test-only : vérifie l'isolation SQL réelle entre deux agents sans Candle.
-    #[cfg(feature = "test-util")]
-    #[staticmethod]
-    fn open_test_file(py: Python<'_>, path: String, agent_id: String) -> PyResult<Bound<'_, PyAny>> {
-        future_into_py(py, async move {
-            let mem = basemyai::Memory::open_test_file(&PathBuf::from(path), &agent_id)
-                .await
-                .map_err(to_pyerr)?;
             Ok(Memory::wrap(mem))
         })
     }
@@ -300,7 +287,7 @@ impl MemoryWatch {
     }
 }
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
+#[cfg(feature = "embed")]
 fn parse_device(value: &str) -> PyResult<Option<Device>> {
     match value {
         "auto" => Ok(None),

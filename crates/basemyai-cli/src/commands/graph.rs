@@ -21,7 +21,7 @@ pub(crate) async fn add_entity(
     let (engine, agent_id) = open_engine(path, agent).await?;
     Graph::new(engine, agent_id).add_entity(id, kind, label).await?;
     format.print(
-        || println!("entity '{id}' ({kind}) upserted"),
+        || crate::ui::render::success(&format!("entity '{id}' ({kind}) upserted")),
         || serde_json::json!({ "id": id, "kind": kind, "label": label }),
     );
     Ok(())
@@ -41,7 +41,11 @@ pub(crate) async fn add_edge(
         .add_edge(src, relation, dst, weight)
         .await?;
     format.print(
-        || println!("edge '{src}' -[{relation}]-> '{dst}' (weight {weight}) upserted"),
+        || {
+            crate::ui::render::success(&format!(
+                "edge '{src}' -[{relation}]-> '{dst}' (weight {weight}) upserted"
+            ))
+        },
         || serde_json::json!({ "src": src, "relation": relation, "dst": dst, "weight": weight }),
     );
     Ok(())
@@ -59,12 +63,17 @@ pub(crate) async fn traverse(
     format.print(
         || {
             if reached.is_empty() {
-                println!("(nothing reachable from '{start}' within {depth} hop(s))");
+                crate::ui::render::info(&format!("no entities reachable from '{start}' within {depth} hop(s)"));
+                crate::ui::render::hint("add graph edges with `basemyai graph add-edge ...`");
             } else {
-                println!("{} entity(ies) reachable from '{start}':", reached.len());
-                for r in &reached {
-                    println!("  [{}] ({}) {} — depth {}", r.id, r.kind, r.label, r.depth);
-                }
+                crate::ui::render::section(&format!("{} entity(ies) reachable from '{start}'", reached.len()));
+                crate::ui::table::print_table(
+                    &["id", "kind", "label", "depth"],
+                    reached
+                        .iter()
+                        .map(|r| vec![r.id.clone(), r.kind.clone(), r.label.clone(), r.depth.to_string()])
+                        .collect::<Vec<_>>(),
+                );
             }
         },
         || {

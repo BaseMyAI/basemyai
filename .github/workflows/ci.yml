@@ -45,9 +45,9 @@ jobs:
       - run: cargo fmt --all --check
 
   # ── Gate qualité : clippy + tests, features légères ─────────────────────────
-  # Ni CMake (crypto) ni Candle (embed) : couvre tout le workspace rapidement.
+  # Ni Candle (embed) ni tests lourds `#[ignore]` : couvre vite le workspace.
   # `--features` interdit à la racine d'un workspace virtuel → on cible chaque
-  # crate avec `-p`. Les features `crypto`/`embed` ont leurs jobs dédiés.
+  # crate avec `-p`. Le job `embed` reste dédié.
 
   gate:
     name: clippy + test (${{ matrix.os }})
@@ -71,12 +71,11 @@ jobs:
         run: |
           set -euxo pipefail
           cargo clippy -p basemyai-core --all-targets -- -D warnings
-          cargo clippy -p basemyai-core --features engine-native --all-targets -- -D warnings
           cargo clippy -p basemyai-engine --all-targets -- -D warnings
           cargo clippy -p basemyai --features test-util --all-targets -- -D warnings
-          cargo clippy -p basemyai --features test-util,engine-native --all-targets -- -D warnings
           cargo clippy -p basemyai-mcp --no-default-features --features stdio,http,test-util --all-targets -- -D warnings
           cargo clippy -p basemyai-rest --no-default-features --features test-util --all-targets -- -D warnings
+          cargo clippy -p basemyai-cli --all-targets -- -D warnings
           cargo clippy -p basemyai-py --no-default-features --features test-util --all-targets -- -D warnings
           cargo clippy -p basemyai-node --no-default-features --features test-util --all-targets -- -D warnings
 
@@ -84,7 +83,6 @@ jobs:
         run: |
           set -euxo pipefail
           cargo test -p basemyai-core
-          cargo test -p basemyai-core --features engine-native
           # --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test format_lock :
           # tests du moteur natif + harnais recall + persistance KV + churn
           # insert/delete (tombstones + consolidation FreshDiskANN, recall APRÈS
@@ -93,12 +91,13 @@ jobs:
           # persistant), SANS crash_consistency (kill-loop lent, job dédié ci-dessous)
           cargo test -p basemyai-engine --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test format_lock
           cargo test -p basemyai --features test-util
-          # --test memory_tests : le runner déclaratif multi-backend (N2) avec le
-          # backend Native branché (N5.1, ADR-027) — mêmes scénarios rejoués
-          # contre Libsql ET le moteur natif, zéro divergence tolérée
-          cargo test -p basemyai --features test-util,engine-native --test memory_tests
+          # --test memory_tests : runner déclaratif du contrat MemoryStore sur
+          # le backend natif (clair + chiffré), zéro divergence tolérée.
+          cargo test -p basemyai --features test-util --test memory_tests
+          cargo test -p basemyai --features test-util --test p1_isolation_adversarial
           cargo test -p basemyai-mcp --no-default-features --features stdio,http,test-util
           cargo test -p basemyai-rest --no-default-features --features test-util
+          cargo test -p basemyai-cli
 
   # ── Feature `embed` : Candle ML (compile + tests réels #[ignore]) ────────────
 
@@ -124,50 +123,6 @@ jobs:
           set -euxo pipefail
           cargo test -p basemyai-core --features embed
           cargo test -p basemyai --features embed
-
-  # ── Feature `crypto` : chiffrement libSQL — exige CMake ─────────────────────
-  # Bug libsql-ffi 0.9.30 : son build.rs appelle `cp`, absent du PATH Windows.
-  # Le `usr/bin` de Git (présent sur les runners GitHub) le fournit.
-
-  crypto:
-    name: crypto (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # macOS retiré (×10). Windows conservé : le quirk libsql-ffi `cp`/CMake
-        # documenté ci-dessous est spécifique à Windows.
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install CMake (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake
-
-      - name: Install CMake (macOS)
-        if: runner.os == 'macOS'
-        run: brew install cmake
-
-      - name: Install CMake (Windows)
-        if: runner.os == 'Windows'
-        run: pip install cmake
-
-      - name: Add Git usr/bin to PATH (Windows)
-        if: runner.os == 'Windows'
-        run: echo "C:/Program Files/Git/usr/bin" >> "$GITHUB_PATH"
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: crypto
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Test (crypto)
-        run: |
-          set -euxo pipefail
-          cargo test -p basemyai-core --features crypto
-          cargo test -p basemyai --features crypto
 
   # ── `basemyai-engine` crash-consistency harness (N2, TODO-NATIVE-ENGINE.md) ─
   # Kill/reopen/verify loop: spawns `crash_writer`, force-kills it mid-write
@@ -208,7 +163,6 @@ jobs:
       - format
       - gate
       - embed
-      - crypto
       - crash-consistency
     steps:
       - name: Check for failures
@@ -217,7 +171,6 @@ jobs:
             "${{ needs.format.result }}"
             "${{ needs.gate.result }}"
             "${{ needs.embed.result }}"
-            "${{ needs.crypto.result }}"
             "${{ needs.crash-consistency.result }}"
           )
 

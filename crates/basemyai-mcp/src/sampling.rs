@@ -79,6 +79,7 @@ impl SamplingBackend {
 
 #[async_trait::async_trait]
 impl LlmInference for SamplingBackend {
+    #[allow(deprecated)] // SEP-2577 : `create_message` déprécié ; conservé tant qu'aucun remplaçant rmcp n'existe (ADR-017).
     async fn complete(&self, prompt: &str) -> Result<String> {
         let messages = vec![SamplingMessage::new(Role::User, SamplingMessageContent::text(prompt))];
 

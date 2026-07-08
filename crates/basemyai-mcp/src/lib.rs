@@ -41,8 +41,7 @@ pub use tools::{
     RecallResult, RememberParams, RememberResult, StatsParams, StatsResult, WatchParams, WatchResult,
 };
 
-#[cfg(feature = "crypto")]
-pub use provider::EncryptedFileProvider;
+pub use provider::FileProvider;
 #[cfg(feature = "test-util")]
 pub use provider::InMemoryProvider;
 

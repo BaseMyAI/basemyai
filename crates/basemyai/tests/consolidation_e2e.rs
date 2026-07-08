@@ -17,7 +17,8 @@
 use std::time::Duration;
 
 use basemyai::{AgentId, AnythingLlmBackend, LlmInference, Memory, MemoryLayer, anythingllm_from_env, consolidate};
-use basemyai_core::{Embedder, Result, Store};
+use basemyai_core::{Embedder, Result};
+mod support;
 
 const DIM: usize = 384;
 
@@ -59,8 +60,8 @@ fn agent(id: &str) -> AgentId {
 
 /// Ouvre une mémoire en RAM pour les tests.
 async fn open_memory(agent_id: &str) -> Memory {
-    let store = Store::open_in_memory().await.expect("store");
-    Memory::open(store, Box::new(FakeEmbedder), agent(agent_id))
+    let store = std::sync::Arc::new(support::open_native_store());
+    Memory::from_native_store(store, Box::new(FakeEmbedder), agent(agent_id))
         .await
         .expect("memory")
 }

@@ -4,9 +4,10 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 use crate::output::Format;
+use crate::ui::ColorMode;
 
 /// CLI développeur de BaseMyAI — la base mémoire privée pour agents IA.
 #[derive(Parser)]
@@ -21,6 +22,18 @@ pub(crate) struct Cli {
     /// Format de sortie. Si omis : `BASEMYAI_FORMAT`, sinon `text`.
     #[arg(long, global = true, value_enum)]
     pub(crate) format: Option<Format>,
+    /// Politique couleur (respecte aussi NO_COLOR si `auto`).
+    #[arg(long, global = true, value_enum, default_value_t = ColorMode::Auto)]
+    pub(crate) color: ColorMode,
+    /// Supprime la sortie informative en mode texte.
+    #[arg(short, long, global = true, default_value_t = false)]
+    pub(crate) quiet: bool,
+    /// Niveau de logs de diagnostic sur stderr (`-v`, `-vv`).
+    #[arg(short = 'v', long, global = true, action = ArgAction::Count)]
+    pub(crate) verbose: u8,
+    /// Désactive les spinners/barres de progression.
+    #[arg(long, global = true, default_value_t = false)]
+    pub(crate) no_progress: bool,
     #[command(subcommand)]
     pub(crate) command: Command,
 }
@@ -123,11 +136,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: GraphAction,
     },
-    /// Tâches de maintenance one-shot (GC, oubli adaptatif).
-    Maintenance {
-        #[command(subcommand)]
-        action: MaintenanceAction,
-    },
     /// Consolidation épisodes → faits + graphe, via le meilleur LLM local détecté.
     Consolidate,
     /// Vérifie un `.bmai` : conteneur valide, version de format attendue.
@@ -168,24 +176,11 @@ pub(crate) enum GraphAction {
         #[arg(long, default_value_t = 1.0)]
         weight: f64,
     },
-    /// Traversée multi-sauts depuis une entité de départ (CTE récursive).
+    /// Traversée multi-sauts depuis une entité de départ (BFS natif, profondeur bornée).
     Traverse {
         start: String,
         #[arg(long, default_value_t = 3)]
         depth: u32,
-    },
-}
-
-#[derive(Subcommand)]
-pub(crate) enum MaintenanceAction {
-    /// Supprime les souvenirs expirés (`valid_until` passé).
-    Gc,
-    /// Évince les souvenirs les moins bien notés (importance × récence) au-delà d'un plafond par agent.
-    ForgetAdaptive {
-        #[arg(long)]
-        capacity: usize,
-        #[arg(long, default_value_t = 30 * 24 * 3600)]
-        half_life_secs: i64,
     },
 }
 

@@ -1,6 +1,7 @@
 [package]
 name = "basemyai"
 description = "Local memory engine for AI agents: 4 memory layers, temporal RAG, per-agent isolation, mandatory encryption. Built on basemyai-core."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,29 +13,24 @@ keywords = ["memory", "agent", "ai", "rag", "vector-search"]
 categories = ["database-implementations", "algorithms"]
 
 [features]
-# SQLite est non-optionnel dans le core.
-# `embed`  : active l'inférence Candle (lourd, exige les fichiers modèle).
-# `crypto` : chiffrement libSQL au repos — obligatoire pour Memory::open sur fichier
-#            (ADR-007). Exige CMake au build time.
+# `embed` : active l'inférence Candle (lourd, exige les fichiers modèle).
+# Le moteur natif (ADR-024/025/030) est l'**unique** backend depuis ADR-032
+# (libSQL retiré du workspace) — plus un choix de feature, un dépendance
+# directe.
 default = []
 embed = ["basemyai-core/embed"]
-crypto = ["basemyai-core/crypto"]
 # `test-util` : expose `HashEmbedder` + `Memory::open_in_memory` — embedder
 # déterministe sans modèle pour tests/spikes des bindings (ni Candle ni CMake).
 # `tempfile` sert `NativeMemoryStore::open_ephemeral` (l'équivalent natif
 # d'`open_in_memory` — le moteur LSM n'a pas de mode in-memory).
 # Jamais en production.
 test-util = ["dep:tempfile"]
-# Backend natif basemyai-engine (ADR-024, câblage `MemoryStore` ADR-027/N5.1).
-# Jamais par défaut : libSQL reste le backend V1 tant que N5.6 (ADR de bascule)
-# n'est pas instruit.
-engine-native = ["dep:basemyai-engine"]
 
 [dependencies]
 basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
-# Backend natif (ADR-024/ADR-027) — feature `engine-native`. Interne, non
-# publié (même précédent que la dépendance optionnelle de basemyai-core).
-basemyai-engine = { path = "../basemyai-engine", optional = true }
+# Backend natif (ADR-024/ADR-027/ADR-032) — dépendance directe, non optionnelle
+# depuis la suppression de libSQL. Interne, non publié.
+basemyai-engine = { path = "../basemyai-engine" }
 tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 serde.workspace = true
@@ -55,6 +51,7 @@ sha2 = { workspace = true }
 [dev-dependencies]
 # Accès direct aux types du core dans les tests d'intégration (fakes pour la DI).
 basemyai-core = { path = "../basemyai-core" }
+tempfile.workspace = true
 
 [lints]
 workspace = true

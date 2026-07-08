@@ -17,8 +17,7 @@ crate-type = ["cdylib", "rlib"]
 doctest    = false
 
 [features]
-default   = ["crypto", "embed"]
-crypto    = ["basemyai/crypto"]
+default   = ["embed"]
 embed     = ["basemyai/embed"]
 # `test-util` : expose Memory.open_in_memory (base :memory:, embedder déterministe)
 # pour les tests/spikes sans CMake ni modèle.

@@ -28,14 +28,18 @@ pub use cognition::{
     Reached, apply_extraction, consolidate, consolidation_prompt, parse_extraction,
 };
 pub use error::{MemoryError, Result};
-pub use maintenance::{AdaptiveForgetting, ConsolidationTask, ExpiredMemoryGc};
+pub use maintenance::ConsolidationTask;
 #[cfg(feature = "test-util")]
 pub use memory::HashEmbedder;
-pub use memory::schema::{BMAI_FORMAT_VERSION, EMBEDDING_DIM, schema};
 pub use memory::{
     AgentId, AgentStats, ImportReport, MAX_TEXT_LEN, Memory, MemoryEvent, MemoryEventKind, MemoryLayer,
     MemorySubscription, Record,
 };
+pub use storage::BMAI_FORMAT_VERSION;
+
+/// Dimension des embeddings du baseline (`all-MiniLM-L6-v2`) — modèle unique
+/// en V1 (CLAUDE.md).
+pub const EMBEDDING_DIM: usize = 384;
 pub use provision::{
     AnythingLlmBackend, BASELINE_DIM, BASELINE_MODEL_ID, BackendKind, HardwareProfile, KNOWN_MODELS, KnownModel,
     LlmOption, LlmProvision, ModelProvision, OllamaBackend, OpenAiCompatBackend, anythingllm_from_env, best_llm_option,

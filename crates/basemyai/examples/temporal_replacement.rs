@@ -4,7 +4,7 @@
 //! Run: `cargo run --example temporal_replacement -p basemyai`
 
 use basemyai::{AgentId, Memory, MemoryLayer};
-use basemyai_core::{Embedder, Store};
+use basemyai_core::{Embedder, EncryptionKey};
 
 const DIM: usize = 384;
 
@@ -41,9 +41,10 @@ impl Embedder for DemoEmbedder {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let store = Store::open_in_memory().await?;
+    let dir = tempfile::tempdir()?;
+    let key = EncryptionKey::new("demo-key-do-not-use-in-prod");
     let agent = AgentId::new("temporal-demo").expect("non-empty id");
-    let memory = Memory::open(store, Box::new(DemoEmbedder), agent).await?;
+    let memory = Memory::open_native(dir.path(), &key, Box::new(DemoEmbedder), agent).await?;
 
     let old_id = memory
         .remember("The user is on the Free billing plan.", MemoryLayer::Semantic)

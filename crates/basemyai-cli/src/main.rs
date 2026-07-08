@@ -6,8 +6,7 @@
 //! création/inspection/vérification d'un conteneur `.bmai` chiffré (ADR-019),
 //! le cycle de vie complet d'un souvenir (`remember`/`recall`/`list`/`forget`/
 //! `invalidate`/`purge`/`export`/`import`), le graphe entités/relations
-//! (`graph`), les tâches de maintenance one-shot (`maintenance`) et la
-//! consolidation (`consolidate`).
+//! (`graph`) et la consolidation (`consolidate`).
 //!
 //! ## Chiffrement obligatoire
 //!
@@ -30,15 +29,14 @@
 //!
 //! ## Features
 //!
-//! Le chemin réel exige `crypto` (chiffrement libSQL) et `embed` (embedder
-//! Candle) — tous deux dans le set par défaut. Sans eux, le binaire se contente
-//! d'afficher l'aide et une erreur explicite.
+//! Le chemin réel exige `embed` (embedder Candle). Sans cette feature, le
+//! binaire se contente d'afficher l'aide et une erreur explicite.
 //!
 //! ## Layout
 //!
 //! `cli` (schéma d'arguments) → `commands::dispatch` (routage) → un module par
 //! domaine sous `commands/` (`config`, `container`, `memory`, `graph`,
-//! `maintenance`, `provision`), chacun s'appuyant sur les helpers partagés de
+//! `provision`), chacun s'appuyant sur les helpers partagés de
 //! `context` (ouverture clé/store/mémoire) et sur `error`/`exit` pour le
 //! contrat de sortie scriptable. `persisted_config` gère
 //! `~/.basemyai/config.toml`.
@@ -50,13 +48,33 @@ mod error;
 mod exit;
 mod output;
 mod persisted_config;
+mod ui;
 
 use clap::Parser;
 use cli::Cli;
 use output::Format;
+use tracing_subscriber::EnvFilter;
 
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    ui::init(ui::UiSettings {
+        color_mode: cli.color,
+        quiet: cli.quiet,
+        no_progress: cli.no_progress,
+    });
+
+    if cli.verbose > 0 {
+        let level = match cli.verbose {
+            0 => "warn",
+            1 => "info",
+            _ => "debug",
+        };
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new(level))
+            .with_target(false)
+            .try_init();
+    }
+
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {

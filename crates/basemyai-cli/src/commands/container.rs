@@ -7,26 +7,29 @@ use std::path::Path;
 use crate::context::open_store;
 use crate::error::CliError;
 use crate::output::Format;
+use crate::ui::color::Stream;
+use crate::ui::theme;
 
 pub(crate) async fn init(path: &Path, format: Format) -> Result<(), CliError> {
     if path.exists() {
         return Err(CliError::AlreadyExists(path.to_path_buf()));
     }
     let store = open_store(path).await?;
-    store.migrate(&basemyai::schema()).await?;
+    let meta = store.container_metadata().await?;
+    let get = |key: &str| meta.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+    let format_version = get("format_version").unwrap_or_default();
     format.print(
         || {
-            println!("created encrypted .bmai container at {}", path.display());
+            println!("created .bmai container at {}", path.display());
             println!(
-                "format_version={}, embedding_dim={}",
-                basemyai::BMAI_FORMAT_VERSION,
+                "format_version={format_version}, embedding_dim={}",
                 basemyai::EMBEDDING_DIM
             );
         },
         || {
             serde_json::json!({
                 "path": path.display().to_string(),
-                "format_version": basemyai::BMAI_FORMAT_VERSION,
+                "format_version": format_version,
                 "embedding_dim": basemyai::EMBEDDING_DIM,
             })
         },
@@ -35,10 +38,17 @@ pub(crate) async fn init(path: &Path, format: Format) -> Result<(), CliError> {
 }
 
 pub(crate) async fn migrate(path: &Path, format: Format) -> Result<(), CliError> {
-    let store = open_store(path).await?;
-    store.migrate(&basemyai::schema()).await?;
+    // Le schéma (format.lock, méta de conteneur) est appliqué à l'ouverture —
+    // `open_store` suffit à "migrer" (idempotent par construction).
+    let spinner = if format.is_text() {
+        crate::ui::progress::spinner("Applying container migrations...")
+    } else {
+        crate::ui::progress::Spinner::Disabled
+    };
+    open_store(path).await?;
+    spinner.finish_and_clear();
     format.print(
-        || println!("migrations applied (idempotent) on {}", path.display()),
+        || crate::ui::render::success(&format!("migrations applied (idempotent) on {}", path.display())),
         || serde_json::json!({ "path": path.display().to_string(), "status": "migrated" }),
     );
     Ok(())
@@ -46,15 +56,16 @@ pub(crate) async fn migrate(path: &Path, format: Format) -> Result<(), CliError>
 
 pub(crate) async fn inspect(path: &Path, format: Format) -> Result<(), CliError> {
     let store = open_store(path).await?;
-    let meta = read_meta(&store).await?;
-    let total = count_memories(&store).await?;
+    let meta = store.container_metadata().await?;
+    let total = i64::try_from(store.total_memory_count().await?).unwrap_or(i64::MAX);
     format.print(
         || {
-            println!("Container metadata ({}):", path.display());
-            for (k, v) in &meta {
-                println!("  {k} = {v}");
-            }
-            println!("Total memory rows (all agents): {total}");
+            crate::ui::render::section(&format!("Container metadata ({})", path.display()));
+            crate::ui::table::print_table(
+                &["Key", "Value"],
+                meta.iter().map(|(k, v)| vec![k.clone(), v.clone()]).collect::<Vec<_>>(),
+            );
+            crate::ui::render::key_values(&[("total_memories:", total.to_string())]);
         },
         || {
             serde_json::json!({
@@ -69,14 +80,14 @@ pub(crate) async fn inspect(path: &Path, format: Format) -> Result<(), CliError>
 
 pub(crate) async fn verify(path: &Path, format: Format) -> Result<(), CliError> {
     let store = open_store(path).await?;
-    let meta = read_meta(&store).await?;
+    let meta = store.container_metadata().await?;
     let get = |key: &str| meta.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
 
     let format_field = get("format");
     let version = get("format_version");
     let engine = get("storage_engine");
 
-    let expected_version = basemyai::BMAI_FORMAT_VERSION.to_string();
+    let expected_version = basemyai::storage::BMAI_FORMAT_VERSION.to_string();
 
     let format_ok = format_field.as_deref() == Some("basemyai-memory");
     let version_ok = version.as_deref() == Some(expected_version.as_str());
@@ -85,28 +96,64 @@ pub(crate) async fn verify(path: &Path, format: Format) -> Result<(), CliError> 
 
     format.print(
         || {
-            if format_ok {
-                println!("✓ format: basemyai-memory");
-            } else {
-                println!(
-                    "✗ format: expected 'basemyai-memory', got {:?}",
-                    format_field.as_deref()
-                );
-            }
-            if version_ok {
-                println!("✓ format_version: {}", version.as_deref().unwrap_or_default());
-            } else {
-                println!(
-                    "✗ format_version: expected '{expected_version}', got {:?}",
-                    version.as_deref()
-                );
-            }
-            match engine.as_deref() {
-                Some(e) => println!("✓ storage_engine: {e}"),
-                None => println!("✗ storage_engine: missing"),
-            }
+            let checks = vec![
+                (
+                    "format".to_string(),
+                    if format_ok {
+                        format!(
+                            "{} basemyai-memory",
+                            theme::success(&theme::ok_mark(Stream::Stdout), Stream::Stdout)
+                        )
+                    } else {
+                        format!(
+                            "{} expected 'basemyai-memory', got {:?}",
+                            theme::error(&theme::fail_mark(Stream::Stdout), Stream::Stdout),
+                            format_field.as_deref()
+                        )
+                    },
+                ),
+                (
+                    "format_version".to_string(),
+                    if version_ok {
+                        format!(
+                            "{} {}",
+                            theme::success(&theme::ok_mark(Stream::Stdout), Stream::Stdout),
+                            version.as_deref().unwrap_or_default()
+                        )
+                    } else {
+                        format!(
+                            "{} expected '{expected_version}', got {:?}",
+                            theme::error(&theme::fail_mark(Stream::Stdout), Stream::Stdout),
+                            version.as_deref()
+                        )
+                    },
+                ),
+                (
+                    "storage_engine".to_string(),
+                    match engine.as_deref() {
+                        Some(e) => format!(
+                            "{} {e}",
+                            theme::success(&theme::ok_mark(Stream::Stdout), Stream::Stdout)
+                        ),
+                        None => format!(
+                            "{} missing",
+                            theme::error(&theme::fail_mark(Stream::Stdout), Stream::Stdout)
+                        ),
+                    },
+                ),
+            ];
+            crate::ui::render::section("Verification checks");
+            crate::ui::table::print_table(
+                &["Check", "Result"],
+                checks
+                    .into_iter()
+                    .map(|(check, result)| vec![check, result])
+                    .collect::<Vec<_>>(),
+            );
             if ok {
-                println!("{} is a valid .bmai container", path.display());
+                crate::ui::render::success(&format!("{} is a valid .bmai container", path.display()));
+            } else {
+                crate::ui::render::hint("run `basemyai inspect` to inspect container metadata");
             }
         },
         || {
@@ -123,27 +170,4 @@ pub(crate) async fn verify(path: &Path, format: Format) -> Result<(), CliError> 
     );
 
     if ok { Ok(()) } else { Err(CliError::VerificationFailed) }
-}
-
-/// Lit la table de métadonnées `bmai_meta`.
-async fn read_meta(store: &basemyai_core::Store) -> Result<Vec<(String, String)>, CliError> {
-    let conn = store.connect();
-    let mut rows = conn.query("SELECT key, value FROM bmai_meta ORDER BY key", ()).await?;
-    let mut out = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let k: String = row.get(0)?;
-        let v: String = row.get(1)?;
-        out.push((k, v));
-    }
-    Ok(out)
-}
-
-async fn count_memories(store: &basemyai_core::Store) -> Result<i64, CliError> {
-    let conn = store.connect();
-    let mut rows = conn.query("SELECT COUNT(*) FROM memory", ()).await?;
-    let total = match rows.next().await? {
-        Some(row) => row.get::<i64>(0)?,
-        None => 0,
-    };
-    Ok(total)
 }

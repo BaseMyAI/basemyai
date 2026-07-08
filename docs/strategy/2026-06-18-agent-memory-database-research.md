@@ -123,7 +123,7 @@ Donner à un agent une mémoire persistante, temporelle et privée dans un seul 
    Veut `pip install basemyai` / `npm install basemyai`, `remember`, `recall`, zéro infra.
 
 2. **Développeur de coding agents / MCP tools**  
-   Veut une mémoire cross-session locale pour Claude Code, Cursor, Codex, ForgeMyAI, outils internes.
+   Veut une mémoire cross-session locale pour Claude Code, Cursor, Codex, outils internes.
 
 3. **Équipe privacy/compliance**  
    Ne peut pas envoyer mémoire utilisateur, conversations, préférences ou embeddings vers un service tiers.

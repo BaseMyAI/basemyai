@@ -1,78 +1,78 @@
-# Skill: architecture — Écosystème BaseMyAI / ForgeMyAI
+# Skill: architecture — BaseMyAI
 
-## Vue d'ensemble de l'écosystème
+## Vue d'ensemble du workspace
 
 ```
                 ┌──────────────────────────────┐
                 │        basemyai-core          │
                 │  (crate Rust, agnostique)     │
-                │  Store libSQL · sqlite-vec    │
+                │  moteur natif · vecteur · FTS │
                 │  Candle · MaintenanceWorker   │
-                └──────┬────────────────┬───────┘
-                       │                │
-       ┌───────────────▼──────┐    ┌────▼──────────────┐
-       │       basemyai        │    │    ForgeMyAI       │
-       │  (sémantique mémoire) │    │  (contexte code)  │
-       │  4 couches · RAG      │    │  graphe · RRF     │
-       │  agent_id · valid_*   │    │  MCP/LSP          │
-       └──┬────────┬──────┬────┘    └───────────────────┘
-          │        │      │
-     ┌────▼──┐  ┌──▼──┐  ┌▼────┐
-     │SDK Py │  │SDK  │  │REST │
-     │(PyO3) │  │Node │  │side │
-     └───────┘  │NAPI │  │ car │
-                └─────┘  └─────┘
+                └──────────────┬───────────────┘
+                               │
+                ┌──────────────▼───────────────┐
+                │          basemyai             │
+                │  (sémantique mémoire)         │
+                │  4 couches · RAG temporel     │
+                │  agent_id · valid_* · graphe  │
+                └──┬────────┬──────┬───────────┘
+                   │        │      │
+              ┌────▼──┐  ┌──▼──┐  ┌▼────┐
+              │SDK Py │  │SDK  │  │REST │
+              │(PyO3) │  │Node │  │side │
+              └───────┘  │NAPI │  │ car │
+                         └─────┘  └─────┘
 ```
+
+Des crates Rust tiers peuvent aussi consommer `basemyai-core` directement (sémantique propre, hors de ce repo). Voir [`../../ECOSYSTEM_ARCHITECTURE.md`](../../ECOSYSTEM_ARCHITECTURE.md) pour le contexte écosystème.
 
 ## Règle de dépendance (JAMAIS violer)
 
-- **`basemyai-core`** ne dépend de rien au-dessus : ni `basemyai`, ni `forge-*`.
-- **`basemyai`** importe `basemyai-core` (jamais `forge-*`).
-- **`forgemyai-app`** importe `basemyai-core` — **PAS `basemyai`** (sinon hérite du RAG temporel / `agent_id` inutiles pour du code).
-- Les SDKs PyO3/NAPI/REST wrappent `basemyai` (la sémantique), jamais le core directement.
+- **`basemyai-engine`** : moteur interne, non publié — consommé par `basemyai-core` uniquement.
+- **`basemyai-core`** ne dépend de rien au-dessus : ni `basemyai`, ni produit tiers.
+- **`basemyai`** importe `basemyai-core` (jamais l'inverse).
+- Les SDKs PyO3/NAPI/REST/CLI wrappent `basemyai` (la sémantique), jamais le core directement.
 
 ## Invariant d'agnosticité de `basemyai-core` (ADR-001)
 
 `basemyai-core` ne connaît **jamais** :
 - `agent_id`, `valid_from`, `valid_until` — sémantique mémoire de `basemyai`
-- `Symbol`, `Edge`, call graph, FTS — sémantique code de ForgeMyAI
+- `Symbol`, `Edge`, call graph — sémantique code d'un consommateur tiers
 - Couches mémoire (episodic, semantic, procedural, short-term)
 - LLM, inférence, consolidation
 
 **Test d'agnosticité** (doit retourner zéro) :
 ```bash
-grep -rE 'agent_id|valid_until|episodic|Symbol|Edge|semantic|graph|entity' \
-  crates/basemyai-core/src
+grep -rE 'agent_id|valid_until|episodic|Symbol|Edge' crates/basemyai-core/src
 ```
 
 ## Principe fondateur : mécanisme au core, sens au consommateur
 
-| Brique core | Sens ajouté par basemyai | Sens ajouté par ForgeMyAI |
-|-------------|--------------------------|---------------------------|
-| `Store.knn(q, k, filter?)` | filter = `agent_id = ? AND valid_until > now()` | filter = `file_path = ? AND lang = ?` |
-| `MaintenanceWorker.register(task)` | task = GC `valid_until` expiré | task = purge vieilles versions MVCC |
-| `Filter { sql, params }` | params = `[agent_id, timestamp]` | params = `[symbol_id, version]` |
+| Brique core | Sens ajouté par `basemyai` |
+|-------------|----------------------------|
+| recherche vectorielle + filtres | isolation `agent_id`, validité temporelle |
+| `MaintenanceWorker.register(task)` | GC expiration, oubli adaptatif, consolidation |
+| graphe / FTS | entités mémoire, relations entre faits |
 
 ## Workflow ADR
 
 **Un ADR ne se modifie JAMAIS.** Une décision qui change = **un nouvel ADR**.
 
 Fichiers de décision :
-- `basemyai/ADR.md` — décisions BaseMyAI (001 à 013+)
-- `basemyai/PRD.md` — product requirements
-- `forgemyai-app/ADR (1).md` — décisions ForgeMyAI
-- `forgemyai-app/ADR-013-basemyai-core.md` — décision d'adopter basemyai-core
-- `ECOSYSTEM_ARCHITECTURE.md` — relation entre les deux produits
+- `docs/ADR.md` — index des décisions BaseMyAI
+- `docs/PRD.md` — product requirements
+- `../ECOSYSTEM_ARCHITECTURE.md` — relation avec les autres produits de l'écosystème
 
-## Stack technique actée (ADR-011, ADR-013)
+## Stack technique actée (ADR-032, natif-only)
 
-| Composant | Choix | Interdit |
-|-----------|-------|---------|
-| Base de données | **libSQL async** | rusqlite, sqlx, DB externe |
-| Vecteur | **natif libSQL** (`vector_top_k`, `F32_BLOB`) | extension externe, pgvector |
-| Embeddings | **Candle** (`all-MiniLM-L6-v2`, 384d) | ONNX, fastembed |
-| Chiffrement | **libSQL feature `crypto`** | sqlcipher séparé, AES manuel |
-| Futur | Turso DB (pur Rust) | cloud-only DBs |
+| Composant | Choix |
+|-----------|-------|
+| Stockage | **moteur natif** `basemyai-engine` (WAL + LSM + SST) |
+| Vecteur | **LM-DiskANN / Vamana** in-process |
+| FTS | index inversé natif (BM25) |
+| Graphe | layout KV préfixé par agent |
+| Embeddings | **Candle** (`all-MiniLM-L6-v2`, 384d) |
+| Chiffrement | enveloppe native ADR-030 (XChaCha20-Poly1305) |
 
 ## Provisioning hardware-aware (ADR-010)
 
@@ -84,34 +84,23 @@ Fichiers de décision :
 ## Modèle en V1
 
 - **Baseline unique** : `all-MiniLM-L6-v2` (384d, Candle, pur Rust)
-- Garantit la compatibilité `.idx` entre basemyai et ForgeMyAI
 - Multi-modèles = V2
 
 ## Gouvernance des releases
 
 - **Semver strict** sur `basemyai-core` : tout changement d'API = bump de version
-- ForgeMyAI **pin** la version de `basemyai-core` dans son `Cargo.toml`
-- `basemyai-core` testé Linux + Windows dès son premier commit (il porte du code C via bindgen)
+- Les consommateurs tiers **pin** la version de `basemyai-core` dans leur `Cargo.toml`
 
-## Surfaces SDK de basemyai (4 surfaces)
+## Surfaces de basemyai
 
 | Surface | Consommateur | Couche |
 |---------|-------------|--------|
 | SDK Python (PyO3) | builders d'agents Python | `basemyai` |
 | SDK Node (NAPI-RS) | builders d'agents JS/TS | `basemyai` |
 | Sidecar REST (axum) | Go, Ruby, etc. | `basemyai` |
-| Crate Rust natif | ForgeMyAI | `basemyai-core` |
+| CLI (`basemyai`) | ops, scripting | `basemyai` |
+| Crate Rust natif | programmes custom | `basemyai-core` |
 
-## Statut juin 2026
+## Statut juillet 2026
 
-**BaseMyAI** : workspace scaffoldé, Phases 1+2 implémentées :
-- KNN cosine + oversampling ×8 (ADR-012)
-- Graphe entités/relations CTE récursive
-- RRF (`rrf_fuse`, k=60)
-- Oubli adaptatif hyperbolique
-- Consolidation épisodes → faits (`LlmInference` injecté)
-- LLM provision 20 modèles, 8 backends
-
-**Reste ouvert** : wiring `ConsolidationTask` dans `MaintenanceWorker`, publication SDKs.
-
-**ForgeMyAI** : docs/ADRs seulement — pas encore scaffoldé.
+Workspace **100 % moteur natif** (ADR-032). Phases 1+2 implémentées ; surfaces MCP/REST/bindings/CLI en place. Voir `docs/status.md`.

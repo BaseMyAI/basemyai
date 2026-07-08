@@ -19,7 +19,6 @@ pub use provider::MemoryProvider;
 pub use routes::build_app;
 pub use state::AppState;
 
-#[cfg(feature = "crypto")]
-pub use provider::EncryptedFileProvider;
+pub use provider::FileProvider;
 #[cfg(feature = "test-util")]
 pub use provider::InMemoryProvider;

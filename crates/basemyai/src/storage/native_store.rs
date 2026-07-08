@@ -10,13 +10,13 @@
 //!
 //! ## Parité comportementale (ADR-027 §6, ADR-028)
 //!
-//! Chaque méthode reproduit la requête SQL de [`super::LibsqlMemoryStore`],
+//! Chaque méthode implémente la sémantique de requête historique du domaine,
 //! y compris ses non-filtres : `hydrate` et `exact_fact_exists` ne vérifient
-//! **pas** la validité temporelle (l'original non plus), `graph_upsert_edge`
+//! **pas** la validité temporelle, `graph_upsert_edge`
 //! préserve le `valid_from` d'une arête existante et ne met à jour que
-//! `weight` (le `ON CONFLICT ... DO UPDATE SET weight` original). Le KNN
-//! oversample ×[`OVERSAMPLE`] puis post-filtre (ADR-012 — libSQL fait
-//! exactement cela quand un filtre est présent, et ici un filtre
+//! `weight` (parité sémantique historique V1 : upsert ne modifie que le poids
+//! d'une arête existante). Le KNN
+//! oversample ×[`OVERSAMPLE`] puis post-filtre (ADR-012 : un filtre
 //! agent+validité est *toujours* présent). `keyword_ranking_ids` est BM25
 //! natif (ADR-028) sur le sous-ensemble de `match_expr` que
 //! `fts_match_expr()` produit réellement — pas de racinisation Porter (gap
@@ -64,16 +64,51 @@ use crate::cognition::Reached;
 use crate::temporal::Validity;
 use crate::{AgentId, AgentStats, MemoryLayer, Record, Result};
 
+/// Préfixe KV des métadonnées conteneur (équivalent sémantique `bmai_meta`, ADR-019).
+/// Paires clé/valeur UTF-8 brutes que `basemyai` possède (contrat embedding,
+/// `format`/`storage_engine`/…) — hors du keyspace réservé `idx/` du moteur.
+const BMAI_META_PREFIX: &[u8] = b"meta/bmai/";
+
+/// Clé complète d'une entrée de méta consommateur.
+fn bmai_meta_key(name: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(BMAI_META_PREFIX.len() + name.len());
+    key.extend_from_slice(BMAI_META_PREFIX);
+    key.extend_from_slice(name.as_bytes());
+    key
+}
+
+/// Version publique du conteneur `.bmai` (ADR-033 : moteur natif, seul backend).
+pub const BMAI_FORMAT_VERSION: u32 = 2;
+
+/// Seme les méta de conteneur (`format`/`format_version`/`storage_engine`/
+/// `schema_family`/`embedding_dim`) au premier `open` d'un store natif.
+/// Idempotent (`INSERT OR IGNORE`, une entrée déjà présente n'est jamais
+/// réécrite) : appelé à **chaque** ouverture, jamais seulement à la création.
+fn ensure_container_meta(engine: &mut Engine) -> Result<()> {
+    for (name, value) in [
+        ("format", "basemyai-memory".to_string()),
+        ("format_version", BMAI_FORMAT_VERSION.to_string()),
+        ("storage_engine", "native".to_string()),
+        ("schema_family", "agent-memory".to_string()),
+        ("embedding_dim", crate::EMBEDDING_DIM.to_string()),
+    ] {
+        let key = bmai_meta_key(name);
+        if engine.get(&key).map_err(storage)?.is_none() {
+            engine.put(&key, value.as_bytes()).map_err(storage)?;
+        }
+    }
+    Ok(())
+}
+
 /// Facteur d'oversampling du KNN filtré (ADR-012) : on demande `k × 8`
 /// candidats à l'index, puis le post-filtre agent/validité/couche réduit à
-/// `k` — même politique que le `vector_knn` libSQL en présence d'un filtre.
+/// `k` — politique ADR-012 (filtre agent+validité toujours présent).
 const OVERSAMPLE: usize = 8;
 
-/// Importance par défaut d'un souvenir inséré — parité avec le `DEFAULT 1.0`
-/// de la colonne `importance` du schéma libSQL.
+/// Importance par défaut d'un souvenir inséré — parité avec le défaut historique V1 (`1.0`).
 const DEFAULT_IMPORTANCE: f64 = 1.0;
 
-/// Moteur de stockage natif — ADR-024/ADR-027, feature `engine-native`.
+/// Moteur de stockage natif — ADR-024/ADR-027/ADR-033 (unique implémentation `MemoryStore`).
 ///
 /// Concurrence (N5.5, barre hardening M6) : `inner` est un `RwLock`, pas un
 /// `Mutex` — les chemins de lecture pure (`vector_ranking_ids`,
@@ -94,7 +129,7 @@ const DEFAULT_IMPORTANCE: f64 = 1.0;
 pub struct NativeMemoryStore {
     inner: Arc<RwLock<NativeInner>>,
     /// Garde de vie du répertoire temporaire d'[`Self::open_ephemeral`] —
-    /// supprimé au drop du store, comme un `open_in_memory` libSQL.
+    /// supprimé au drop du store (store éphémère test-only).
     #[cfg(feature = "test-util")]
     _tempdir: Option<tempfile::TempDir>,
 }
@@ -108,8 +143,7 @@ struct NativeInner {
 }
 
 /// Mappe une erreur du backend natif (ou du pont async) en
-/// [`crate::MemoryError`] — même convention que le `storage()` de
-/// `libsql_store.rs`.
+/// [`crate::MemoryError`].
 fn storage(e: impl std::fmt::Display) -> crate::MemoryError {
     basemyai_core::CoreError::Storage(e.to_string()).into()
 }
@@ -144,6 +178,7 @@ impl NativeMemoryStore {
         let params = basemyai_engine::VectorIndexParams::with_dim(crate::EMBEDDING_DIM);
         let vectors = PersistentVectorIndex::open(&mut engine, params).map_err(storage)?;
         let memory = PersistentMemoryIndex::open(&engine).map_err(storage)?;
+        ensure_container_meta(&mut engine)?;
         Ok(Self {
             inner: Arc::new(RwLock::new(NativeInner {
                 engine,
@@ -159,10 +194,9 @@ impl NativeMemoryStore {
 
     /// Fait tourner la clé de chiffrement **en place** (ADR-030 §4) : la DEK
     /// du store est ré-enveloppée sous une KEK dérivée de `new_key`,
-    /// `crypto.meta` remplacé atomiquement. O(1), et contrairement à
-    /// [`Memory::rotate_key`](crate::Memory::rotate_key) côté libSQL,
-    /// **cette instance reste pleinement utilisable après l'appel** — pas de
-    /// réouverture requise.
+    /// `crypto.meta` remplacé atomiquement. O(1), et **cette instance reste
+    /// pleinement utilisable après l'appel** — pas de réouverture requise
+    /// (contrairement à l'ancien chemin `PRAGMA rekey` libSQL).
     ///
     /// # Errors
     /// Erreur de stockage si le store n'a pas été ouvert chiffré (rien à
@@ -174,9 +208,8 @@ impl NativeMemoryStore {
             .await
     }
 
-    /// Store natif jetable dans un répertoire temporaire, supprimé au drop —
-    /// l'équivalent natif de `Store::open_in_memory` (le moteur LSM n'a pas
-    /// de mode in-memory). Réservé aux tests, comme son homologue libSQL.
+    /// Store natif jetable dans un répertoire temporaire, supprimé au drop
+    /// (le moteur LSM n'a pas de mode in-memory). Réservé aux tests.
     ///
     /// # Errors
     /// Erreur de stockage si le répertoire temporaire ou le store ne se
@@ -203,6 +236,41 @@ impl NativeMemoryStore {
         let mut store = Self::open_encrypted(dir.path(), key)?;
         store._tempdir = Some(dir);
         Ok(store)
+    }
+
+    /// Méta de conteneur (`format`/`format_version`/`storage_engine`/…, plus
+    /// `embedding_model_id`/`embedding_dim` si une [`crate::Memory`] a déjà
+    /// été ouverte dessus) — lecture des paires clé/valeur sous le préfixe
+    /// `bmai_meta` (CLI `inspect`/`verify`, ADR-033). Triée par
+    /// nom pour un affichage stable.
+    ///
+    /// # Errors
+    /// Erreur de stockage si le scan échoue.
+    pub async fn container_metadata(&self) -> Result<Vec<(String, String)>> {
+        self.with_inner_read(|inner| {
+            let entries = inner.engine.scan_prefix(BMAI_META_PREFIX).map_err(storage)?;
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                let name = String::from_utf8(key.as_bytes()[BMAI_META_PREFIX.len()..].to_vec())
+                    .map_err(|e| storage(format!("nom de méta consommateur non UTF-8 : {e}")))?;
+                let value = String::from_utf8(value).map_err(|e| storage(format!("valeur de méta non UTF-8 : {e}")))?;
+                out.push((name, value));
+            }
+            out.sort();
+            Ok(out)
+        })
+        .await
+    }
+
+    /// Nombre total de souvenirs, **toutes couches et tous agents confondus**
+    /// — l'homologue natif de `SELECT COUNT(*) FROM memory` du CLI `inspect`
+    /// (ADR-032).
+    ///
+    /// # Errors
+    /// Erreur de stockage si le scan échoue.
+    pub async fn total_memory_count(&self) -> Result<u64> {
+        self.with_inner_read(|inner| inner.memory.count_all(&inner.engine).map_err(storage))
+            .await
     }
 
     /// Exécute `f` sur l'état natif dans le pool bloquant de tokio sous
@@ -245,6 +313,218 @@ impl NativeMemoryStore {
         .await
         .map_err(|e| storage(format!("tâche bloquante du store natif interrompue : {e}")))?
     }
+
+    /// Sémantique `INSERT OR IGNORE` puis lecture sur la méta consommateur
+    /// (ADR-033) : si `name` existe, renvoie la valeur **stockée** (jamais
+    /// écrasée) ; sinon écrit `value` et la renvoie. Brique du contrat
+    /// embedding (`ensure_embedding_contract`).
+    pub(crate) async fn meta_ensure(&self, name: &str, value: &str) -> Result<String> {
+        let (name, value) = (name.to_string(), value.to_string());
+        self.with_inner(move |inner| {
+            let key = bmai_meta_key(&name);
+            if let Some(existing) = inner.engine.get(&key).map_err(storage)? {
+                return String::from_utf8(existing)
+                    .map_err(|e| storage(format!("méta consommateur {name:?} non UTF-8 : {e}")));
+            }
+            inner.engine.put(&key, value.as_bytes()).map_err(storage)?;
+            Ok(value)
+        })
+        .await
+    }
+
+    /// Tout ce qui appartient à `agent`, en lignes brutes du moteur — la
+    /// brique de l'export JSONL (ADR-032). Les tris reproduisent les
+    /// Tri déterministe pour l'export JSONL (souvenirs par `(valid_from, id)`,
+    /// entités par `id`, arêtes par `(src, dst, relation)`) pour qu'un même
+    /// contenu produise un export identique octet pour octet quel que soit
+    /// le backend.
+    pub async fn export_rows(&self, agent: &AgentId) -> Result<NativeExportRows> {
+        let agent = agent.clone();
+        self.with_inner_read(move |inner| {
+            let NativeInner {
+                engine, memory, graph, ..
+            } = inner;
+            let mut memories = memory.scan_agent(engine, agent.as_str()).map_err(storage)?;
+            memories.sort_by(|(a_id, a), (b_id, b)| (a.valid_from, a_id).cmp(&(b.valid_from, b_id)));
+            // Le scan structurel rend déjà les entités par id ascendant
+            // (ordre des octets de clé) — équivalent du `ORDER BY id`.
+            let entities = graph.entities(engine, agent.as_str()).map_err(storage)?;
+            let mut edges = graph.edges(engine, agent.as_str()).map_err(storage)?;
+            edges.sort_by(|(a_src, a_rel, a_dst, _), (b_src, b_rel, b_dst, _)| {
+                (a_src, a_dst, a_rel).cmp(&(b_src, b_dst, b_rel))
+            });
+            Ok(NativeExportRows {
+                memories,
+                entities,
+                edges,
+            })
+        })
+        .await
+    }
+
+    /// Import idempotent de lignes complètes (ADR-032) : les souvenirs
+    /// nouveaux partent en **un seul** batch WAL tout-ou-rien
+    /// (`put_many`, N5.5) avec leur fidélité complète
+    /// (`importance`/`last_access` préservés — contrairement à
+    /// `put_memory_batch` qui applique les défauts d'un souvenir neuf) ;
+    /// les ids déjà présents (dans le store **ou** plus haut dans le même
+    /// fichier) sont comptés `*_skipped` et laissés intacts — la sémantique
+    /// Sémantique insert-or-ignore sur la méta consommateur. Entités et arêtes suivent en
+    /// upserts individuels durables : l'import natif est **idempotent et
+    /// reprennable**, pas globalement atomique (écart assumé, ADR-032 §3 —
+    /// même classe que `purge_agent`, ADR-027 §6).
+    pub(crate) async fn import_rows(
+        &self,
+        agent: &AgentId,
+        memories: Vec<NativeImportMemory>,
+        entities: Vec<NativeImportEntity>,
+        edges: Vec<NativeImportEdge>,
+    ) -> Result<crate::ImportReport> {
+        let agent = agent.clone();
+        self.with_inner(move |inner| {
+            let mut report = crate::ImportReport::default();
+
+            let NativeInner {
+                engine,
+                vectors,
+                memory,
+                graph,
+                fts,
+            } = &mut *inner;
+
+            // ── Souvenirs : filtre des présents, un batch pour les neufs ──
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            let mut fresh: Vec<&NativeImportMemory> = Vec::new();
+            for m in &memories {
+                let exists = memory.get(engine, agent.as_str(), &m.id).map_err(storage)?.is_some();
+                if exists || !seen.insert(m.id.as_str()) {
+                    report.memories_skipped += 1;
+                } else {
+                    fresh.push(m);
+                }
+            }
+            let entries: Vec<(&str, NewMemoryRecord<'_>, Vec<f32>)> = fresh
+                .iter()
+                .map(|m| {
+                    (
+                        m.id.as_str(),
+                        NewMemoryRecord {
+                            layer: m.layer.table(),
+                            content: &m.content,
+                            source: &m.source,
+                            valid_from: m.valid_from,
+                            valid_until: m.valid_until,
+                            importance: m.importance,
+                            last_access: m.last_access.unwrap_or(m.valid_from),
+                        },
+                        m.vector.clone(),
+                    )
+                })
+                .collect();
+            if !entries.is_empty() {
+                memory
+                    .put_many(engine, vectors, fts, agent.as_str(), &entries)
+                    .map_err(storage)?;
+                report.memories += entries.len();
+            }
+
+            // ── Entités : `INSERT OR IGNORE` — jamais d'écrasement ────────
+            for e in entities {
+                if graph.entity(engine, agent.as_str(), &e.id).map_err(storage)?.is_some() {
+                    report.entities_skipped += 1;
+                    continue;
+                }
+                graph
+                    .upsert_entity(
+                        engine,
+                        agent.as_str(),
+                        &e.id,
+                        basemyai_engine::GraphEntity {
+                            kind: e.kind,
+                            label: e.label,
+                            valid_from: e.valid_from,
+                            valid_until: e.valid_until,
+                        },
+                    )
+                    .map_err(storage)?;
+                report.entities += 1;
+            }
+
+            // ── Arêtes : idem, la méta complète de l'export est préservée ─
+            for e in edges {
+                if graph
+                    .edge_meta(engine, agent.as_str(), &e.src, &e.relation, &e.dst)
+                    .map_err(storage)?
+                    .is_some()
+                {
+                    report.edges_skipped += 1;
+                    continue;
+                }
+                graph
+                    .upsert_edge(
+                        engine,
+                        agent.as_str(),
+                        &e.src,
+                        &e.relation,
+                        &e.dst,
+                        basemyai_engine::GraphEdgeMeta {
+                            weight: e.weight,
+                            valid_from: e.valid_from,
+                            valid_until: e.valid_until,
+                        },
+                    )
+                    .map_err(storage)?;
+                report.edges += 1;
+            }
+
+            Ok(report)
+        })
+        .await
+    }
+}
+
+/// Lignes brutes d'un export natif ([`NativeMemoryStore::export_rows`]) —
+/// tout ce qui appartient à un agent, dans l'ordre de sérialisation JSONL.
+pub struct NativeExportRows {
+    pub memories: Vec<(String, basemyai_engine::MemoryRecord)>,
+    pub entities: Vec<(String, basemyai_engine::GraphEntity)>,
+    pub edges: Vec<(String, String, String, basemyai_engine::GraphEdgeMeta)>,
+}
+
+/// Un souvenir complet à importer ([`NativeMemoryStore::import_rows`]) —
+/// fidélité totale (`importance`/`last_access`), vecteur déjà recalculé par
+/// l'embedder de la mémoire cible.
+pub(crate) struct NativeImportMemory {
+    pub id: String,
+    pub layer: MemoryLayer,
+    pub content: String,
+    pub source: String,
+    pub valid_from: i64,
+    pub valid_until: Option<i64>,
+    pub importance: f64,
+    pub last_access: Option<i64>,
+    pub vector: Vec<f32>,
+}
+
+/// Une entité de graphe à importer. Pas d'équivalent `importance` dans
+/// `GraphEntity:1` — champ jamais écrit par le contrat `MemoryStore`, perdu
+/// à l'import natif (écart documenté, ADR-033 §3).
+pub(crate) struct NativeImportEntity {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub valid_from: i64,
+    pub valid_until: Option<i64>,
+}
+
+/// Une arête de graphe à importer, méta complète de l'export préservée.
+pub(crate) struct NativeImportEdge {
+    pub src: String,
+    pub dst: String,
+    pub relation: String,
+    pub weight: f64,
+    pub valid_from: i64,
+    pub valid_until: Option<i64>,
 }
 
 /// `true` si la fenêtre `[valid_from, valid_until)` couvre `now` — le filtre
@@ -320,8 +600,7 @@ impl NativeInner {
     /// Insère plusieurs souvenirs de `agent` en **un seul** batch atomique
     /// (N5.5, `PersistentMemoryIndex::put_many`) : plus l'écart « atomique
     /// par item » d'ADR-027 §6 — un `put_memory_batch` natif est désormais
-    /// UN enregistrement WAL, tout-ou-rien, comme la transaction libSQL qu'il
-    /// remplace.
+    /// UN enregistrement WAL, tout-ou-rien (équivalent sémantique d'une txn unique).
     fn put_many(&mut self, agent: &AgentId, items: &[NewMemory<'_>]) -> Result<()> {
         let Self {
             engine,
@@ -357,6 +636,57 @@ impl NativeInner {
 
 #[async_trait::async_trait]
 impl MemoryStore for NativeMemoryStore {
+    async fn layer_of(&self, agent: &AgentId, id: &str) -> Result<Option<MemoryLayer>> {
+        let (agent, id) = (agent.clone(), id.to_string());
+        // Lecture pure — verrou de lecture partagé (N5.5).
+        self.with_inner_read(move |inner| {
+            match inner.memory.get(&inner.engine, agent.as_str(), &id).map_err(storage)? {
+                Some(record) => Ok(Some(MemoryLayer::from_table(&record.layer)?)),
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
+    async fn list_memories(
+        &self,
+        agent: &AgentId,
+        layer: Option<MemoryLayer>,
+        limit: usize,
+        include_invalid: bool,
+        now: i64,
+    ) -> Result<Vec<super::ListedRecord>> {
+        let agent = agent.clone();
+        // Lecture pure — verrou de lecture partagé (N5.5).
+        self.with_inner_read(move |inner| {
+            let NativeInner { engine, memory, .. } = inner;
+            let mut records: Vec<(String, basemyai_engine::MemoryRecord)> =
+                memory.scan_agent(engine, agent.as_str()).map_err(storage)?;
+            records.retain(|(_, record)| include_invalid || record_valid_at(record, now));
+            if let Some(l) = layer {
+                records.retain(|(_, record)| record.layer == l.table());
+            }
+            // Parité ORDER BY valid_from DESC (tri stable, comme
+            // `recent_episodes`) : le scan structurel ne garantit qu'un ordre
+            // par id, il faut trier explicitement.
+            records.sort_by_key(|(_, record)| std::cmp::Reverse(record.valid_from));
+            records.truncate(limit);
+            records
+                .into_iter()
+                .map(|(id, record)| {
+                    Ok(super::ListedRecord {
+                        id,
+                        layer: MemoryLayer::from_table(&record.layer)?,
+                        content: record.content,
+                        valid_from: record.valid_from,
+                        valid_until: record.valid_until,
+                    })
+                })
+                .collect()
+        })
+        .await
+    }
+
     async fn put_memory(
         &self,
         id: &str,
@@ -501,7 +831,7 @@ impl MemoryStore for NativeMemoryStore {
             // Le moteur (`search_bm25`) est agnostique de la validité
             // temporelle (mécanisme au moteur, sens au consommateur) ; on
             // sur-échantillonne donc comme le chemin vectoriel (ADR-012) pour
-            // ne pas sous-compter après le filtre — même raison que libSQL
+            // ne pas sous-compter après le filtre — oversampling ADR-012
             // applique son filtre `valid_from`/`valid_until` *avant* son
             // `LIMIT` dans la requête SQL.
             let oversampled = k.saturating_mul(OVERSAMPLE);
@@ -654,7 +984,7 @@ impl MemoryStore for NativeMemoryStore {
         };
         self.with_inner(move |inner| {
             let NativeInner { engine, graph, .. } = &mut *inner;
-            // Parité ON CONFLICT DO UPDATE SET kind/label/valid_* :
+            // Parité upsert entité : kind/label/valid_* préservés si l'id existe.
             // écrasement complet.
             graph
                 .upsert_entity(engine, agent.as_str(), &id, entity)
@@ -675,8 +1005,7 @@ impl MemoryStore for NativeMemoryStore {
         let (agent, src, relation, dst) = (agent.clone(), src.to_string(), relation.to_string(), dst.to_string());
         self.with_inner(move |inner| {
             let NativeInner { engine, graph, .. } = &mut *inner;
-            // Parité ON CONFLICT DO UPDATE SET weight : une arête existante
-            // garde sa fenêtre de validité, seule `weight` bouge.
+            // Parité upsert arête : seul le poids est mis à jour si l'arête existe.
             let meta = match graph
                 .edge_meta(engine, agent.as_str(), &src, &relation, &dst)
                 .map_err(storage)?

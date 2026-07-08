@@ -11,7 +11,7 @@
 [env]
 RUST_TEST_THREADS = "1"
 
-# `cargo xtask <check|test|test-embed|test-crypto|ci>` : reproduit la matrice
+# `cargo xtask <check|test|test-embed|ci>` : reproduit la matrice
 # CI exacte (par-crate + features) — voir xtask/src/main.rs.
 [alias]
 xtask = "run --package xtask --"

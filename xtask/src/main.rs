@@ -5,27 +5,15 @@
 //! interdit `--features` à la racine). Ce binaire encode cette matrice pour
 //! qu'un run local vert implique une CI verte.
 //!
-//! Usage : `cargo xtask <check|test|test-embed|test-crypto|ci>`.
+//! Usage : `cargo xtask <check|test|test-embed|ci>`.
 //!
 //! Toute évolution de `ci.yml` doit être répercutée ici (et inversement).
 
 use std::process::{Command, exit};
 
 /// Matrice clippy du job `gate` (ci.yml, étape « Clippy (-D warnings) »).
-/// NB : `basemyai-cli` n'est pas dans le gate CI — fidélité stricte à ci.yml.
 const CLIPPY: &[&[&str]] = &[
     &["clippy", "-p", "basemyai-core", "--all-targets", "--", "-D", "warnings"],
-    &[
-        "clippy",
-        "-p",
-        "basemyai-core",
-        "--features",
-        "engine-native",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings",
-    ],
     &[
         "clippy",
         "-p",
@@ -41,17 +29,6 @@ const CLIPPY: &[&[&str]] = &[
         "basemyai",
         "--features",
         "test-util",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings",
-    ],
-    &[
-        "clippy",
-        "-p",
-        "basemyai",
-        "--features",
-        "test-util,engine-native",
         "--all-targets",
         "--",
         "-D",
@@ -81,6 +58,7 @@ const CLIPPY: &[&[&str]] = &[
         "-D",
         "warnings",
     ],
+    &["clippy", "-p", "basemyai-cli", "--all-targets", "--", "-D", "warnings"],
     &[
         "clippy",
         "-p",
@@ -107,10 +85,9 @@ const CLIPPY: &[&[&str]] = &[
     ],
 ];
 
-/// Matrice de tests du job `gate` (config légère : ni Candle ni CMake).
+/// Matrice de tests du job `gate` (config légère : ni Candle ni tests `#[ignore]`).
 const TEST: &[&[&str]] = &[
     &["test", "-p", "basemyai-core"],
-    &["test", "-p", "basemyai-core", "--features", "engine-native"],
     // `--lib --bins --test basic --test vector_recall --test vector_persistence
     // --test vector_churn --test graph_parity` : les tests unitaires du
     // moteur natif + le harnais recall de l'index vectoriel (N3, oracle
@@ -141,17 +118,26 @@ const TEST: &[&[&str]] = &[
         "graph_parity",
     ],
     &["test", "-p", "basemyai", "--features", "test-util"],
-    // `--test memory_tests` : le runner déclaratif multi-backend (N2) avec le
-    // backend Native branché (N5.1, ADR-027) — mêmes scénarios rejoués contre
-    // Libsql ET le moteur natif, zéro divergence tolérée.
+    // `--test memory_tests` : runner déclaratif du contrat MemoryStore sur le
+    // backend natif (clair + chiffré), zéro divergence tolérée.
     &[
         "test",
         "-p",
         "basemyai",
         "--features",
-        "test-util,engine-native",
+        "test-util",
         "--test",
         "memory_tests",
+    ],
+    // Isolation adversariale P1 (ADR-006) — agent_id hostile, FTS hostile, etc.
+    &[
+        "test",
+        "-p",
+        "basemyai",
+        "--features",
+        "test-util",
+        "--test",
+        "p1_isolation_adversarial",
     ],
     // `--test native_memory_store_bench` : KNN via le chemin `MemoryStore`
     // complet (N5.5) — la variante N=2000 seule tourne ici (rapide) ; la
@@ -162,7 +148,7 @@ const TEST: &[&[&str]] = &[
         "-p",
         "basemyai",
         "--features",
-        "test-util,engine-native",
+        "test-util",
         "--test",
         "native_memory_store_bench",
     ],
@@ -182,18 +168,13 @@ const TEST: &[&[&str]] = &[
         "--features",
         "test-util",
     ],
+    &["test", "-p", "basemyai-cli"],
 ];
 
 /// Job `embed` (compile Candle — lourd ; les tests réels sont `#[ignore]`).
 const TEST_EMBED: &[&[&str]] = &[
     &["test", "-p", "basemyai-core", "--features", "embed"],
     &["test", "-p", "basemyai", "--features", "embed"],
-];
-
-/// Job `crypto` (chiffrement libSQL — EXIGE CMake installé).
-const TEST_CRYPTO: &[&[&str]] = &[
-    &["test", "-p", "basemyai-core", "--features", "crypto"],
-    &["test", "-p", "basemyai", "--features", "crypto"],
 ];
 
 /// `format.lock` anti-drift check (ADR-025, `docs/PLAN-NATIVE-ENGINE.md`
@@ -229,13 +210,6 @@ fn main() {
         }
         "test" => run_all(TEST),
         "test-embed" => run_all(TEST_EMBED),
-        "test-crypto" => {
-            eprintln!(
-                "⚠ la feature `crypto` compile libsql avec chiffrement : CMake doit être \
-                 installé (et `cp` dans le PATH sous Windows — Git usr/bin le fournit)."
-            );
-            run_all(TEST_CRYPTO);
-        }
         "format-lock" => run_all(FORMAT_LOCK),
         "test-crash-consistency" => run_all(TEST_CRASH_CONSISTENCY),
         "ci" => {
@@ -244,9 +218,9 @@ fn main() {
             run_all(TEST);
             run_all(FORMAT_LOCK);
             println!(
-                "\nGate CI léger vert. Les jobs `embed` et `crypto` sont séparés en CI :\n\
-                 lance `cargo xtask test-embed` (Candle, lourd) et `cargo xtask test-crypto` \
-                 (CMake requis) pour la matrice complète."
+                "\nGate CI léger vert. Le job `embed` reste séparé en CI :\n\
+                 lance `cargo xtask test-embed` (Candle, compilation lourde) \
+                 pour couvrir la matrice complète."
             );
         }
         "" | "help" | "-h" | "--help" => usage(0),
@@ -263,12 +237,11 @@ fn usage(code: i32) -> ! {
          USAGE : cargo xtask <SOUS-COMMANDE>\n\n\
          SOUS-COMMANDES :\n\
          \x20 check        fmt --check + clippy par crate, features CI, -D warnings + format.lock\n\
-         \x20 test         tests par crate, config légère (sans embed/crypto)\n\
+         \x20 test         tests par crate, config légère (sans embed)\n\
          \x20 test-embed   tests du job CI `embed` (Candle — compilation lourde)\n\
-         \x20 test-crypto  tests du job CI `crypto` (chiffrement libSQL — CMake requis)\n\
          \x20 format-lock  vérifie basemyai-engine/format.lock contre les specs de format actuelles\n\
          \x20 test-crash-consistency  kill/reopen/verify en boucle sur basemyai-engine (~20 cycles)\n\
-         \x20 ci           check + test (embed/crypto/crash-consistency restent des jobs séparés)\n\
+         \x20 ci           check + test (embed/crash-consistency restent des jobs séparés)\n\
          \x20 help         affiche cette aide\n\n\
          NB : `cargo clippy --workspace` ne reproduit PAS la CI (features par crate)."
     );

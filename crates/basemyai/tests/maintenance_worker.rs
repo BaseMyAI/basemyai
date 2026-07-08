@@ -1,13 +1,16 @@
-//! Tests d'intégration du wiring MaintenanceWorker (M0.2).
+//! Tests d'intégration du wiring `MaintenanceWorker` (M0.2).
 //! Vérifie que `ConsolidationTask` tourne correctement via l'interface
-//! `MaintenanceTask`, et que `AdaptiveForgetting` + `ExpiredMemoryGc`
-//! s'enregistrent dans `MaintenanceWorker` sans modification.
+//! `MaintenanceTask` — GC/oubli adaptatif étaient les deux autres tâches
+//! enregistrées ici avant ADR-032 (retrait de libSQL) ; elles n'ont pas
+//! d'équivalent natif aujourd'hui (voir `crates/basemyai-cli/src/commands/
+//! maintenance.rs`).
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use basemyai::{AdaptiveForgetting, AgentId, ConsolidationTask, ExpiredMemoryGc, LlmInference, Memory, MemoryLayer};
-use basemyai_core::{Embedder, MaintenanceTask, MaintenanceWorker, Result as CoreResult, Store};
+use basemyai::{AgentId, ConsolidationTask, LlmInference, Memory, MemoryLayer};
+use basemyai_core::{Embedder, MaintenanceTask, MaintenanceWorker, Result as CoreResult};
+mod support;
 
 const DIM: usize = 384;
 
@@ -59,26 +62,25 @@ fn agent(id: &str) -> AgentId {
     AgentId::new(id).expect("agent id non vide")
 }
 
+async fn open_memory(agent_id: &str) -> Memory {
+    let store = Arc::new(support::open_native_store());
+    Memory::from_native_store(store, Box::new(FakeEmbedder), agent(agent_id))
+        .await
+        .expect("open memory")
+}
+
 /// `ConsolidationTask::run` appelle effectivement `consolidate` sur la mémoire
-/// interne — le `_store` fourni est ignoré mais l'interface est respectée.
+/// interne.
 #[tokio::test]
 async fn consolidation_task_runs_via_maintenance_interface() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Arc::new(
-        Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-            .await
-            .expect("open memory"),
-    );
+    let mem = Arc::new(open_memory("a").await);
 
     mem.remember("Alice a rejoint Acme", MemoryLayer::Episodic)
         .await
         .expect("épisode");
 
     let task = ConsolidationTask::new(Arc::clone(&mem), Arc::new(FakeLlm));
-
-    // Simule l'appel depuis le MaintenanceWorker : store passé en paramètre mais ignoré.
-    let dummy = Store::open_in_memory().await.expect("dummy store");
-    task.run(&dummy).await.expect("run");
+    task.run().await.expect("run");
 
     // Le fait est consolidé en couche sémantique.
     let hits = mem.recall("Alice travaille chez Acme", 5).await.expect("recall");
@@ -93,12 +95,7 @@ async fn consolidation_task_runs_via_maintenance_interface() {
 /// `run`. Prouve que le wiring tient à travers `tokio::spawn` + `sleep`.
 #[tokio::test]
 async fn consolidation_runs_through_worker_background_loop() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Arc::new(
-        Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-            .await
-            .expect("open memory"),
-    );
+    let mem = Arc::new(open_memory("a").await);
     mem.remember("Alice a rejoint Acme", MemoryLayer::Episodic)
         .await
         .expect("épisode");
@@ -109,7 +106,7 @@ async fn consolidation_runs_through_worker_background_loop() {
             Duration::from_millis(40),
             Arc::new(ConsolidationTask::new(Arc::clone(&mem), Arc::new(FakeLlm))),
         )
-        .start(Arc::new(Store::open_in_memory().await.expect("dummy store")));
+        .start();
 
     // Laisse la boucle de fond s'exécuter au moins une fois.
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -119,21 +116,4 @@ async fn consolidation_runs_through_worker_background_loop() {
         hits.iter().any(|r| r.layer == MemoryLayer::Semantic),
         "la boucle de maintenance doit avoir consolidé le fait en semantic"
     );
-}
-
-/// Vérification à la compilation + test que `MaintenanceWorker` accepte les trois
-/// types de tâche sans modification d'interface.
-#[test]
-fn maintenance_worker_registers_all_task_types() {
-    let _worker = MaintenanceWorker::new()
-        .register(Duration::from_secs(3600), Arc::new(ExpiredMemoryGc))
-        .register(
-            Duration::from_secs(7200),
-            Arc::new(AdaptiveForgetting {
-                capacity_per_agent: 10_000,
-                recency_half_life_secs: 86_400,
-            }),
-        );
-    // ConsolidationTask nécessite Memory + LLM — non instancié ici mais compilable.
-    // Le test ci-dessus le vérifie end-to-end.
 }

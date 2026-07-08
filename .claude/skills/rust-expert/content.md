@@ -1,4 +1,4 @@
-# Skill: rust-expert — BaseMyAI / ForgeMyAI
+# Skill: rust-expert — BaseMyAI
 
 ## Stack et édition
 

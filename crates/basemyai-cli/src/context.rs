@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 //! Helpers partagés par toutes les commandes : ouverture de la clé/du store/
 //! de la mémoire, conversion `cli::Layer` -> `basemyai::MemoryLayer`. Isole
-//! les commandes de la mécanique d'ouverture d'un `.bmai` (ADR-007/ADR-019).
+//! les commandes de la mécanique d'ouverture d'un `.bmai` (ADR-007/ADR-030/032).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -35,35 +35,44 @@ pub(crate) async fn load_embedder() -> Result<Box<dyn basemyai_core::Embedder>, 
     Ok(Box::new(embedder))
 }
 
-/// Ouvre un store chiffré sans embedder (commandes purement structurelles).
-pub(crate) async fn open_store(path: &Path) -> Result<basemyai_core::Store, CliError> {
+/// Ouvre un store natif chiffré (au besoin le crée).
+///
+/// # Errors
+/// Erreur de stockage si la clé est fausse ou si l'ouverture échoue.
+pub(crate) async fn open_store(path: &Path) -> Result<basemyai::storage::NativeMemoryStore, CliError> {
     if path.extension().and_then(|e| e.to_str()) != Some("bmai") {
-        eprintln!("warning: '{}' does not use the .bmai extension", path.display());
+        crate::ui::render::warning(&format!("'{}' does not use the .bmai extension", path.display()));
     }
     let key = require_key()?;
-    Ok(basemyai_core::Store::open(path, Some(key)).await?)
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || basemyai::storage::NativeMemoryStore::open_encrypted(&path, key.expose()))
+        .await
+        .map_err(|e| {
+            CliError::Core(basemyai_core::CoreError::Storage(format!(
+                "ouverture du store natif interrompue : {e}"
+            )))
+        })?
+        .map_err(CliError::from)
 }
 
-/// Ouvre une mémoire complète (store chiffré + embedder + isolation agent).
+/// Ouvre une mémoire complète (store + embedder + isolation agent).
 pub(crate) async fn open_memory(path: &Path, agent: &str) -> Result<basemyai::Memory, CliError> {
     let agent_id = basemyai::AgentId::new(agent).ok_or(CliError::InvalidAgent)?;
-    let store = open_store(path).await?;
+    let key = require_key()?;
     let embedder = load_embedder().await?;
-    Ok(basemyai::Memory::open(store, embedder, agent_id).await?)
+    Ok(basemyai::Memory::open_native(path, &key, embedder, agent_id).await?)
 }
 
-/// Ouvre l'accès mémoire bas niveau (store chiffré + migrations), sans
-/// embedder — pour les opérations qui ne font aucun embedding (forget,
-/// invalidate, purge, graphe). Évite de payer le chargement du modèle
-/// Candle pour des mutations purement SQL.
+/// Ouvre l'accès mémoire bas niveau (store, sans embedder) — pour les
+/// opérations qui ne font aucun embedding (forget, invalidate, purge, graphe,
+/// list). Évite de payer le chargement du modèle Candle.
 pub(crate) async fn open_engine(
     path: &Path,
     agent: &str,
 ) -> Result<(Arc<dyn basemyai::storage::MemoryStore>, basemyai::AgentId), CliError> {
     let agent_id = basemyai::AgentId::new(agent).ok_or(CliError::InvalidAgent)?;
     let store = open_store(path).await?;
-    store.migrate(&basemyai::schema()).await?;
-    let engine: Arc<dyn basemyai::storage::MemoryStore> = Arc::new(basemyai::storage::LibsqlMemoryStore::new(store));
+    let engine: Arc<dyn basemyai::storage::MemoryStore> = Arc::new(store);
     Ok((engine, agent_id))
 }
 

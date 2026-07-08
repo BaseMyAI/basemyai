@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Migrated the active workspace to **native-only** storage: removed libSQL/V1
+  compatibility paths from runtime code (`Store`, `LibsqlMemoryStore`,
+  SQL-leaky surface, dual-backend feature flags).
+- Removed legacy libSQL `crypto` build paths from CI and DX workflows
+  (`cargo xtask`, GitHub Actions wheels/prebuilds, binding packaging configs).
+- Updated integration tests to open native stores through production APIs (temp
+  directories) instead of test-only ephemeral helpers.
+- Set `MAX_TEXT_LEN` to `65535` (`u16::MAX`) so the public limit is consistent
+  with native FTS docterm encoding.
+
 ## [0.1.0] - 2026-06-21
 
 First public release. Published to crates.io (`basemyai-core`, `basemyai`).

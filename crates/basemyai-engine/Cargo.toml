@@ -1,6 +1,6 @@
 [package]
 name = "basemyai-engine"
-description = "Home-grown LSM-tree storage foundation for BaseMyAI's native engine (ADR-024/ADR-025) — internal, not published, not yet wired into basemyai-core."
+description = "Home-grown LSM-tree storage engine for BaseMyAI native backend (ADR-024/ADR-025/ADR-032) — internal, not published."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,15 +8,6 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-
-[features]
-default = []
-# Gates anything this crate exposes to the rest of the workspace once wiring
-# begins (EngineKind::Native, MemoryStore impl — a separate, later N2 item).
-# Not used yet: today this crate only builds and tests itself. See
-# docs/adr/ADR-025-native-engine-storage-foundation.md and
-# docs/PLAN-NATIVE-ENGINE.md §3.1.
-engine-native = []
 
 [dependencies]
 thiserror.workspace = true

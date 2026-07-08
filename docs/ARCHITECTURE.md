@@ -5,7 +5,7 @@
 BaseMyAI est organisée en **deux crates Rust** communiquant via imports Rust natifs :
 
 1. **`basemyai-core`** : socle **business-agnostic**
-   - Store libSQL async + KNN natif
+   - Moteur de stockage natif (`basemyai-engine`) + KNN natif
    - Embeddings in-process (optionnel Candle)
    - Worker de tâches de maintenance *injectées*
    - **Aucune connaissance** du temps (`valid_until`), des agents (`agent_id`), ou de métier
@@ -39,12 +39,12 @@ grep -rE 'agent_id|valid_until|episodic|semantic|graph|entity|edge|Symbol' crate
 
 ### 2. Mécanisme au core, sens au consommateur
 
-- Le core expose **primitives** : `Store`, `KNN`, `Filter` paramétré, `MaintenanceWorker`
-- Le consommateur applique le **sens** : filtre temporel via `Filter`, tâches métier injectées
+- Le core expose **primitives** : `StorageEngine`, index natifs (vecteur/graphe/FTS), capacités, `MaintenanceWorker`
+- Le consommateur applique le **sens** : filtre temporel, tâches métier injectées
 
-**Exemple** : `vector_knn(query, k, filter?)`
-- Core : "applique le WHERE fourni après le top-k natif"
-- basemyai : "le WHERE est (`valid_from <= now AND valid_until IS NULL OR > now`)"
+**Exemple** : recherche KNN `(query, k, filtre?)`
+- Core : "applique le filtre fourni après le top-k natif"
+- basemyai : "le filtre est (`valid_from <= now AND (valid_until IS NULL OR valid_until > now)`)"
 
 ### 3. Pas de téléchargement silencieux (ADR-010)
 
@@ -52,17 +52,17 @@ grep -rE 'agent_id|valid_until|episodic|semantic|graph|entity|edge|Symbol' crate
 - `setup::provision(consent)` fait le fetch explicite si `consent = true`
 - Modèles détectés au démarrage, listé à l'utilisateur (même pour LLM via `choose_llm()`)
 
-### 4. Chiffrement obligatoire dans basemyai (ADR-007)
+### 4. Chiffrement obligatoire dans basemyai (ADR-007 / ADR-030)
 
-- `basemyai-core` : chiffrement optionnel (feature `crypto`)
-- `basemyai` : chiffrement **requis** — `Memory::open` échoue sans clé
+- `basemyai-core` : chiffrement au repos natif optionnel (AEAD, aucune feature Cargo)
+- `basemyai` : chiffrement **requis** sur disque — l'ouverture échoue sans clé
 
-### 5. Backend = libSQL (ADR-011)
+### 5. Backend = moteur natif BaseMyAI (ADR-024→032)
 
 - **Pas de DB externe**, pas de services externes obligatoires
-- Vecteur **natif** libSQL (`F32_BLOB`, `libsql_vector_idx`, `vector_top_k`)
-- Async toujours ; `Embedder` reste **sync** (CPU-bound)
-- Chemin futur : Turso DB (pur Rust)
+- Moteur `basemyai-engine` **pur Rust** : WAL + memtable + SST, index vectoriel natif LM-DiskANN/Vamana (`F32`), graphe et FTS/BM25 natifs
+- Contrat `MemoryStore` async ; `Embedder` reste **sync** (CPU-bound)
+- Backend unique, pas de fallback libSQL (ADR-032)
 
 ---
 
@@ -70,18 +70,18 @@ grep -rE 'agent_id|valid_until|episodic|semantic|graph|entity|edge|Symbol' crate
 
 ### basemyai-core
 
-#### `storage/` — Recherche vectorielle + Store
+#### `storage/` — Moteur natif + capacités
 
 | Module | Rôle |
 |--------|------|
-| `store.rs` | `Store` async — ouverture, migrations, `vector_upsert`, `vector_knn` |
-| `vector.rs` | `Filter`, `Value`, `Neighbor` — paramétrage sans injection |
+| `engine.rs` | `EngineKind`, `NativeEngine`, `EngineCapabilities` — moteur natif capability-first |
+| `mod.rs` | re-exports du socle de stockage |
 
 **Points clés** :
-- `Filter { where_sql: String, params: Vec<Value> }` — fragment SQL + valeurs liées
-- `vector_knn` sur-échantillonne ×8 si filtre présent (ADR-012)
+- Moteur `basemyai-engine` : WAL + memtable + SST, batches atomiques `apply_batch`, recovery crash-consistent
+- KNN natif LM-DiskANN/Vamana : sur-échantillonne ×8 si filtre présent (ADR-012)
 - Distance cosinus réelle (recalculée, pas placeholder)
-- Chiffrement au repos (libSQL feature `crypto`, optionnel en core)
+- Chiffrement au repos natif AEAD (ADR-030, aucune feature Cargo ni CMake)
 
 #### `embed/` — Embeddings in-process
 
@@ -99,7 +99,7 @@ grep -rE 'agent_id|valid_until|episodic|semantic|graph|entity|edge|Symbol' crate
 
 | Type | Rôle |
 |------|------|
-| `MaintenanceTask` | Trait : `async fn run(&self, store: &Store)` |
+| `MaintenanceTask` | Trait : `async fn run(&self)` — tâche injectée par le consommateur |
 | `MaintenanceWorker` | Planifie + exécute des tâches en tâche de fond (tokio::spawn par tâche) |
 
 **Points clés** :
@@ -121,15 +121,15 @@ grep -rE 'agent_id|valid_until|episodic|semantic|graph|entity|edge|Symbol' crate
 | Module | Rôle |
 |--------|------|
 | `layer.rs` | `MemoryLayer` (4 couches), `Record`, `AgentStats` |
-| `schema.rs` | Migrations SQL (memory v1/v2/v3, entity/edge), `EMBEDDING_DIM` |
-| `isolation.rs` | `AgentId` newtype — isolation SQL au level requêtes |
+| `isolation.rs` | `AgentId` newtype — scoping structurel dans le layout de clé du moteur |
+| `porting.rs` | Export/import JSONL (backup, migration inter-modèles) |
 | `mod.rs` | Façade `Memory` : remember, recall, invalidate, forget, stats, search_graph |
 
 **Points clés** :
-- `Memory::open` applique le schéma, scelle par `AgentId` + `Embedder`
-- `recall(query, k)` filtre par agent + temps via `Filter` paramétré
-- `search_graph` : KNN + EXISTS sur graphe
-- Metabase de validité : `valid_from`, `valid_until` (optionnel), `importance`, `last_access`
+- L'ouverture scelle par `AgentId` + `Embedder`, contrat embedding porté en KV (`meta/bmai/`)
+- `recall(query, k)` filtre par agent + temps via le contrat `MemoryStore`
+- `search_graph` : KNN + traversée graphe native
+- Métadonnées de validité : `valid_from`, `valid_until` (optionnel), `importance`, `last_access`
 
 #### `cognition/` — Pipeline Phase 2
 
@@ -137,12 +137,12 @@ grep -rE 'agent_id|valid_until|episodic|semantic|graph|entity|edge|Symbol' crate
 |--------|------|
 | `inference.rs` | Trait `LlmInference` (object-safe) — abstraction fournisseur |
 | `consolidation.rs` | `consolidate(memory, llm)` : épisodes → faits + graphe (idempotent) |
-| `graph.rs` | `Graph` : add_entity, add_edge, traverse (CTE récursive) |
+| `graph.rs` | `Graph` : add_entity, add_edge, traverse (BFS borné natif) |
 
 **Points clés** :
 - Consolidation : texte brut du LLM → JSON structuré → peuplement graphe + promotion semantic
-- Graphe : tables `entity`/`edge`, CTE récursive `UNION` (cycle-safe), scopé `agent_id` + `valid_until`
-- Traverse : `SELECT ... FROM reach r JOIN entity e ... WHERE r.node <> start ...`
+- Graphe : index natif `entity`/`edge` (un nœud/une arête = un enregistrement KV), traversée BFS cycle-safe, scopée `agent_id` + `valid_until`
+- Traverse : portage 1:1 de la CTE récursive historique en BFS sur scans préfixés par nœud source
 
 #### `provision/` — Provisioning hardware-aware
 
@@ -160,26 +160,22 @@ grep -rE 'agent_id|valid_until|episodic|semantic|graph|entity|edge|Symbol' crate
 
 | Module | Rôle |
 |--------|------|
-| `gc.rs` | `ExpiredMemoryGc` — DELETE where `valid_until <= now` |
-| `forgetting.rs` | `AdaptiveForgetting` — score rétention (importance + récence hyperbolique) |
 | `mod.rs` | `ConsolidationTask` — Arc<Memory> + Arc<dyn LlmInference> impl MaintenanceTask |
 
 **Points clés** :
-- GC : simple, aucun paramètre
-- Forgetting : `ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY retention DESC)` → évince > capacity
-- Récence hyperbolique (pas exponentielle) : `H / (H + age)`, reste dans (0, 1], distingue les grands âges
-- Consolidation : ignore `_store` (utilise son propre via Arc<Memory>)
+- Consolidation : auto-suffisante (utilise sa propre `Arc<Memory>`), injectée dans le worker agnostique du core
+- GC temporel et oubli adaptatif reposaient sur du fenêtrage SQL (`ROW_NUMBER() OVER`) libSQL-spécifique : **retirés** avec libSQL (ADR-032) plutôt que portés en passant — un portage natif mérite son propre design/tests
 
 #### `retrieval.rs`, `temporal.rs` — Racine (utilitaires)
 
 | Type | Rôle |
 |------|------|
 | `rrf_fuse` | Reciprocal Rank Fusion — fusionne N rankings par score `Σ 1/(k+rang)` |
-| `Validity` | Fenêtre `valid_from`/`valid_until` — issu pour construire `Filter` |
+| `Validity` | Fenêtre `valid_from`/`valid_until` — sert à construire le filtre de recall |
 
 **Points clés** :
 - RRF : déterministe, k=60 (Cormack et al.), préserve ordre stable
-- Validité : simple struct, méthode `is_valid_at(now)` → utiliser pour constructeur Filter
+- Validité : simple struct, méthode `is_valid_at(now)` → sert à construire le filtre de recall
 
 #### `error.rs` — Racine (transverse)
 
@@ -197,9 +193,10 @@ grep -rE 'agent_id|valid_until|episodic|semantic|graph|entity|edge|Symbol' crate
 ### 1. Ouverture d'une mémoire
 
 ```
-User: Memory::open(store, embedder, agent_id)
+User: Memory::open_native(path, key, embedder, agent)
   ↓
-  → store.migrate(&schema())
+  → NativeMemoryStore::open_encrypted(path, key)  (recovery WAL si besoin)
+  → vérifie/écrit le contrat embedding (meta/bmai/)
   → Memory { store, embedder, agent }
 ```
 
@@ -209,8 +206,8 @@ User: Memory::open(store, embedder, agent_id)
 User: memory.remember(text, layer)
   ↓
   → embedder.embed(text) → vec (384d)
-  → conn.execute("INSERT INTO memory ...")
-     (id, agent_id, layer, content, valid_from, valid_until, emb)
+  → store.put_memory(id, agent, layer, text, valid_from, valid_until, emb)
+     → UN batch WAL atomique : record + vecteur (index natif) + posting FTS
 ```
 
 ### 3. Recall
@@ -219,48 +216,34 @@ User: memory.remember(text, layer)
 User: memory.recall(query, k)
   ↓
   → embedder.embed(query)
-  → Filter::new("agent_id = ? AND valid_from <= ? AND (valid_until IS NULL OR valid_until > ?)", [...])
-  → store.vector_knn("memory", query_vec, k, Some(&filter))
-  → [Neighbor { id, distance }, ...]
-  → conn.query("SELECT content, layer FROM memory WHERE id = ?")
-  → [Record { id, text, layer, score }, ...]
-  → UPDATE last_access on each record (for forgetting)
+  → filtre = (agent = ? AND valid_from <= now AND (valid_until IS NULL OR valid_until > now))
+  → store.recall_vector(agent, query_vec, k, filtre)   (KNN natif, oversampling ×8)
+  → [Record { id, text, layer, score }, ...]  (hydratation depuis l'index mémoire)
+  → touch last_access sur chaque record (écriture brève séparée)
 ```
 
 ### 4. Consolidation en tâche de fond
 
 ```
-MaintenanceWorker::start(store)
+MaintenanceWorker::start()
   → spawn(async {
       sleep(every).await
-      task.run(&store).await
+      task.run().await
     })
 
-ConsolidationTask::run(_store) [ignore _store]
+ConsolidationTask::run()  (auto-suffisante via Arc<Memory>)
   → consolidate(&memory, llm)
-    → recent_episodes(memory, 50) [SELECT episodic where valid]
+    → recent_episodes(memory, 50)  (couche episodic, souvenirs valides)
     → llm.complete(prompt) → JSON text
     → parse RawExtraction { facts, entities, relations }
-    → graph.add_entity, add_edge (ON CONFLICT upsert)
+    → graph.add_entity, add_edge (upsert idempotent)
     → memory.remember(fact, Semantic) pour chaque fact
     → ConsolidationReport
 ```
 
-### 5. Oubli adaptatif
-
-```
-AdaptiveForgetting::run(store)
-  → conn.execute("""
-      DELETE FROM memory WHERE id IN (
-        SELECT id FROM (
-          SELECT id, ROW_NUMBER() OVER (
-            PARTITION BY agent_id
-            ORDER BY importance + H/(H+age) DESC
-          ) rn FROM memory
-        ) WHERE rn > capacity
-      )
-    """)
-```
+> **Note** : GC temporel et oubli adaptatif (fenêtrage SQL `ROW_NUMBER()`
+> libSQL-spécifique) ont été retirés avec libSQL (ADR-032). Un portage natif
+> est un chantier dédié (design + tests), pas un portage en passant.
 
 ---
 
@@ -270,8 +253,8 @@ AdaptiveForgetting::run(store)
 
 | Trait | Implémentation requise | Injectée où |
 |-------|---|---|
-| `Embedder` | Chargement du modèle + `embed(text)` + `embed_batch(texts)` | `Memory::open` |
-| `MaintenanceTask` | `async fn run(&self, store)` | `MaintenanceWorker::register` |
+| `Embedder` | Chargement du modèle + `embed(text)` + `embed_batch(texts)` | ouverture de `Memory` |
+| `MaintenanceTask` | `async fn run(&self)` | `MaintenanceWorker::register` |
 | `LlmInference` | `async fn complete(prompt)` + `model_id()` | `ConsolidationTask::new` |
 
 Aucune implémentation concrète de ces traits n'est forcée dans le crate — tout est injecté.
@@ -281,10 +264,10 @@ Aucune implémentation concrète de ces traits n'est forcée dans le crate — t
 ## Invariants critiques
 
 1. **Agnosticité core** : zéro mention de `agent_id`, `valid_until`, métier
-2. **Paramétrage SQL** : tous les WHERE doivent passer par `Filter { where_sql, params }`
-3. **Pas de DB externe** : libSQL embeddée, file-based ou `:memory:`
-4. **Isolation agent** : toute requête SELECT/INSERT/UPDATE filtrée par `agent_id = ?`
-5. **Chiffrement obligatoire basemyai** : `Memory::open` rejette clé absente
+2. **Pas de surface SQL-leaky** : ni `Filter`, ni `Value`, ni `Store` ; le sens passe par le contrat `MemoryStore`
+3. **Pas de DB externe** : moteur natif embarqué, store `.bmai` file-based
+4. **Isolation agent** : scoping par `agent_id` structurel dans le layout de clé du moteur
+5. **Chiffrement obligatoire basemyai** : l'ouverture sur disque rejette une clé absente
 6. **Modèles non téléchargés** : `Embedder` reçoit chemin résolu, `LlmInference` ne télécharge pas
 7. **Idempotence** : consolidation, graphe upserts, maintenance GC relançables
 
@@ -293,7 +276,7 @@ Aucune implémentation concrète de ces traits n'est forcée dans le crate — t
 ## Roadmap V2 (ne pas toucher)
 
 - Multi-modèles embedding (sélection runtime)
-- Migration Turso DB (pur Rust, zéro C)
-- Sync multi-device
+- Portage natif du GC temporel + oubli adaptatif (design/tests dédiés)
+- Sync multi-device (le WAL natif comme primitive de change-capture)
 - Mémoire partagée inter-agents
 - Explicabilité / provenance

@@ -1,29 +1,15 @@
-//! Point d'entrée du runner de tests **déclaratifs multi-backend** (N2,
+//! Point d'entrée du runner de tests **déclaratifs** (N2,
 //! `docs/TODO-NATIVE-ENGINE.md`). Rejoue `memory_tests::scenarios::all()`
-//! contre chaque backend enregistré ci-dessous via `backend_suite!`.
-//!
-//! Aujourd'hui : un seul backend réel, `Libsql`. Brancher `Native` (dépendance
-//! N3/N4, non commencés — voir `docs/TODO-NATIVE-ENGINE.md`) est mécanique :
-//! implémenter `MemoryStore` pour lui, écrire une factory async équivalente à
-//! `make_libsql_store`, puis décommenter/ajouter une ligne `backend_suite!`.
-//! Aucune autre modification de ce fichier ni de `memory_tests/mod.rs` n'est
-//! nécessaire — c'est précisément ce que la borne générique
-//! `run_scenario<S: MemoryStore>` rend possible.
+//! contre le backend natif via `backend_suite!` — le runner reste générique
+//! sur `MemoryStore` (posé au N2 pour un diff multi-backend qui a bien eu
+//! lieu tant que libSQL vivait, ADR-032 §conséquences), donc brancher un futur
+//! second backend resterait mécanique.
 
 #[path = "memory_tests/mod.rs"]
 mod memory_tests;
+mod support;
 
-use basemyai::storage::LibsqlMemoryStore;
-use basemyai_core::Store;
 use memory_tests::run_scenario;
-
-/// Backend `Libsql` frais (in-memory, migré) — une instance par scénario,
-/// isolation totale même si deux scénarios partageaient un `agent` id.
-async fn make_libsql_store() -> LibsqlMemoryStore {
-    let store = Store::open_in_memory().await.expect("store in-memory ouvre");
-    store.migrate(&basemyai::schema()).await.expect("migration");
-    LibsqlMemoryStore::new(store)
-}
 
 /// Enregistre un backend : génère un `#[tokio::test]` qui rejoue **tous** les
 /// scénarios de `memory_tests::scenarios::all()` contre une instance fraîche
@@ -40,15 +26,10 @@ macro_rules! backend_suite {
     };
 }
 
-backend_suite!(libsql, make_libsql_store);
-
 /// `put_memory_batch` est tout-ou-rien : un id dupliqué **au milieu** du lot
-/// ne doit laisser aucune trace des items valides qui l'entourent — ni côté
-/// libSQL (violation de contrainte UNIQUE, transaction jamais commitée), ni
-/// côté Native depuis N5.5 (`PersistentMemoryIndex::put_many`, résorbant
-/// l'écart « atomique par item » d'ADR-027 §6). Générique sur
-/// [`MemoryStore`] pour être rejouée verbatim contre les deux backends —
-/// même discipline que `run_scenario`.
+/// ne doit laisser aucune trace des items valides qui l'entourent
+/// (`PersistentMemoryIndex::put_many`, résorbant l'écart « atomique par
+/// item » d'ADR-027 §6).
 async fn assert_put_memory_batch_is_all_or_nothing<S: basemyai::storage::MemoryStore>(store: &S) {
     use basemyai::MemoryLayer;
     use basemyai::storage::NewMemory;
@@ -117,48 +98,32 @@ async fn assert_put_memory_batch_is_all_or_nothing<S: basemyai::storage::MemoryS
     assert_eq!(stats.total(), 1, "le batch en échec ne doit rien avoir persisté");
 }
 
-#[tokio::test]
-async fn libsql_put_memory_batch_is_all_or_nothing() {
-    assert_put_memory_batch_is_all_or_nothing(&make_libsql_store().await).await;
-}
-
-/// Backend `Native` frais (répertoire temporaire jetable, supprimé au drop) —
-/// une instance par scénario, comme `Libsql`. C'est ici que le diff
-/// multi-backend promis au N2 se prouve : mêmes scénarios, même runner,
-/// deux moteurs (ADR-027/N5.1).
-#[cfg(feature = "engine-native")]
+/// Backend natif frais (répertoire temporaire jetable, supprimé au drop) —
+/// une instance par scénario.
 async fn make_native_store() -> basemyai::storage::NativeMemoryStore {
-    basemyai::storage::NativeMemoryStore::open_ephemeral().expect("store natif éphémère ouvre")
+    support::open_native_store()
 }
 
-#[cfg(feature = "engine-native")]
 backend_suite!(native, make_native_store);
 
-#[cfg(feature = "engine-native")]
 #[tokio::test]
 async fn native_put_memory_batch_is_all_or_nothing() {
     assert_put_memory_batch_is_all_or_nothing(&make_native_store().await).await;
 }
 
-/// Backend `Native` **chiffré au repos** (N5.4, ADR-030) : la suite complète
-/// des scénarios rejouée contre un store natif dont WAL et SST sont scellés —
-/// le chiffrement doit être transparent pour tout le contrat `MemoryStore`,
-/// zéro divergence tolérée avec les deux backends en clair ci-dessus.
-#[cfg(feature = "engine-native")]
+/// Backend natif **chiffré au repos** (N5.4, ADR-030) : la suite complète des
+/// scénarios rejouée contre un store natif dont WAL et SST sont scellés — le
+/// chiffrement doit être transparent pour tout le contrat `MemoryStore`, zéro
+/// divergence tolérée avec le backend en clair ci-dessus.
 async fn make_native_encrypted_store() -> basemyai::storage::NativeMemoryStore {
-    basemyai::storage::NativeMemoryStore::open_ephemeral_encrypted("clé-de-test-scénarios")
-        .expect("store natif chiffré éphémère ouvre")
+    support::open_encrypted_native_store("clé-de-test-scénarios")
 }
 
-#[cfg(feature = "engine-native")]
 backend_suite!(native_encrypted, make_native_encrypted_store);
 
-/// Rotation de clé sur le backend natif (N5.4, ADR-030 §4) — le pendant
-/// natif de `tests/key_rotation.rs` (libSQL, feature `crypto`) : la donnée
-/// mémorisée avant rotation reste lisible sous la nouvelle clé, l'ancienne
-/// clé n'ouvre plus rien, et — contrairement à libSQL — l'instance ayant
-/// exécuté la rotation reste utilisable sans réouverture.
-#[cfg(feature = "engine-native")]
+/// Rotation de clé (N5.4, ADR-030 §4) : la donnée mémorisée avant rotation
+/// reste lisible sous la nouvelle clé, l'ancienne clé n'ouvre plus rien, et
+/// l'instance ayant exécuté la rotation reste utilisable sans réouverture.
 #[tokio::test]
 async fn native_rotate_key_preserves_data_and_invalidates_old_key() {
     use basemyai::MemoryLayer;
@@ -212,27 +177,24 @@ async fn native_rotate_key_preserves_data_and_invalidates_old_key() {
     assert_eq!(got[0].text, "la lune est en roche");
 }
 
-/// `rotate_key` sur un store natif ouvert en clair : erreur franche, parité
-/// de posture avec `rotate_key_on_unencrypted_memory_fails`
-/// (`tests/key_rotation.rs`, `CoreError::Encryption` côté libSQL).
-/// Concurrence des lecteurs (N5.5, barre hardening M6) : depuis le passage
-/// de `NativeMemoryStore` de `Mutex` à `RwLock`, plusieurs lectures doivent
+/// `rotate_key` sur un store natif ouvert en clair : erreur franche.
+/// Concurrence des lecteurs (N5.5, barre hardening M6) : depuis le passage de
+/// `NativeMemoryStore` de `Mutex` à `RwLock`, plusieurs lectures doivent
 /// pouvoir s'exécuter **en parallèle** sans se corrompre ni se bloquer les
 /// unes les autres. Ce test vérifie la correction sous charge concurrente
 /// (beaucoup de lectures mixtes en vol simultanément, résultats tous
 /// corrects) et **mesure** — sans assertion stricte sur la latence, trop
 /// bruitée en CI — le ratio séquentiel/concurrent, journalisé pour
 /// inspection humaine plutôt que comme un seuil de flakiness.
-#[cfg(feature = "engine-native")]
 #[tokio::test]
 async fn native_concurrent_reads_are_correct_and_faster_than_sequential() {
     use basemyai::MemoryLayer;
-    use basemyai::storage::{MemoryStore, NativeMemoryStore};
+    use basemyai::storage::MemoryStore;
     use basemyai::temporal::Validity;
     use std::sync::Arc;
     use std::time::Instant;
 
-    let store = Arc::new(NativeMemoryStore::open_ephemeral().expect("store natif éphémère"));
+    let store = Arc::new(support::open_native_store());
     let agent = basemyai::AgentId::new("concurrent-reads-agent").expect("agent id");
 
     const N: usize = 200;
@@ -328,10 +290,9 @@ async fn native_concurrent_reads_are_correct_and_faster_than_sequential() {
     );
 }
 
-#[cfg(feature = "engine-native")]
 #[tokio::test]
 async fn native_rotate_key_on_plaintext_store_fails() {
-    let store = basemyai::storage::NativeMemoryStore::open_ephemeral().expect("store en clair");
+    let store = support::open_native_store();
     assert!(
         store.rotate_key("peu-importe").await.is_err(),
         "rotate_key sur un store non chiffré doit échouer"

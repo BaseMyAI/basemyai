@@ -5,8 +5,8 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-# Construit les wheels PyO3 (features crypto + embed, cf. pyproject.toml) pour
-# Linux/macOS/Windows × CPython 3.10–3.13. crypto exige CMake ; embed tire Candle.
+# Construit les wheels PyO3 (feature embed) pour Linux/macOS/Windows × CPython
+# 3.10–3.13.
 jobs:
   validate-secrets:
     name: validate publish credentials
@@ -40,16 +40,6 @@ jobs:
             3.12
             3.13
 
-      - name: Install CMake (Windows)
-        if: runner.os == 'Windows'
-        run: pip install cmake
-
-      # libsql-ffi 0.9.30 appelle `cp` (absent du PATH Windows) — Git le fournit.
-      - name: Add Git usr/bin to PATH (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: echo "C:/Program Files/Git/usr/bin" >> "$GITHUB_PATH"
-
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -60,11 +50,6 @@ jobs:
           # PyPI-acceptable manylinux tag (a bare host build tags linux_x86_64,
           # which PyPI rejects). The container runs the script below as root.
           manylinux: auto
-          # crypto needs a MODERN CMake. EL7's `yum install cmake` is 2.8 (too
-          # old for libsql-ffi), so install via pipx/pip which ships a recent
-          # cmake binary regardless of the base image.
-          before-script-linux: |
-            command -v cmake >/dev/null 2>&1 || pipx install cmake || pip install cmake || pip3 install cmake
 
       - uses: actions/upload-artifact@v4
         with:

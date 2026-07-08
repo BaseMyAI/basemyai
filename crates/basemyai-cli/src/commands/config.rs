@@ -23,18 +23,21 @@ pub(crate) fn run(
             let effective_agent = cfg.resolve_agent(cli_agent).ok();
             format.print(
                 || {
-                    println!(
-                        "config file: {}",
-                        CliConfig::file_path()
-                            .map_or_else(|| "(unresolvable)".to_string(), |p| p.display().to_string())
-                    );
-                    println!(
-                        "db_path: {}",
-                        effective_path
-                            .as_ref()
-                            .map_or_else(|| "(unset)".to_string(), |p| p.display().to_string())
-                    );
-                    println!("agent:   {}", effective_agent.as_deref().unwrap_or("(unset)"));
+                    crate::ui::render::section("CLI configuration");
+                    crate::ui::render::key_values(&[
+                        (
+                            "config_file:",
+                            CliConfig::file_path()
+                                .map_or_else(|| "(unresolvable)".to_string(), |p| p.display().to_string()),
+                        ),
+                        (
+                            "db_path:",
+                            effective_path
+                                .as_ref()
+                                .map_or_else(|| "(unset)".to_string(), |p| p.display().to_string()),
+                        ),
+                        ("agent:", effective_agent.as_deref().unwrap_or("(unset)").to_string()),
+                    ]);
                 },
                 || {
                     serde_json::json!({

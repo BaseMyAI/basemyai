@@ -277,7 +277,7 @@ Approche **MVP → hybride → full**, strictement séquencée sur les ADR. Chaq
 
 2. **Le socle est déjà le bon — et il n'impose pas l'ambition trop tôt.** C'est la force du pivot libSQL (ADR-011) : le **même fichier** qui sert la V1 (vecteur natif + temporel + isolation) porte, sans nouveau backend, le graphe (CTE), l'oubli (worker) et le multi-signal (Filter + RRF). L'ambition long terme **ne coûte rien à la V1** — elle est latente dans le socle, activée phase par phase.
 
-3. **L'agnosticité du core protège l'incrément.** Parce que `basemyai-core` reste mécanisme-pur (ADR-001), chaque innovation cognitive s'ajoute **dans `basemyai`** sans toucher au socle ni casser l'autre consommateur (ForgeMyAI). On peut donc livrer V1 maintenant et empiler la cognition ensuite, sans dette de rupture.
+3. **L'agnosticité du core protège l'incrément.** Parce que `basemyai-core` reste mécanisme-pur (ADR-001), chaque innovation cognitive s'ajoute **dans `basemyai`** sans toucher au socle ni casser les autres consommateurs du core. On peut donc livrer V1 maintenant et empiler la cognition ensuite, sans dette de rupture.
 
 4. **Le marché 2026–2028 récompense l'infra, pas la feature.** La mémoire est *le* goulet des agents sur cette fenêtre. Les acteurs qui gagnent sont ceux qui en font une couche d'infrastructure défendable (Mem0, Zep), pas un gadget. Le différenciateur de BaseMyAI — l'hybride complet, local-first, mono-fichier — n'existe que si l'on vise l'infra dès le départ.
 

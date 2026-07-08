@@ -1,27 +1,20 @@
 // SPDX-License-Identifier: BUSL-1.1
-//! Frontière moteur de stockage (suivi ADR-019 : *« Gradually move SQL/libSQL-
-//! specific code behind an engine module… Add backend contract tests before
-//! any second backend exists »*).
+//! Frontière moteur de stockage. [`basemyai_core::StorageEngine`] reste le
+//! contrat d'**identité/capacités** bas niveau (inchangé par ce module).
+//! [`MemoryStore`] est un *second* contrat, à un niveau sémantique différent :
+//! il connaît `agent_id`, les couches mémoire et le graphe — exactement ce que
+//! `basemyai-core` n'a pas le droit de connaître (ADR-001). Il vit donc ici,
+//! dans `basemyai`, jamais dans le core agnostique.
 //!
-//! [`basemyai_core::StorageEngine`] reste le contrat d'**identité/capacités**
-//! bas niveau (inchangé par ce module). [`MemoryStore`] est un *second*
-//! contrat, à un niveau sémantique différent : il connaît `agent_id`, les
-//! couches mémoire et le graphe — exactement ce que `basemyai-core` n'a pas le
-//! droit de connaître (ADR-001). Il vit donc ici, dans `basemyai`, jamais dans
-//! le core agnostique.
-//!
-//! [`Filter`](basemyai_core::Filter)/[`Value`](basemyai_core::Value) et le SQL
-//! brut n'apparaissent dans **aucune** signature de [`MemoryStore`] : ils
-//! restent un détail d'implémentation de [`LibsqlMemoryStore`], la seule
-//! implémentation prévue en V1.
+//! [`NativeMemoryStore`] est l'**unique** implémentation depuis ADR-032
+//! (libSQL retiré du workspace, ADR-011 clos) — le trait reste un seam
+//! délibéré (testabilité, ADR-020), pas une abstraction sans second cas
+//! d'usage.
 
-mod libsql_store;
-#[cfg(feature = "engine-native")]
 mod native_store;
 
-pub use libsql_store::LibsqlMemoryStore;
-#[cfg(feature = "engine-native")]
-pub use native_store::NativeMemoryStore;
+pub use native_store::{BMAI_FORMAT_VERSION, NativeExportRows, NativeMemoryStore};
+pub(crate) use native_store::{NativeImportEdge, NativeImportEntity, NativeImportMemory};
 
 use basemyai_core::Metric;
 
@@ -40,6 +33,17 @@ pub struct NewMemory<'a> {
     pub source: &'a str,
 }
 
+/// Un souvenir listé (`MemoryStore::list_memories`) — toutes les colonnes que
+/// le CLI `list` affiche, sans score de classement (ce n'est pas un recall).
+#[derive(Debug, Clone)]
+pub struct ListedRecord {
+    pub id: String,
+    pub layer: MemoryLayer,
+    pub content: String,
+    pub valid_from: i64,
+    pub valid_until: Option<i64>,
+}
+
 /// Un souvenir hydraté (contenu + couche), sans score de classement — brique
 /// de [`MemoryStore::hydrate`], partagée par les chemins de recall qui
 /// attachent leur propre score (distance cosinus, RRF…) après hydratation.
@@ -56,8 +60,8 @@ pub struct HydratedRecord {
 /// [`LlmInference`](crate::LlmInference).
 ///
 /// Un seul trait, pas de split `MemoryStore`/`GraphStore` : il n'y a qu'une
-/// implémentation prévue en V1 ([`LibsqlMemoryStore`]), scinder maintenant
-/// serait une abstraction sans second cas d'usage réel.
+/// implémentation ([`NativeMemoryStore`]), scinder maintenant serait une
+/// abstraction sans second cas d'usage réel.
 #[async_trait::async_trait]
 pub trait MemoryStore: Send + Sync {
     /// Insère un souvenir (et son miroir FTS) de façon atomique.
@@ -148,4 +152,25 @@ pub trait MemoryStore: Send + Sync {
     /// déjà pour `agent` — brique de la déduplication de consolidation (le
     /// volet similarité sémantique reste côté `Memory::recall_by_layer`).
     async fn exact_fact_exists(&self, agent: &AgentId, content: &str) -> Result<bool>;
+
+    /// Couche d'un souvenir par id, borné à `agent` — `None` si absent (ou
+    /// appartenant à un autre agent). Brique de l'étiquetage des événements
+    /// `Invalidated`/`Forgotten` de la façade [`Memory`](crate::Memory) :
+    /// n'émettre que si un souvenir existe réellement pour cet agent, jamais
+    /// sur un no-op cross-agent.
+    async fn layer_of(&self, agent: &AgentId, id: &str) -> Result<Option<MemoryLayer>>;
+
+    /// Liste les souvenirs de `agent`, du plus récent au plus ancien
+    /// (`valid_from` décroissant), filtrés sur une couche optionnelle et
+    /// bornés à `limit` — brique du CLI `list` (diagnostic, pas un recall :
+    /// aucun embedding). `include_invalid` inclut les souvenirs dont
+    /// `valid_until` est déjà passé (défaut : exclus).
+    async fn list_memories(
+        &self,
+        agent: &AgentId,
+        layer: Option<MemoryLayer>,
+        limit: usize,
+        include_invalid: bool,
+        now: i64,
+    ) -> Result<Vec<ListedRecord>>;
 }

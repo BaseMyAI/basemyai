@@ -3,19 +3,20 @@
 //!
 //! Socle embarqué **agnostique métier** de l'écosystème BaseMyAI.
 //!
-//! Il fournit des *primitives* — store libSQL async, recherche vectorielle
-//! **native** (libSQL), embeddings in-process (Candle), chiffrement (libSQL),
-//! boucle de maintenance — et **jamais** de concept métier.
+//! Il fournit des *primitives* — moteur de stockage natif (ADR-024/025,
+//! `basemyai-engine`), embeddings in-process (Candle), chiffrement au repos
+//! (ADR-030), boucle de maintenance — et **jamais** de concept métier. libSQL
+//! (ADR-011) a été le backend V1 ; **retiré du workspace par ADR-033** :
+//! le moteur natif est l'unique backend.
 //!
 //! Règle d'agnosticité (cf. `ADR.md` ADR-001) : ce crate ne connaît ni
 //! `agent_id`, ni `valid_from`/`valid_until`, ni les couches mémoire, ni les
-//! `Symbol`/`Edge` de ForgeMyAI. Il expose un *mécanisme* ; le consommateur
-//! fournit le *sens* (filtre SQL paramétré, tâches de maintenance injectées).
+//! `Symbol`/`Edge` d'un consommateur code. Il expose un *mécanisme* ; le
+//! consommateur fournit le *sens* (tâches de maintenance injectées, sémantique
+//! côté `basemyai::storage::NativeMemoryStore`).
 //!
-//! Consommateurs : `basemyai` (sémantique mémoire) et ForgeMyAI (crate Rust natif).
-
-// Scaffold : les corps réels arrivent à la phase d'implémentation.
-#![allow(dead_code)]
+//! Consommateur principal : `basemyai` (sémantique mémoire). Le core est aussi
+//! importable par des crates Rust tiers qui apportent leur propre sémantique.
 
 mod embed;
 mod error;
@@ -29,13 +30,8 @@ pub use embed::{Device, Embedder};
 pub use error::{CoreError, Result};
 pub use maintenance::{MaintenanceTask, MaintenanceWorker};
 /// Wrapper capability-only pour le backend natif `basemyai-engine`
-/// (ADR-024/ADR-025) — gated par la feature `engine-native`. Ne fournit pas
-/// `MemoryStore` : voir `docs/TODO-NATIVE-ENGINE.md` N2.
-#[cfg(feature = "engine-native")]
+/// (ADR-024/ADR-025/ADR-033), unique backend du workspace. Ne fournit pas
+/// `MemoryStore` : voir
+/// `basemyai::storage::NativeMemoryStore` pour l'implémentation sémantique.
 pub use storage::NativeEngine;
-pub use storage::{EncryptionKey, EngineCapabilities, EngineKind, Migration, StorageEngine, Store, WriteTxn};
-pub use storage::{Filter, Metric, Neighbor, Value};
-
-/// Ré-export : les consommateurs déclarent leur schéma et leurs requêtes via
-/// l'API libSQL exposée par [`Store::connect`].
-pub use libsql;
+pub use storage::{EncryptionKey, EngineCapabilities, EngineKind, Metric, StorageEngine};

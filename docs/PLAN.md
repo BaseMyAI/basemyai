@@ -2,7 +2,7 @@
 
 **Date** : 2026-06  
 **Statut** : stratégie active — à traduire en ADR et sprints  
-**Périmètre** : BaseMyAI + ForgeMyAI, de l'état actuel (Phase 2 implémentée, SDKs absents) jusqu'à la sortie V1 des bindings + MCP
+**Périmètre** : BaseMyAI, de l'état actuel (Phase 2 implémentée, SDKs absents) jusqu'à la sortie V1 des bindings + MCP
 
 ---
 
@@ -113,7 +113,7 @@ basemyai-mcp (nouveau crate dans le workspace)
 - HTTP : clé API dans header `Authorization: Bearer` ; clé générée au `basemyai setup`, jamais hardcodée
 - Audit log : chaque tool call → `tracing::info!` avec `tool`, `agent_id`, `outcome`, `time_ms` — jamais le contenu des données
 
-**Implémentation :** `rmcp` (crate déjà prévu dans l'écosystème ForgeMyAI) ou `mcp-rs`. Le crate `basemyai-mcp` dépend de `basemyai`, pas de `basemyai-core`.
+**Implémentation :** `rmcp` ou `mcp-rs`. Le crate `basemyai-mcp` dépend de `basemyai`, pas de `basemyai-core`.
 
 #### P0.2 — Spike async bridge (débloquer PyO3 + NAPI)
 
@@ -265,7 +265,7 @@ ADR-006 interdit la mémoire partagée en V1. En V2 : `memory.share(memory_id, f
 
 #### P2.3 — Export / import `.bmem` (portabilité de la mémoire)
 
-Équivalent du `.idx` de ForgeMyAI pour la mémoire : un format d'archive qui contient le `.db` chiffré + le manifeste (model_id, dim, version). Permet de déplacer la mémoire d'un agent entre machines sans recréer les embeddings.
+Format d'archive portable pour la mémoire : contient le store chiffré + le manifeste (model_id, dim, version). Permet de déplacer la mémoire d'un agent entre machines sans recréer les embeddings.
 
 #### P2.4 — Interface Surrealism / WASM (si besoin navigateur)
 
@@ -430,4 +430,4 @@ basemyai-node     → Binding NAPI-RS, prebuild, API async Promise
 basemyai-rest     → Sidecar REST axum, spec OpenAPI 3.1
 ```
 
-Tous dépendent de `basemyai` (pas de `basemyai-core` directement). Ils ne connaissent ni `Symbol/Edge` (ForgeMyAI), ni les internals du core. La séparation tient.
+Tous dépendent de `basemyai` (pas de `basemyai-core` directement). Ils ne connaissent ni les types code-domain (`Symbol`/`Edge`), ni les internals du core. La séparation tient.

@@ -1,8 +1,8 @@
 # ADR-019 — Agent Memory Database, `.bmai` V1, and Storage Engine Boundary
 
-**Status**: Accepted  
+**Status**: Amended by ADR-032  
 **Date**: 2026-06-18  
-**Context**: supersedes the product framing of "SQLite-backed memory engine" without replacing ADR-011's libSQL V1 backend decision.
+**Context**: supersedes the product framing of "SQLite-backed memory engine"; V1/libSQL compatibility has been removed from the active workspace by ADR-032.
 
 ## Context
 

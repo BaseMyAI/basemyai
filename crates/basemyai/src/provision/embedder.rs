@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sysinfo::System;
 
-/// Modèle baseline garanti partout en V1 (compat `.idx` ForgeMyAI).
+/// Modèle baseline garanti partout en V1 (ADR-003).
 pub const BASELINE_MODEL_ID: &str = "all-MiniLM-L6-v2";
 /// Dimension du baseline.
 pub const BASELINE_DIM: usize = 384;

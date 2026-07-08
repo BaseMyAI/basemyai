@@ -119,34 +119,6 @@ test('graph data does not leak between in-memory agents', async () => {
   expect(reachedB).toEqual([]);
 });
 
-test('same store isolates memory and graph by agent', async () => {
-  const dbPath = tempDbPath('basemyai-node-shared-');
-  const a = await Memory.openTestFile(dbPath, 'agent-a');
-  const b = await Memory.openTestFile(dbPath, 'agent-b');
-
-  await a.remember('secret of agent A', 'semantic');
-  await b.remember('public note of agent B', 'semantic');
-
-  const hitsB = await b.recall('secret of agent A', 5);
-  expect(hitsB.every((h) => h.text !== 'secret of agent A')).toBe(true);
-  const statsB = await b.stats();
-  expect(statsB.total).toBe(1);
-
-  await a.addGraphEntity('alice', 'person', 'Alice A');
-  await a.addGraphEntity('acme', 'organization', 'Acme A');
-  await a.addGraphEdge('alice', 'works_at', 'acme');
-
-  await b.addGraphEntity('alice', 'person', 'Alice B');
-  await b.addGraphEntity('acme', 'organization', 'Acme B');
-  await b.addGraphEdge('alice', 'works_at', 'acme');
-
-  expect(await a.recallGraph('alice', 1)).toEqual([
-    { id: 'acme', kind: 'organization', label: 'Acme A', depth: 1 },
-  ]);
-  expect(await b.recallGraph('alice', 1)).toEqual([
-    { id: 'acme', kind: 'organization', label: 'Acme B', depth: 1 },
-  ]);
-});
 
 const productionOpenEnabled =
   process.env.BASEMYAI_RUN_PRODUCTION_OPEN === '1' &&

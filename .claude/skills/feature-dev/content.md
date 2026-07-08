@@ -1,4 +1,4 @@
-# Skill: feature-dev — Scaffolding de features BaseMyAI / ForgeMyAI
+# Skill: feature-dev — Scaffolding de features BaseMyAI
 
 ## Checklist avant de coder
 
@@ -21,7 +21,7 @@
 | Tool MCP (remember, recall…) | `crates/basemyai-mcp/` |
 | Binding Python | `bindings/basemyai-py/` |
 | Binding Node | `bindings/basemyai-node/` |
-| Contexte de code (symboles, graphe d'appel) | ForgeMyAI (pas encore scaffoldé) |
+| Sémantique code (symboles, graphe d'appel) | hors scope — consommateur tiers de `basemyai-core` |
 
 ## Pattern : ajouter une feature à `basemyai` (sémantique)
 

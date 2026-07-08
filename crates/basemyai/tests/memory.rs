@@ -1,10 +1,12 @@
 //! Tests d'intégration de la couche mémoire : roundtrip remember/recall,
 //! isolation par agent, expiration temporelle. Embedder fake déterministe.
 
+use std::sync::Arc;
+
 use basemyai::temporal::Validity;
 use basemyai::{AgentId, AgentStats, Memory, MemoryLayer};
-use basemyai_core::libsql;
-use basemyai_core::{Embedder, Result, Store};
+use basemyai_core::{Embedder, Result};
+mod support;
 
 const DIM: usize = 384;
 
@@ -51,12 +53,16 @@ fn now() -> i64 {
     i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs()).expect("fits i64")
 }
 
+async fn open_memory(agent_id: &str) -> Memory {
+    let store = Arc::new(support::open_native_store());
+    Memory::from_native_store(store, Box::new(FakeEmbedder), agent(agent_id))
+        .await
+        .expect("open memory")
+}
+
 #[tokio::test]
 async fn remember_then_recall_returns_item() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     mem.remember("the sky is blue", MemoryLayer::Semantic)
         .await
@@ -74,10 +80,7 @@ async fn remember_then_recall_returns_item() {
 async fn recall_with_metric_supports_euclidean_and_hamming() {
     use basemyai::Metric;
 
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     mem.remember("the sky is blue", MemoryLayer::Semantic)
         .await
@@ -86,24 +89,25 @@ async fn recall_with_metric_supports_euclidean_and_hamming() {
         .await
         .expect("remember 2");
 
-    for metric in [Metric::Euclidean, Metric::Hamming, Metric::Cosine] {
-        let hits = mem
+    // Le backend natif ne re-classe que Cosine aujourd'hui (ADR-032) —
+    // Euclidean/Hamming renvoient une erreur franche, jamais un faux résultat.
+    for metric in [Metric::Euclidean, Metric::Hamming] {
+        let err = mem
             .recall_with_metric("the sky is blue", 5, metric)
             .await
-            .expect("recall");
-        assert!(
-            hits.iter().any(|r| r.text == "the sky is blue"),
-            "metric {metric:?} doit retrouver l'item exact"
-        );
+            .expect_err("metric non implémentée doit échouer franchement");
+        assert!(matches!(err, basemyai::MemoryError::Core(_)));
     }
+    let hits = mem
+        .recall_with_metric("the sky is blue", 5, Metric::Cosine)
+        .await
+        .expect("recall cosine");
+    assert!(hits.iter().any(|r| r.text == "the sky is blue"));
 }
 
 #[tokio::test]
 async fn recall_hybrid_surfaces_exact_keyword_match() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     mem.remember("the quick brown fox jumps", MemoryLayer::Semantic)
         .await
@@ -126,10 +130,7 @@ async fn recall_hybrid_surfaces_exact_keyword_match() {
 
 #[tokio::test]
 async fn recall_hybrid_respects_isolation_and_validity() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     let n = now();
     let expired = Validity {
@@ -149,10 +150,7 @@ async fn recall_hybrid_respects_isolation_and_validity() {
 
 #[tokio::test]
 async fn forget_removes_from_fts_mirror() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     let id = mem
         .remember("WIDGET unique identifier", MemoryLayer::Semantic)
@@ -169,10 +167,7 @@ async fn forget_removes_from_fts_mirror() {
 
 #[tokio::test]
 async fn remember_batch_inserts_all_and_mirrors_fts() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     let texts = vec![
         "first batched fact".to_string(),
@@ -201,10 +196,7 @@ async fn remember_batch_inserts_all_and_mirrors_fts() {
 
 #[tokio::test]
 async fn remember_batch_empty_is_noop() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     let ids = mem
         .remember_batch(&[], MemoryLayer::Semantic)
@@ -216,13 +208,9 @@ async fn remember_batch_empty_is_noop() {
 
 #[tokio::test]
 async fn concurrent_remembers_serialize_without_error() {
-    // Les écritures sont transactionnelles sur une connexion partagée : le
-    // verrou writer du Store doit sérialiser les transactions concurrentes
-    // (sans lui, le second BEGIN imbriqué échouerait).
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    // Les écritures sont sérialisées côté moteur (mono-écrivain, ADR-025) :
+    // des `remember`/`remember_batch` concurrents doivent tous aboutir.
+    let mem = open_memory("a").await;
 
     let batch = ["concurrent three".to_string(), "concurrent four".to_string()];
     let (r1, r2, r3) = tokio::join!(
@@ -243,26 +231,18 @@ async fn concurrent_remembers_serialize_without_error() {
 
 #[tokio::test]
 async fn isolation_hides_other_agents_items() {
-    // Agent A mémorise dans une base, on copie son contenu dans la base de B
-    // n'est pas possible (in-memory) : on vérifie plutôt que, partageant la
-    // MÊME base, B (recall borné à `agent_id = 'B'`) ne voit pas les lignes de A.
-    let store = Store::open_in_memory().await.expect("open");
-    store.migrate(&basemyai::schema()).await.expect("migrate");
+    // Deux agents sur la MÊME instance de store natif (partagée, comme un
+    // provider REST/MCP) : B ne doit jamais voir les souvenirs de A.
+    let store = Arc::new(support::open_native_store());
+    let mem_a = Memory::from_native_store(Arc::clone(&store), Box::new(FakeEmbedder), agent("A"))
+        .await
+        .expect("open memory A");
+    mem_a
+        .remember("secret of agent A", MemoryLayer::Semantic)
+        .await
+        .expect("A remembers");
 
-    // Insère un item de l'agent A directement (même base, connexion partagée).
-    let vec_a = FakeEmbedder::vec_for("secret of agent A");
-    let lit = format!("[{}]", vec_a.iter().map(f32::to_string).collect::<Vec<_>>().join(","));
-    let conn = store.connect();
-    conn.execute(
-        "INSERT INTO memory (id, agent_id, layer, content, valid_from, valid_until, emb) \
-         VALUES (?1, 'A', 'semantic', 'secret of agent A', 0, NULL, vector(?2))",
-        basemyai_core::libsql::params!["row-a", lit],
-    )
-    .await
-    .expect("insert A");
-
-    // Mémoire bornée à l'agent B sur la MÊME base.
-    let mem_b = Memory::open(store, Box::new(FakeEmbedder), agent("B"))
+    let mem_b = Memory::from_native_store(Arc::clone(&store), Box::new(FakeEmbedder), agent("B"))
         .await
         .expect("open memory B");
     mem_b
@@ -279,10 +259,7 @@ async fn isolation_hides_other_agents_items() {
 
 #[tokio::test]
 async fn temporal_excludes_expired_items() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     let n = now();
     // valid_until dans le passé => expiré.
@@ -318,9 +295,8 @@ async fn temporal_excludes_expired_items() {
 
 #[tokio::test]
 async fn recall_updates_last_access() {
-    let store = Store::open_in_memory().await.expect("open");
-    let conn = store.connect();
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+    let store = Arc::new(support::open_native_store());
+    let mem = Memory::from_native_store(Arc::clone(&store), Box::new(FakeEmbedder), agent("a"))
         .await
         .expect("open memory");
 
@@ -328,46 +304,44 @@ async fn recall_updates_last_access() {
         .await
         .expect("remember");
 
-    // Avant recall : last_access doit être NULL.
-    let mut rows = conn
-        .query(
-            "SELECT last_access FROM memory WHERE content = ?1",
-            libsql::params!["traceable fact"],
-        )
-        .await
-        .expect("query before recall");
-    let row = rows.next().await.expect("next").expect("row");
-    let val: libsql::Value = row.get(0).expect("get");
-    assert!(
-        matches!(val, libsql::Value::Null),
-        "last_access doit être NULL avant recall"
+    let last_access_of = |rows: &[(String, basemyai_engine::MemoryRecord)]| {
+        rows.iter()
+            .find(|(_, r)| r.content == "traceable fact")
+            .expect("record present")
+            .1
+            .last_access
+    };
+
+    // Avant recall : `last_access` doit valoir `valid_from` (jamais accédé).
+    let before = store.export_rows(&agent("a")).await.expect("export before recall");
+    let before_access = last_access_of(&before.memories);
+    let valid_from = before
+        .memories
+        .iter()
+        .find(|(_, r)| r.content == "traceable fact")
+        .unwrap()
+        .1
+        .valid_from;
+    assert_eq!(
+        before_access, valid_from,
+        "last_access doit valoir valid_from avant recall"
     );
 
     let hits = mem.recall("traceable fact", 5).await.expect("recall");
     assert!(!hits.is_empty(), "recall doit trouver l'item");
 
-    // Après recall : last_access doit être renseigné.
-    let mut rows = conn
-        .query(
-            "SELECT last_access FROM memory WHERE content = ?1",
-            libsql::params!["traceable fact"],
-        )
-        .await
-        .expect("query after recall");
-    let row = rows.next().await.expect("next").expect("row");
-    let val: libsql::Value = row.get(0).expect("get");
+    // Après recall : `last_access` doit avoir avancé.
+    let after = store.export_rows(&agent("a")).await.expect("export after recall");
+    let after_access = last_access_of(&after.memories);
     assert!(
-        matches!(val, libsql::Value::Integer(_)),
-        "last_access doit être défini après recall"
+        after_access >= before_access,
+        "last_access doit être mis à jour après recall"
     );
 }
 
 #[tokio::test]
 async fn recall_by_layer_filters_correctly() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     // Même texte dans deux couches différentes.
     mem.remember("layered content", MemoryLayer::Semantic)
@@ -406,10 +380,7 @@ async fn recall_by_layer_filters_correctly() {
 
 #[tokio::test]
 async fn invalidate_hides_item_from_recall() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     mem.remember("to be invalidated", MemoryLayer::Semantic)
         .await
@@ -442,9 +413,8 @@ async fn invalidate_hides_item_from_recall() {
 
 #[tokio::test]
 async fn forget_removes_item_physically() {
-    let store = Store::open_in_memory().await.expect("open");
-    let conn = store.connect();
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
+    let store = Arc::new(support::open_native_store());
+    let mem = Memory::from_native_store(Arc::clone(&store), Box::new(FakeEmbedder), agent("a"))
         .await
         .expect("open memory");
 
@@ -470,21 +440,16 @@ async fn forget_removes_item_physically() {
     );
 
     // La ligne doit être physiquement supprimée.
-    let mut rows = conn
-        .query("SELECT COUNT(*) FROM memory WHERE id = ?1", libsql::params![id])
-        .await
-        .expect("count query");
-    let row = rows.next().await.expect("next").expect("row");
-    let count: i64 = row.get(0).expect("count");
-    assert_eq!(count, 0, "forget doit supprimer physiquement la ligne");
+    let rows = store.export_rows(&agent("a")).await.expect("export after forget");
+    assert!(
+        rows.memories.iter().all(|(rid, _)| *rid != id),
+        "forget doit supprimer physiquement l'enregistrement"
+    );
 }
 
 #[tokio::test]
 async fn stats_counts_per_layer() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     mem.remember("s1", MemoryLayer::Semantic).await.expect("s1");
     mem.remember("s2", MemoryLayer::Semantic).await.expect("s2");
@@ -501,10 +466,7 @@ async fn stats_counts_per_layer() {
 
 #[tokio::test]
 async fn remember_rejects_text_over_max_len() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     let too_long = "x".repeat(basemyai::MAX_TEXT_LEN + 1);
     let err = mem
@@ -522,10 +484,7 @@ async fn remember_rejects_text_over_max_len() {
 
 #[tokio::test]
 async fn remember_accepts_text_at_exact_max_len() {
-    let store = Store::open_in_memory().await.expect("open");
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     let at_limit = "x".repeat(basemyai::MAX_TEXT_LEN);
     mem.remember(&at_limit, MemoryLayer::Semantic)
@@ -535,11 +494,7 @@ async fn remember_accepts_text_at_exact_max_len() {
 
 #[tokio::test]
 async fn search_graph_scoped_to_entity_mentions() {
-    let store = Store::open_in_memory().await.expect("open");
-    let conn = store.connect();
-    let mem = Memory::open(store, Box::new(FakeEmbedder), agent("a"))
-        .await
-        .expect("open memory");
+    let mem = open_memory("a").await;
 
     // Souvenir mentionnant une entité du graphe ("Alice").
     mem.remember("Alice works at Acme", MemoryLayer::Semantic)
@@ -550,14 +505,10 @@ async fn search_graph_scoped_to_entity_mentions() {
         .await
         .expect("remember other");
 
-    // Ajoute l'entité "Alice" au graphe via SQL direct (conn partagée).
-    conn.execute(
-        "INSERT INTO entity (id, agent_id, kind, label, valid_from, valid_until, importance) \
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, 0)",
-        libsql::params!["e-alice", "a", "person", "Alice", 0_i64],
-    )
-    .await
-    .expect("insert entity");
+    mem.graph()
+        .add_entity("e-alice", "person", "Alice")
+        .await
+        .expect("insert entity");
 
     let hits = mem.search_graph("who works where?", 5).await.expect("search_graph");
 

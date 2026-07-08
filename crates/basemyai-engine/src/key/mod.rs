@@ -243,6 +243,25 @@ pub mod graph_index {
         let dst = String::from_utf8(dst_bytes.to_vec()).ok()?;
         Some((relation, dst))
     }
+
+    /// Extracts `(src, relation, dst)` from a full edge key, given the byte
+    /// length of the exact **agent** prefix it was scanned under (i.e.
+    /// `edge_agent_prefix(agent).len()`) — the whole-agent enumeration read
+    /// behind exporting an agent's graph (ADR-032). Same wire-distrust
+    /// discipline as [`edge_relation_dst`]: both length counts are bounded
+    /// against the actual remaining bytes before any slicing, malformed or
+    /// truncated keys return `None` rather than panicking.
+    #[must_use]
+    pub fn edge_src_relation_dst(prefix_len: usize, key_bytes: &[u8]) -> Option<(String, String, String)> {
+        let suffix = key_bytes.get(prefix_len..)?;
+        let src_len_bytes: [u8; 4] = suffix.get(0..4)?.try_into().ok()?;
+        let src_len = u32::from_be_bytes(src_len_bytes) as usize;
+        let rest = suffix.get(4..)?;
+        let src_bytes = rest.get(..src_len)?;
+        let src = String::from_utf8(src_bytes.to_vec()).ok()?;
+        let (relation, dst) = edge_relation_dst(0, rest.get(src_len..)?)?;
+        Some((src, relation, dst))
+    }
 }
 
 /// Keyspace reserved for the native memory index (N5.1, ADR-027 §2). Like
