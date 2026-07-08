@@ -307,8 +307,8 @@ async fn relay_memory_events(mem: Arc<Memory>, agent_id: String, layer: Option<M
 /// déprécié dans le protocole (SEP-2577) — d'où la politique à niveaux d'ADR-018.
 fn client_supports_sampling(peer: &Peer<RoleServer>) -> bool {
     peer.peer_info()
-        .and_then(|info| info.capabilities.sampling.as_ref())
-        .is_some()
+        .map(|info| info.capabilities.sampling.is_some())
+        .unwrap_or(false)
 }
 
 /// Définition des outils MCP. La macro génère `Self::tool_router()` et le JSON
@@ -516,6 +516,7 @@ const LAYERS_DOC: &str = "\
 /// méthodes absentes).
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpServer {
+    #[allow(deprecated)] // SEP-2577 : `enable_logging` déprécié ; requis pour notifications/message (ADR-022).
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()
