@@ -5,7 +5,7 @@
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
-    "build": "napi build --platform --release --features crypto,embed --dts ../../target/basemyai-node-default.d.ts",
+    "build": "napi build --platform --release --features embed --dts ../../target/basemyai-node-default.d.ts",
     "build:debug": "napi build --platform --features embed --dts ../../target/basemyai-node-debug.d.ts",
     "build:test": "napi build --platform --no-default-features --features test-util --dts ../../target/basemyai-node-test-util.d.ts",
     "typecheck": "tsc --noEmit -p tsconfig.examples.json",

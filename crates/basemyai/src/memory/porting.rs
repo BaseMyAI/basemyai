@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
-//! Export/import de la mémoire d'un agent (portabilité, backup, migration).
+//! Export/import de la mémoire d'un agent (portabilité, backup, migration de
+//! modèle d'embedding).
 //!
 //! Format **JSONL versionné** : une ligne d'en-tête puis une ligne JSON par
 //! souvenir, entité et relation. Les **embeddings ne sont pas exportés** : ils
@@ -7,36 +8,17 @@
 //! qui fait de l'export le chemin de migration de modèle d'embedding (on
 //! change de modèle, on réimporte, tout est ré-encodé).
 //!
-//! L'import est **atomique** (une seule [`basemyai_core::WriteTxn`]) et
-//! **idempotent** (`INSERT OR IGNORE` : réimporter le même fichier ne
-//! duplique rien). Les lignes importées sont rattachées à l'agent de la
-//! mémoire **cible** — l'`agent_id` de l'en-tête est informatif.
+//! Idempotent (les ids déjà présents sont comptés `*_skipped` et laissés
+//! intacts). **Écart d'atomicité assumé** : les souvenirs neufs s'insèrent en
+//! un seul batch WAL tout-ou-rien (`put_many`, N5.5), mais entités/arêtes
+//! suivent en upserts individuels durables — l'import est idempotent et
+//! reprennable, pas globalement atomique (ADR-027 §6, ADR-032 §3).
 
 use serde::{Deserialize, Serialize};
 
-use basemyai_core::libsql;
-
-use super::{Memory, MemoryLayer};
-use crate::{MemoryError, Result, now_unix};
-
-/// Mappe une erreur libSQL en [`MemoryError`] (via `CoreError::Storage`).
-fn storage(e: libsql::Error) -> MemoryError {
-    basemyai_core::CoreError::Storage(e.to_string()).into()
-}
-
-/// Formate un vecteur en littéral SQL `[a,b,c]` consommé par `vector(?)`.
-fn to_vec_literal(v: &[f32]) -> String {
-    let mut s = String::with_capacity(v.len() * 8 + 2);
-    s.push('[');
-    for (i, x) in v.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        s.push_str(&x.to_string());
-    }
-    s.push(']');
-    s
-}
+use super::Memory;
+use crate::storage::{NativeImportEdge, NativeImportEntity, NativeImportMemory};
+use crate::{MemoryError, MemoryLayer, Result, now_unix};
 
 /// Identifiant de format de l'en-tête JSONL.
 const FORMAT: &str = "basemyai-export";
@@ -124,9 +106,7 @@ impl Memory {
     /// # Errors
     /// Propage les erreurs de stockage/sérialisation.
     pub async fn export_jsonl(&self) -> Result<String> {
-        let conn = self.libsql_engine().store().connect();
         let mut out = String::new();
-
         push_line(
             &mut out,
             &ExportLine::Header {
@@ -139,69 +119,47 @@ impl Memory {
             },
         )?;
 
-        let mut rows = conn
-            .query(
-                "SELECT id, layer, content, valid_from, valid_until, importance, last_access \
-                 FROM memory WHERE agent_id = ?1 ORDER BY valid_from, id",
-                libsql::params![self.agent.as_str()],
-            )
-            .await
-            .map_err(storage)?;
-        while let Some(row) = rows.next().await.map_err(storage)? {
+        let rows = self.native_engine().export_rows(&self.agent).await?;
+
+        for (id, record) in rows.memories {
             push_line(
                 &mut out,
                 &ExportLine::Memory {
-                    id: text(&row, 0)?,
-                    layer: text(&row, 1)?,
-                    content: text(&row, 2)?,
-                    valid_from: integer(&row, 3)?,
-                    valid_until: integer_opt(&row, 4)?,
-                    importance: real(&row, 5)?,
-                    last_access: integer_opt(&row, 6)?,
+                    id,
+                    layer: record.layer,
+                    content: record.content,
+                    valid_from: record.valid_from,
+                    valid_until: record.valid_until,
+                    importance: record.importance,
+                    last_access: Some(record.last_access),
                 },
             )?;
         }
 
-        let mut rows = conn
-            .query(
-                "SELECT id, kind, label, valid_from, valid_until, importance \
-                 FROM entity WHERE agent_id = ?1 ORDER BY id",
-                libsql::params![self.agent.as_str()],
-            )
-            .await
-            .map_err(storage)?;
-        while let Some(row) = rows.next().await.map_err(storage)? {
+        for (id, entity) in rows.entities {
             push_line(
                 &mut out,
                 &ExportLine::Entity {
-                    id: text(&row, 0)?,
-                    kind: text(&row, 1)?,
-                    label: text(&row, 2)?,
-                    valid_from: integer(&row, 3)?,
-                    valid_until: integer_opt(&row, 4)?,
-                    importance: real(&row, 5)?,
+                    id,
+                    kind: entity.kind,
+                    label: entity.label,
+                    valid_from: entity.valid_from,
+                    valid_until: entity.valid_until,
+                    importance: default_weight(),
                 },
             )?;
         }
 
-        let mut rows = conn
-            .query(
-                "SELECT src, dst, relation, weight, valid_from, valid_until \
-                 FROM edge WHERE agent_id = ?1 ORDER BY src, dst, relation",
-                libsql::params![self.agent.as_str()],
-            )
-            .await
-            .map_err(storage)?;
-        while let Some(row) = rows.next().await.map_err(storage)? {
+        for (src, relation, dst, meta) in rows.edges {
             push_line(
                 &mut out,
                 &ExportLine::Edge {
-                    src: text(&row, 0)?,
-                    dst: text(&row, 1)?,
-                    relation: text(&row, 2)?,
-                    weight: real(&row, 3)?,
-                    valid_from: integer(&row, 4)?,
-                    valid_until: integer_opt(&row, 5)?,
+                    src,
+                    dst,
+                    relation,
+                    weight: meta.weight,
+                    valid_from: meta.valid_from,
+                    valid_until: meta.valid_until,
                 },
             )?;
         }
@@ -213,10 +171,10 @@ impl Memory {
     /// de la façade, quel que soit l'`agent_id` d'origine de l'export).
     ///
     /// Les souvenirs sont **ré-embeddés** par l'embedder courant (une passe
-    /// `embed_batch` par lots de 128), puis tout est inséré dans **une seule
-    /// transaction** : l'import aboutit entièrement ou pas du tout.
-    /// Idempotent : les lignes dont l'identifiant existe déjà sont comptées
-    /// en `*_skipped` et laissées intactes.
+    /// `embed_batch` par lots de 128), puis les souvenirs neufs partent en un
+    /// seul batch WAL tout-ou-rien (N5.5). Idempotent : les lignes dont
+    /// l'identifiant existe déjà sont comptées en `*_skipped` et laissées
+    /// intactes.
     ///
     /// # Errors
     /// [`MemoryError::Porting`] si l'en-tête manque/diverge ou si une ligne est
@@ -276,8 +234,8 @@ impl Memory {
                     label,
                     valid_from,
                     valid_until,
-                    importance,
-                } => entities.push((id, kind, label, valid_from, valid_until, importance)),
+                    ..
+                } => entities.push((id, kind, label, valid_from, valid_until)),
                 ExportLine::Edge {
                     src,
                     dst,
@@ -294,102 +252,57 @@ impl Memory {
             ));
         }
 
-        // ── Ré-embedding par lots (hors transaction : CPU-bound) ─────────────
+        // ── Ré-embedding par lots (CPU-bound) ─────────────────────────────────
         let contents: Vec<String> = memories.iter().map(|m| m.2.clone()).collect();
         let mut vectors = Vec::with_capacity(contents.len());
         for chunk in contents.chunks(EMBED_CHUNK) {
             vectors.extend(self.embedder.embed_batch(chunk)?);
         }
 
-        // ── Écriture atomique ─────────────────────────────────────────────────
-        let mut report = ImportReport::default();
-        let txn = self.libsql_engine().store().begin_write().await?;
+        let import_memories: Vec<NativeImportMemory> = memories
+            .into_iter()
+            .zip(vectors)
+            .map(
+                |((id, layer, content, valid_from, valid_until, importance, last_access), vector)| NativeImportMemory {
+                    id,
+                    layer,
+                    content,
+                    source: super::SOURCE_USER.to_string(),
+                    valid_from,
+                    valid_until,
+                    importance,
+                    last_access,
+                    vector,
+                },
+            )
+            .collect();
+        let import_entities: Vec<NativeImportEntity> = entities
+            .into_iter()
+            .map(|(id, kind, label, valid_from, valid_until)| NativeImportEntity {
+                id,
+                kind,
+                label,
+                valid_from,
+                valid_until,
+            })
+            .collect();
+        let import_edges: Vec<NativeImportEdge> = edges
+            .into_iter()
+            .map(
+                |(src, dst, relation, weight, valid_from, valid_until)| NativeImportEdge {
+                    src,
+                    dst,
+                    relation,
+                    weight,
+                    valid_from,
+                    valid_until,
+                },
+            )
+            .collect();
 
-        for ((id, layer, content, valid_from, valid_until, importance, last_access), vector) in
-            memories.iter().zip(&vectors)
-        {
-            let inserted = txn
-                .execute(
-                    "INSERT OR IGNORE INTO memory \
-                     (id, agent_id, layer, content, valid_from, valid_until, importance, last_access, emb) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, vector(?9))",
-                    libsql::params![
-                        id.as_str(),
-                        self.agent.as_str(),
-                        layer.table(),
-                        content.as_str(),
-                        *valid_from,
-                        *valid_until,
-                        *importance,
-                        *last_access,
-                        to_vec_literal(vector),
-                    ],
-                )
-                .await
-                .map_err(storage)?;
-            if inserted > 0 {
-                txn.execute(
-                    "INSERT INTO memory_fts (id, agent_id, content) VALUES (?1, ?2, ?3)",
-                    libsql::params![id.as_str(), self.agent.as_str(), content.as_str()],
-                )
-                .await
-                .map_err(storage)?;
-                report.memories += 1;
-            } else {
-                report.memories_skipped += 1;
-            }
-        }
-
-        for (id, kind, label, valid_from, valid_until, importance) in &entities {
-            let inserted = txn
-                .execute(
-                    "INSERT OR IGNORE INTO entity (id, agent_id, kind, label, valid_from, valid_until, importance) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    libsql::params![
-                        id.as_str(),
-                        self.agent.as_str(),
-                        kind.as_str(),
-                        label.as_str(),
-                        *valid_from,
-                        *valid_until,
-                        *importance,
-                    ],
-                )
-                .await
-                .map_err(storage)?;
-            if inserted > 0 {
-                report.entities += 1;
-            } else {
-                report.entities_skipped += 1;
-            }
-        }
-
-        for (src, dst, relation, weight, valid_from, valid_until) in &edges {
-            let inserted = txn
-                .execute(
-                    "INSERT OR IGNORE INTO edge (src, dst, agent_id, relation, weight, valid_from, valid_until) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    libsql::params![
-                        src.as_str(),
-                        dst.as_str(),
-                        self.agent.as_str(),
-                        relation.as_str(),
-                        *weight,
-                        *valid_from,
-                        *valid_until,
-                    ],
-                )
-                .await
-                .map_err(storage)?;
-            if inserted > 0 {
-                report.edges += 1;
-            } else {
-                report.edges_skipped += 1;
-            }
-        }
-
-        txn.commit().await?;
-        Ok(report)
+        self.native_engine()
+            .import_rows(&self.agent, import_memories, import_entities, import_edges)
+            .await
     }
 }
 
@@ -399,34 +312,4 @@ fn push_line(out: &mut String, line: &ExportLine) -> Result<()> {
     out.push_str(&json);
     out.push('\n');
     Ok(())
-}
-
-// ── Lecture typée des colonnes libSQL (erreurs → Storage) ────────────────────
-
-fn text(row: &libsql::Row, idx: i32) -> Result<String> {
-    row.get::<String>(idx).map_err(storage)
-}
-
-fn integer(row: &libsql::Row, idx: i32) -> Result<i64> {
-    row.get::<i64>(idx).map_err(storage)
-}
-
-fn integer_opt(row: &libsql::Row, idx: i32) -> Result<Option<i64>> {
-    match row.get_value(idx).map_err(storage)? {
-        libsql::Value::Null => Ok(None),
-        libsql::Value::Integer(i) => Ok(Some(i)),
-        other => {
-            Err(basemyai_core::CoreError::Storage(format!("colonne {idx} : entier attendu, reçu {other:?}")).into())
-        }
-    }
-}
-
-fn real(row: &libsql::Row, idx: i32) -> Result<f64> {
-    match row.get_value(idx).map_err(storage)? {
-        libsql::Value::Real(r) => Ok(r),
-        // SQLite peut rendre l'affinité entière pour un littéral REAL rond.
-        #[allow(clippy::cast_precision_loss)]
-        libsql::Value::Integer(i) => Ok(i as f64),
-        other => Err(basemyai_core::CoreError::Storage(format!("colonne {idx} : réel attendu, reçu {other:?}")).into()),
-    }
 }

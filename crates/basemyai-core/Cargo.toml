@@ -1,6 +1,7 @@
 [package]
 name = "basemyai-core"
-description = "Business-agnostic embedded foundation: libSQL (native vector + encryption), Candle embeddings, async maintenance."
+description = "Business-agnostic embedded foundation: native storage engine (vector + graph + FTS + encryption), Candle embeddings, async maintenance."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +9,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/basemyai-core"
-keywords = ["embedded", "vector-search", "libsql", "embeddings", "sqlite"]
+keywords = ["embedded", "vector-search", "embeddings", "storage-engine"]
 categories = ["database-implementations", "algorithms"]
 
 [features]
@@ -16,12 +17,6 @@ default = []
 # Inférence ML (Candle) — opt-in : un consommateur peut fournir son propre
 # Embedder via le trait sans compiler Candle.
 embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:serde_json"]
-# Chiffrement au repos (libSQL/SQLite3MultipleCiphers) — exige CMake.
-crypto = ["libsql/encryption"]
-# Backend natif basemyai-engine (ADR-024/ADR-025) — capability discovery only
-# (StorageEngine), pas de MemoryStore : bloqué sur N3 (index vecteur) et N4
-# (graphe). Jamais par défaut.
-engine-native = ["dep:basemyai-engine"]
 
 [dependencies]
 thiserror.workspace = true
@@ -35,21 +30,13 @@ candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-# libSQL : vecteur natif (pas d'extension à linker), SQLite-compat, async.
-# Le cœur compile sans CMake ; `crypto` ajoute le chiffrement (qui l'exige).
-libsql = { version = "0.9.30", default-features = false, features = ["core"] }
-# Backend natif (ADR-024/ADR-025) — capability discovery seulement, feature
-# `engine-native`. Interne, non publié (voir crates/basemyai-engine/Cargo.toml).
-basemyai-engine = { path = "../basemyai-engine", optional = true }
+# Backend natif (ADR-024/ADR-025/ADR-032) — dépendance directe et unique.
+# Interne, non publié (voir crates/basemyai-engine/Cargo.toml).
+basemyai-engine = { path = "../basemyai-engine" }
 
 [dev-dependencies]
 tokio.workspace = true
-criterion.workspace = true
 tempfile.workspace = true
-
-[[bench]]
-name = "knn_scalability"
-harness = false
 
 [lints]
 workspace = true

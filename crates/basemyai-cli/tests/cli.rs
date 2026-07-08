@@ -28,6 +28,8 @@ fn isolated(home: &Path) -> Command {
     }
     cmd.env("HOME", home);
     cmd.env("USERPROFILE", home);
+    cmd.env("NO_COLOR", "1");
+    cmd.current_dir(home);
     cmd
 }
 
@@ -311,29 +313,49 @@ fn graph_round_trip() {
     assert_eq!(reached[0]["id"], "wonderland");
 }
 
+/// Depuis la migration natif-only, la sous-commande `maintenance` a été retirée
+/// de la CLI. L'invocation doit échouer explicitement comme sous-commande
+/// inconnue.
 #[test]
-fn maintenance_gc_runs_on_empty_db() {
+fn maintenance_command_is_not_available() {
     let home = tempfile::tempdir().expect("tempdir");
     let db = db_path(home.path());
     init_container(home.path(), &db);
 
     isolated(home.path())
         .env("BASEMYAI_DB_KEY", KEY)
-        .arg("--db")
+        .args(["--db"])
         .arg(&db)
         .args(["maintenance", "gc"])
         .assert()
-        .success();
+        .code(2)
+        .stderr(predicate::str::contains("unrecognized subcommand 'maintenance'"));
 }
 
 #[test]
-fn no_db_path_is_not_configured_exit_4() {
+fn no_db_path_uses_default_container_path() {
     let home = tempfile::tempdir().expect("tempdir");
 
     isolated(home.path())
         .env("BASEMYAI_DB_KEY", KEY)
         .args(["--format", "json", "--agent", "alice", "inspect"])
         .assert()
-        .code(4)
-        .stderr(predicate::str::contains("\"code\":\"NOT_CONFIGURED\""));
+        .success()
+        .stdout(predicate::str::contains("\"path\":\".\\\\test-agent.bmai\""));
+}
+
+#[test]
+fn color_never_disables_ansi_sequences() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .args(["--color", "never", "--db"])
+        .arg(&db)
+        .arg("verify")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains('\u{1b}').not());
 }

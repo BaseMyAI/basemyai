@@ -14,21 +14,21 @@ pub(crate) async fn setup(fetch: bool, format: Format) -> Result<(), CliError> {
 
     if fetch {
         if format == Format::Text {
-            println!("\nProvisioning baseline model (fetching if absent)...");
+            crate::ui::render::section("Provisioning baseline model (fetching if absent)");
         }
-        let mp = basemyai::provision_with_progress(true, |recv, total| match total {
-            Some(t) => eprint!("\r  {recv}/{t} bytes"),
-            None => eprint!("\r  {recv} bytes"),
-        })
-        .await?;
-        eprintln!();
+        let bar = crate::ui::progress::DownloadBar::new("Downloading model");
+        let mp = basemyai::provision_with_progress(true, |recv, total| bar.update(recv, total)).await?;
+        bar.finish_and_clear();
         format.print(
             || {
-                println!(
-                    "model ready: {} (dim {}) at {}",
-                    mp.model_id,
-                    mp.dim,
-                    mp.model_path.display()
+                crate::ui::table::print_table(
+                    &["Field", "Value"],
+                    vec![
+                        vec!["model_id".to_string(), mp.model_id.clone()],
+                        vec!["dim".to_string(), mp.dim.to_string()],
+                        vec!["path".to_string(), mp.model_path.display().to_string()],
+                        vec!["provisioned".to_string(), "true".to_string()],
+                    ],
                 );
             },
             || {
@@ -45,10 +45,15 @@ pub(crate) async fn setup(fetch: bool, format: Format) -> Result<(), CliError> {
         match basemyai::provision(false).await {
             Ok(mp) => format.print(
                 || {
-                    println!(
-                        "\nmodel already provisioned: {} at {}",
-                        mp.model_id,
-                        mp.model_path.display()
+                    crate::ui::render::section("Model already provisioned");
+                    crate::ui::table::print_table(
+                        &["Field", "Value"],
+                        vec![
+                            vec!["model_id".to_string(), mp.model_id.clone()],
+                            vec!["dim".to_string(), mp.dim.to_string()],
+                            vec!["path".to_string(), mp.model_path.display().to_string()],
+                            vec!["provisioned".to_string(), "true".to_string()],
+                        ],
                     );
                 },
                 || {
@@ -63,8 +68,8 @@ pub(crate) async fn setup(fetch: bool, format: Format) -> Result<(), CliError> {
             ),
             Err(_) => format.print(
                 || {
-                    println!(
-                        "\nbaseline model not provisioned. Re-run `basemyai setup --fetch` to download it (explicit consent)."
+                    crate::ui::render::warning(
+                        "baseline model not provisioned. Re-run `basemyai setup --fetch` to download it (explicit consent).",
                     );
                 },
                 || {
@@ -92,9 +97,16 @@ pub(crate) async fn status(format: Format) -> Result<(), CliError> {
             let present = mp.model_path.exists();
             format.print(
                 || {
-                    println!("\nprovisioned model: {} (dim {})", mp.model_id, mp.dim);
-                    println!("  path: {}", mp.model_path.display());
-                    println!("  files present: {present}");
+                    crate::ui::render::section("Provisioned model");
+                    crate::ui::table::print_table(
+                        &["Field", "Value"],
+                        vec![
+                            vec!["model_id".to_string(), mp.model_id.clone()],
+                            vec!["dim".to_string(), mp.dim.to_string()],
+                            vec!["path".to_string(), mp.model_path.display().to_string()],
+                            vec!["files_present".to_string(), present.to_string()],
+                        ],
+                    );
                 },
                 || {
                     serde_json::json!({
@@ -108,7 +120,7 @@ pub(crate) async fn status(format: Format) -> Result<(), CliError> {
             );
         }
         Err(e) => format.print(
-            || println!("\nmodel not provisioned: {e}"),
+            || crate::ui::render::warning(&format!("model not provisioned: {e}")),
             || {
                 serde_json::json!({
                     "hardware": hardware_json(&hw),
@@ -124,14 +136,18 @@ pub(crate) async fn status(format: Format) -> Result<(), CliError> {
 }
 
 fn print_hardware(hw: &basemyai::HardwareProfile) {
-    println!("Detected hardware:");
-    println!("  RAM: {} MB", hw.total_ram_mb);
-    println!("  CPU cores: {}", hw.cpu_cores);
-    match hw.gpu_vram_mb {
-        Some(v) => println!("  GPU VRAM: {v} MB"),
-        None => println!("  GPU VRAM: (none detected)"),
-    }
-    println!("  Device: {:?}", hw.device);
+    crate::ui::render::section("Detected hardware");
+    crate::ui::render::key_values(&[
+        ("ram_mb:", hw.total_ram_mb.to_string()),
+        ("cpu_cores:", hw.cpu_cores.to_string()),
+        (
+            "gpu_vram_mb:",
+            hw.gpu_vram_mb
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "(none detected)".to_string()),
+        ),
+        ("device:", format!("{:?}", hw.device)),
+    ]);
 }
 
 fn hardware_json(hw: &basemyai::HardwareProfile) -> serde_json::Value {
@@ -149,19 +165,27 @@ pub(crate) async fn llm_detect(format: Format) -> Result<(), CliError> {
     format.print(
         || {
             if opts.is_empty() {
-                println!("no local LLM servers detected (Ollama / llama.cpp / OpenAI-compatible).");
+                crate::ui::render::warning("no local LLM servers detected (Ollama / llama.cpp / OpenAI-compatible).");
                 return;
             }
-            println!("detected {} local LLM option(s):", opts.len());
-            for o in &opts {
-                let ram = o
-                    .ram_mb
-                    .map(|r| format!("{r} MB"))
-                    .unwrap_or_else(|| "unknown".to_string());
-                println!("  - {} via {:?} @ {} (RAM ~{ram})", o.model_id, o.backend, o.server_url);
-            }
+            crate::ui::render::section(&format!("Detected {} local LLM option(s)", opts.len()));
+            crate::ui::table::print_table(
+                &["model_id", "backend", "server_url", "ram_mb"],
+                opts.iter()
+                    .map(|o| {
+                        vec![
+                            o.model_id.clone(),
+                            format!("{:?}", o.backend),
+                            o.server_url.clone(),
+                            o.ram_mb
+                                .map(|r| format!("{r}"))
+                                .unwrap_or_else(|| "unknown".to_string()),
+                        ]
+                    })
+                    .collect::<Vec<_>>(),
+            );
             if let Some(best) = best {
-                println!("best for this machine: {}", best.model_id);
+                crate::ui::render::success(&format!("best for this machine: {}", best.model_id));
             }
         },
         || {
@@ -185,13 +209,23 @@ pub(crate) async fn llm_suggest(format: Format) -> Result<(), CliError> {
     format.print(
         || {
             if suggestions.is_empty() {
-                println!("no additional models to suggest for this hardware.");
+                crate::ui::render::info("no additional models to suggest for this hardware.");
                 return;
             }
-            println!("suggested models (e.g. `ollama pull <tag>`):");
-            for m in &suggestions {
-                println!("  - {} (~{} MB) — {}", m.ollama_tag, m.ram_mb, m.description);
-            }
+            crate::ui::render::section("Suggested models (e.g. `ollama pull <tag>`)");
+            crate::ui::table::print_table(
+                &["ollama_tag", "ram_mb", "description"],
+                suggestions
+                    .iter()
+                    .map(|m| {
+                        vec![
+                            m.ollama_tag.to_string(),
+                            m.ram_mb.to_string(),
+                            m.description.to_string(),
+                        ]
+                    })
+                    .collect::<Vec<_>>(),
+            );
         },
         || {
             serde_json::json!({

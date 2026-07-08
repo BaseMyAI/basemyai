@@ -6,7 +6,7 @@
 //! Run: `cargo run --example memory_basic -p basemyai`
 
 use basemyai::{AgentId, Memory, MemoryLayer};
-use basemyai_core::{Embedder, Store};
+use basemyai_core::{Embedder, EncryptionKey};
 
 struct FakeEmbedder;
 
@@ -27,9 +27,10 @@ impl Embedder for FakeEmbedder {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let store = Store::open_in_memory().await?;
+    let dir = tempfile::tempdir()?;
+    let key = EncryptionKey::new("demo-key-do-not-use-in-prod");
     let agent = AgentId::new("demo-agent").expect("non-empty id");
-    let memory = Memory::open(store, Box::new(FakeEmbedder), agent).await?;
+    let memory = Memory::open_native(dir.path(), &key, Box::new(FakeEmbedder), agent).await?;
 
     memory
         .remember("The Eiffel Tower is in Paris.", MemoryLayer::Semantic)

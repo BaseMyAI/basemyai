@@ -2,7 +2,7 @@
 //! Façade `Memory` exposée à Node. Les méthodes `async` deviennent des `Promise`
 //! JS, exécutées sur le runtime tokio interne de NAPI-RS. Moteur 100 % local.
 
-#[cfg(any(feature = "embed", feature = "test-util"))]
+#[cfg(feature = "embed")]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,9 +13,9 @@ use napi_derive::napi;
 
 use basemyai::MemoryLayer;
 #[cfg(feature = "embed")]
-use basemyai_core::Store;
+use basemyai_core::EncryptionKey;
 #[cfg(feature = "embed")]
-use basemyai_core::{CandleEmbedder, Device, EncryptionKey};
+use basemyai_core::{CandleEmbedder, Device};
 
 use crate::errors::to_napi;
 use crate::types::{AgentStats, Entity, MemoryOpenOptions, Record};
@@ -163,11 +163,8 @@ async fn open_production(options: MemoryOpenOptions) -> Result<Memory> {
         .map_err(basemyai::MemoryError::from)
         .map_err(to_napi)?;
     let db_path = PathBuf::from(path);
-    let store = Store::open(&db_path, Some(EncryptionKey::new(encryption_key)))
-        .await
-        .map_err(basemyai::MemoryError::from)
-        .map_err(to_napi)?;
-    let mem = basemyai::Memory::open(store, Box::new(embedder), agent)
+    let key = EncryptionKey::new(encryption_key);
+    let mem = basemyai::Memory::open_native(db_path, &key, Box::new(embedder), agent)
         .await
         .map_err(to_napi)?;
     Ok(Memory { inner: Arc::new(mem) })
@@ -193,17 +190,6 @@ impl Memory {
     #[napi(factory, js_name = "openInMemory")]
     pub async fn open_in_memory(agent_id: String) -> Result<Memory> {
         let mem = basemyai::Memory::open_in_memory(&agent_id).await.map_err(to_napi)?;
-        Ok(Memory { inner: Arc::new(mem) })
-    }
-
-    /// Ouvre un fichier libSQL partagé avec l'embedder déterministe de test.
-    /// Test-only : permet de vérifier l'isolation SQL réelle entre deux agents
-    /// sans compiler Candle ni embarquer de modèle.
-    #[napi(factory, js_name = "openTestFile")]
-    pub async fn open_test_file(path: String, agent_id: String) -> Result<Memory> {
-        let mem = basemyai::Memory::open_test_file(&PathBuf::from(path), &agent_id)
-            .await
-            .map_err(to_napi)?;
         Ok(Memory { inner: Arc::new(mem) })
     }
 }

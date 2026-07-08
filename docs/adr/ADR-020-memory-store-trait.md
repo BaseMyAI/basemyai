@@ -1,11 +1,9 @@
 # ADR-020 — `MemoryStore` : contrat d'opérations mémoire dans `basemyai`
 
-**Status**: Accepted
+**Status**: Amended by ADR-032
 **Date**: 2026-06-20
-**Context**: suivi d'ADR-019 (*« Gradually move SQL/libSQL-specific code
-behind an engine module… Add backend contract tests before any second
-backend exists »*) ; n'amende ni ne supersède ADR-011 (backend libSQL V1)
-ni ADR-001 (agnosticité du core).
+**Context**: suivi d'ADR-019 ; depuis ADR-032, `NativeMemoryStore` est
+l'unique implémentation active du contrat `MemoryStore`.
 
 ## Contexte
 

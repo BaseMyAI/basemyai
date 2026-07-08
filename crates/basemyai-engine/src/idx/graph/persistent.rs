@@ -134,6 +134,38 @@ impl PersistentGraph {
         Ok(out)
     }
 
+    /// The entity block for `(agent, id)`, if any — the point lookup behind
+    /// an idempotent import's "already present?" check (ADR-032), public
+    /// mirror of the private [`EngineGraphProvider::entity`] read the BFS
+    /// traversal uses.
+    pub fn entity(&self, engine: &Engine, agent: &str, id: &str) -> Result<Option<GraphEntity>> {
+        let key = graph_index::entity_key(agent, id)?;
+        let Some(bytes) = engine.get(key.as_bytes())? else {
+            return Ok(None);
+        };
+        Ok(Some(entity::decode(&bytes)?))
+    }
+
+    /// Every edge of `agent`, as `(src, relation, dst, meta)` tuples in
+    /// ascending key-byte order (the structural scan order) — the
+    /// whole-agent enumeration behind exporting an agent's graph (ADR-032),
+    /// mirror of [`Self::entities`]. A malformed key inside the reserved
+    /// keyspace is a hard error, never silently skipped.
+    pub fn edges(&self, engine: &Engine, agent: &str) -> Result<Vec<(String, String, String, GraphEdgeMeta)>> {
+        let prefix = graph_index::edge_agent_prefix(agent)?;
+        let entries = engine.scan_prefix(&prefix)?;
+        let mut out = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            let Some((src, relation, dst)) = graph_index::edge_src_relation_dst(prefix.len(), key.as_bytes()) else {
+                return Err(EngineError::CorruptGraphEdge {
+                    reason: format!("malformed edge key under the (agent={agent:?}) scan prefix"),
+                });
+            };
+            out.push((src, relation, dst, edge::decode(&value)?));
+        }
+        Ok(out)
+    }
+
     /// The attributes of the edge `(agent, src) --relation--> dst`, if any —
     /// what a caller needs to reproduce the libSQL upsert's
     /// `ON CONFLICT ... DO UPDATE SET weight` semantics (update the weight,

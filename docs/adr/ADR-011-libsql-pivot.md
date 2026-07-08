@@ -1,6 +1,6 @@
 # ADR-011 — Pivot vers libSQL (vecteur natif + chiffrement), traits async
 
-**Statut** : ✅ Accepted | **Date** : 2026-06
+**Statut** : 🔵 Superseded by ADR-032 | **Date** : 2026-06
 **Supersede** : ADR-002 (sqlite-vec). **Amende** : ADR-003 (Candle tient), ADR-007 (chiffrement désormais via libSQL).
 
 **Contexte**

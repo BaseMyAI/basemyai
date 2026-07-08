@@ -16,7 +16,7 @@
 //!     --test native_memory_store_bench -- --ignored --nocapture
 //! ```
 
-#![cfg(all(feature = "test-util", feature = "engine-native"))]
+#![cfg(feature = "test-util")]
 
 use basemyai::storage::{MemoryStore, NativeMemoryStore};
 use basemyai::temporal::Validity;

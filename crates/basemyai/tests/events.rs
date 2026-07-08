@@ -8,7 +8,8 @@
 use std::time::Duration;
 
 use basemyai::{AgentId, Memory, MemoryEventKind, MemoryLayer};
-use basemyai_core::{Embedder, Result, Store};
+use basemyai_core::{Embedder, Result};
+mod support;
 
 const DIM: usize = 384;
 
@@ -49,8 +50,8 @@ fn agent(id: &str) -> AgentId {
 }
 
 async fn open_memory(agent_id: &str) -> Memory {
-    let store = Store::open_in_memory().await.expect("open in-memory store");
-    Memory::open(store, Box::new(FakeEmbedder), agent(agent_id))
+    let store = std::sync::Arc::new(support::open_native_store());
+    Memory::from_native_store(store, Box::new(FakeEmbedder), agent(agent_id))
         .await
         .expect("open memory")
 }

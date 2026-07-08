@@ -1,72 +1,21 @@
 // SPDX-License-Identifier: BUSL-1.1
-//! Types de la recherche vectorielle. Les opérations (`vector_upsert`,
-//! `vector_knn`) sont **natives** sur [`Store`](crate::Store) via libSQL — pas
-//! de trait/backend à abstraire (ADR : pivot libSQL).
-//!
-//! **Le pattern clé** subsiste : `vector_knn` accepte un [`Filter`] *fourni par
-//! l'appelant*. Le core applique le filtre sans en connaître le sens. Le filtre
-//! est **paramétré** — fragment SQL `?` + valeurs liées — donc agnostique *et*
-//! anti-injection.
-
-/// Valeur SQL liée à un placeholder `?` d'un [`Filter`].
-///
-/// `#[non_exhaustive]` : de nouveaux types SQL libSQL peuvent être ajoutés.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum Value {
-    /// Entier signé 64 bits.
-    Integer(i64),
-    /// Flottant 64 bits.
-    Real(f64),
-    /// Texte UTF-8.
-    Text(String),
-    /// Données binaires brutes.
-    Blob(Vec<u8>),
-    /// Valeur SQL NULL.
-    Null,
-}
-
-/// Filtre SQL paramétré fourni par le consommateur. `where_sql` contient des
-/// `?` ; les valeurs (potentiellement non fiables) vivent dans `params`.
-#[derive(Debug, Default, Clone)]
-pub struct Filter {
-    /// Fragment `WHERE` avec des `?` anonymes (anti-injection).
-    pub where_sql: String,
-    /// Valeurs liées aux `?`, dans l'ordre textuel.
-    pub params: Vec<Value>,
-}
-
-impl Filter {
-    /// Construit un filtre à partir d'un fragment `WHERE` et de ses paramètres.
-    #[must_use]
-    pub fn new(where_sql: impl Into<String>, params: Vec<Value>) -> Self {
-        Self {
-            where_sql: where_sql.into(),
-            params,
-        }
-    }
-}
-
-/// Un voisin retourné par `vector_knn`.
-#[derive(Debug, Clone)]
-pub struct Neighbor {
-    /// Identifiant de la ligne (`id TEXT PRIMARY KEY`).
-    pub id: String,
-    /// Distance pour la métrique demandée (`0` = identique, croissante = plus
-    /// éloigné). Cosinus dans `[0, 2]` par défaut ; voir [`Metric`].
-    pub distance: f32,
-}
+//! Metric de distance pour le KNN — le seul type de `storage::vector` qui
+//! survit à la bascule 100% natif (ADR-032) : `Filter`/`Value`/`Neighbor`
+//! étaient des types de construction de requête libSQL, supprimés avec
+//! `Store`. `Metric` reste un concept de domaine, indépendant du backend.
 
 /// Métrique de distance pour le KNN.
 ///
-/// L'index natif libSQL est **cosinus**. Pour [`Metric::Euclidean`] et
-/// [`Metric::Hamming`], le KNN sur-échantillonne les candidats cosinus puis les
-/// **re-classe en Rust** sur les vecteurs réels (le rappel reste piloté par
-/// l'index ANN cosinus, le tri final par la métrique demandée).
+/// L'index natif (`basemyai-engine`, LM-DiskANN) est **cosinus**.
+/// [`Metric::Euclidean`]/[`Metric::Hamming`] n'ont pas d'implémentation de
+/// re-classement côté natif aujourd'hui (l'ancien chemin de re-classement
+/// vivait dans le `Store` libSQL supprimé) — un appelant qui les demande
+/// reçoit une erreur franche du backend, jamais un résultat silencieusement
+/// faux.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum Metric {
-    /// Distance cosinus (native, `1 - cos`). Défaut.
+    /// Distance cosinus (native). Défaut.
     #[default]
     Cosine,
     /// Distance euclidienne (L2) sur les vecteurs.

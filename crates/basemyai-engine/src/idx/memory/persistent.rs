@@ -304,6 +304,15 @@ impl PersistentMemoryIndex {
         Ok(out)
     }
 
+    /// Total number of memory records across **every** agent — a plain count
+    /// over the whole reserved `idx/memory/rec/` keyspace, distinct from
+    /// [`Self::scan_agent`]'s per-agent prefix. The container-level read
+    /// behind a CLI/diagnostic "how many memories total" (ADR-032) — no
+    /// per-record decode needed, just the entry count.
+    pub fn count_all(&self, engine: &Engine) -> Result<u64> {
+        Ok(engine.scan_prefix(memory_index::RECORD_PREFIX)?.len() as u64)
+    }
+
     /// Resolves a vector-index id back to the `(agent, id)` pair owning it,
     /// or `None` for ids with no mapping (e.g. a hit whose memory was
     /// forgotten by an interrupted earlier attempt).

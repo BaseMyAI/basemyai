@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 //! Boucle de maintenance async. Le core **fait tourner la boucle** ; les tâches
 //! sont **injectées par le consommateur** (mécanisme au core, sens au
-//! consommateur). Le GC par `valid_until` est une tâche `basemyai`, pas du core.
+//! consommateur) et sont **auto-suffisantes** — chacune possède déjà ce dont
+//! elle a besoin (`Arc<Memory>`, backend natif, etc.), le worker ne leur passe
+//! aucun store partagé (ADR-032 : avant la suppression de libSQL, `run`
+//! recevait un `&Store` — `ConsolidationTask`, la seule tâche restante, l'a
+//! toujours ignoré).
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{Result, Store};
+use crate::Result;
 
 /// Une tâche de maintenance fournie par le consommateur.
 #[async_trait::async_trait]
@@ -14,11 +18,11 @@ pub trait MaintenanceTask: Send + Sync {
     /// Nom lisible (tracing/debug).
     fn name(&self) -> &str;
 
-    /// Exécute la tâche contre le store.
+    /// Exécute la tâche.
     ///
     /// # Errors
-    /// Propage toute erreur du store ; la boucle logue et continue.
-    async fn run(&self, store: &Store) -> Result<()>;
+    /// Propage toute erreur ; la boucle logue et continue.
+    async fn run(&self) -> Result<()>;
 }
 
 /// Planifie et exécute des [`MaintenanceTask`] en tâche de fond, sans bloquer
@@ -46,13 +50,12 @@ impl MaintenanceWorker {
     ///
     /// Une boucle `tokio::spawn` par tâche : `sleep(every)` puis `run`. Une
     /// erreur est loguée (`warn`) et n'interrompt pas la boucle.
-    pub fn start(self, store: Arc<Store>) {
+    pub fn start(self) {
         for (every, task) in self.tasks {
-            let store = Arc::clone(&store);
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(every).await;
-                    if let Err(e) = task.run(&store).await {
+                    if let Err(e) = task.run().await {
                         tracing::warn!(task = task.name(), error = %e, "maintenance task failed");
                     }
                 }

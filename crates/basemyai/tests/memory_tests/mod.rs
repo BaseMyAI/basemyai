@@ -6,12 +6,11 @@
 //! `agent: Option<&'static str>`) pour les scénarios d'isolation
 //! multi-agent (N5.3). [`run_scenario`] les rejoue contre **n'importe
 //! quelle** implémentation de [`MemoryStore`] — la borne est générique
-//! (`S: MemoryStore`), aucune implémentation concrète (`LibsqlMemoryStore` ou
-//! `NativeMemoryStore`) n'apparaît dans ce fichier.
+//! (`S: MemoryStore`), aucune implémentation concrète (`NativeMemoryStore`)
+//! n'apparaît dans ce fichier.
 //!
-//! Deux backends existent (`Libsql`, `Native` sous la feature
-//! `engine-native`) — voir `../memory_tests.rs` pour l'enregistrement des
-//! backends via `backend_suite!`.
+//! Le backend natif est rejoué en clair et chiffré — voir `../memory_tests.rs`
+//! pour l'enregistrement des backends via `backend_suite!`.
 
 pub(crate) mod scenarios;
 

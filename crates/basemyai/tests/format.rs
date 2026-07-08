@@ -1,31 +1,18 @@
-//! `.bmai` container metadata contract.
+//! `.bmai` container metadata contract (moteur natif, ADR-033).
 
-use basemyai::schema;
-use basemyai_core::Store;
+use basemyai::storage::BMAI_FORMAT_VERSION;
+mod support;
 
 #[tokio::test]
-async fn schema_writes_bmai_container_metadata() {
-    let store = Store::open_in_memory().await.expect("store opens");
-    store.migrate(&schema()).await.expect("schema migrates");
+async fn native_store_writes_bmai_container_metadata() {
+    let store = support::open_native_store();
+    let meta = store.container_metadata().await.expect("metadata read");
+    let get = |key: &str| meta.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
 
-    let conn = store.connect();
-    let mut rows = conn
-        .query(
-            "SELECT key, value FROM bmai_meta WHERE key IN ('format', 'format_version', 'storage_engine')",
-            (),
-        )
-        .await
-        .expect("metadata query succeeds");
-
-    let mut values = std::collections::BTreeMap::new();
-    while let Some(row) = rows.next().await.expect("row reads") {
-        values.insert(
-            row.get::<String>(0).expect("key column"),
-            row.get::<String>(1).expect("value column"),
-        );
-    }
-
-    assert_eq!(values.get("format").map(String::as_str), Some("basemyai-memory"));
-    assert_eq!(values.get("format_version").map(String::as_str), Some("1"));
-    assert_eq!(values.get("storage_engine").map(String::as_str), Some("libsql"));
+    assert_eq!(get("format").as_deref(), Some("basemyai-memory"));
+    assert_eq!(
+        get("format_version").as_deref(),
+        Some(BMAI_FORMAT_VERSION.to_string().as_str())
+    );
+    assert_eq!(get("storage_engine").as_deref(), Some("native"));
 }

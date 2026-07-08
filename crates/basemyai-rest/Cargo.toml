@@ -17,9 +17,8 @@ name = "basemyai-rest"
 path = "src/main.rs"
 
 [features]
-default   = ["crypto", "embed"]
-embed     = ["basemyai/embed"]
-crypto    = ["basemyai/crypto"]
+default = ["embed"]
+embed   = ["basemyai/embed"]
 # `test-util` : InMemoryProvider + embedder déterministe (ni CMake ni Candle).
 test-util = ["basemyai/test-util"]
 

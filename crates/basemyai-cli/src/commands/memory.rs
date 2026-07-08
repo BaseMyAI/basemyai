@@ -9,9 +9,11 @@ use std::path::Path;
 use basemyai::{Memory, Record};
 
 use crate::cli::Layer;
-use crate::context::{memory_layer, now_unix, open_engine, open_memory, open_store};
+use crate::context::{memory_layer, now_unix, open_engine, open_memory};
 use crate::error::CliError;
 use crate::output::Format;
+use crate::ui::color::Stream;
+use crate::ui::theme;
 
 pub(crate) async fn remember(
     memory: &Memory,
@@ -26,9 +28,15 @@ pub(crate) async fn remember(
             unreachable!("clap enforces text/file mutual exclusivity (required_unless_present/conflicts_with)")
         }
         (Some(text), None) => {
+            let spinner = if format.is_text() {
+                crate::ui::progress::spinner("Embedding and storing memory...")
+            } else {
+                crate::ui::progress::Spinner::Disabled
+            };
             let id = memory.remember(&text, layer).await?;
+            spinner.finish_and_clear();
             format.print(
-                || println!("remembered {id} in layer {}", layer.table()),
+                || crate::ui::render::success(&format!("remembered {id} in layer {}", layer.table())),
                 || serde_json::json!({ "id": id, "layer": layer.table() }),
             );
             Ok(())
@@ -40,9 +48,15 @@ pub(crate) async fn remember(
                 .map(str::to_string)
                 .filter(|l| !l.trim().is_empty())
                 .collect();
+            let spinner = if format.is_text() {
+                crate::ui::progress::spinner("Embedding and storing memory batch...")
+            } else {
+                crate::ui::progress::Spinner::Disabled
+            };
             let ids = memory.remember_batch(&texts, layer).await?;
+            spinner.finish_and_clear();
             format.print(
-                || println!("remembered {} item(s) in layer {}", ids.len(), layer.table()),
+                || crate::ui::render::success(&format!("remembered {} item(s) in layer {}", ids.len(), layer.table())),
                 || serde_json::json!({ "ids": ids, "layer": layer.table(), "count": ids.len() }),
             );
             Ok(())
@@ -60,17 +74,24 @@ pub(crate) async fn recall(
     graph: bool,
     format: Format,
 ) -> Result<(), CliError> {
+    let spinner = if format.is_text() {
+        crate::ui::progress::spinner("Searching memories...")
+    } else {
+        crate::ui::progress::Spinner::Disabled
+    };
     let records: Vec<Record> = match (hybrid, layer, graph) {
         (true, None, false) => memory.recall_hybrid(query, k).await?,
         (false, Some(l), false) => memory.recall_by_layer(query, memory_layer(l), k).await?,
         (false, None, true) => memory.search_graph(query, k).await?,
         (false, None, false) => memory.recall(query, k).await?,
         _ => {
+            spinner.finish_and_clear();
             return Err(CliError::MutuallyExclusive(
                 "--hybrid, --layer and --graph are mutually exclusive",
             ));
         }
     };
+    spinner.finish_and_clear();
     print_records(&records, query, format);
     Ok(())
 }
@@ -79,19 +100,30 @@ fn print_records(records: &[Record], query: &str, format: Format) {
     format.print(
         || {
             if records.is_empty() {
-                println!("(no memories matched)");
+                crate::ui::render::warning("no memories matched the current query");
+                crate::ui::render::hint("try a broader query or `--hybrid`");
             } else {
-                println!("{} result(s) for \"{query}\":", records.len());
-                for (i, r) in records.iter().enumerate() {
-                    println!(
-                        "  {}. [{}] [{:.3}] ({}) {}",
-                        i + 1,
-                        r.id,
-                        r.similarity(),
-                        r.layer.table(),
-                        r.text
-                    );
-                }
+                crate::ui::render::section(&format!(
+                    "{} result(s) for {}",
+                    records.len(),
+                    theme::accent(&format!("\"{query}\""), Stream::Stdout)
+                ));
+                crate::ui::table::print_table(
+                    &["#", "score", "layer", "id", "excerpt"],
+                    records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| {
+                            vec![
+                                (i + 1).to_string(),
+                                format!("{:.3}", r.similarity()),
+                                theme::layer(r.layer.table(), Stream::Stdout),
+                                r.id.clone(),
+                                crate::ui::table::wrap_excerpt(&r.text, 72),
+                            ]
+                        })
+                        .collect::<Vec<_>>(),
+                );
             }
         },
         || {
@@ -116,62 +148,48 @@ pub(crate) async fn list(
     include_invalid: bool,
     format: Format,
 ) -> Result<(), CliError> {
-    basemyai::AgentId::new(agent).ok_or(CliError::InvalidAgent)?;
-
-    let store = open_store(path).await?;
-    let conn = store.connect();
-
-    let mut sql = String::from("SELECT id, layer, content, valid_from, valid_until FROM memory WHERE agent_id = ?1");
-    if !include_invalid {
-        sql.push_str(" AND (valid_until IS NULL OR valid_until > unixepoch())");
-    }
-    let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
-    let mut params: Vec<basemyai_core::libsql::Value> = vec![
-        basemyai_core::libsql::Value::Text(agent.to_string()),
-        basemyai_core::libsql::Value::Integer(limit_i64),
-    ];
-    if let Some(l) = layer {
-        sql.push_str(" AND layer = ?3");
-        params.push(basemyai_core::libsql::Value::Text(memory_layer(l).table().to_string()));
-    }
-    sql.push_str(" ORDER BY valid_from DESC LIMIT ?2");
-
-    let mut rows = conn.query(&sql, params).await?;
-
-    let mut items = Vec::new();
-    while let Some(row) = rows.next().await? {
-        let id: String = row.get(0)?;
-        let layer: String = row.get(1)?;
-        let content: String = row.get(2)?;
-        let valid_from: i64 = row.get(3)?;
-        let valid_until: Option<i64> = row.get(4)?;
-        items.push((id, layer, content, valid_from, valid_until));
-    }
+    let (engine, agent_id) = open_engine(path, agent).await?;
+    let records = engine
+        .list_memories(&agent_id, layer.map(memory_layer), limit, include_invalid, now_unix())
+        .await?;
 
     format.print(
         || {
-            if items.is_empty() {
-                println!("(no memories)");
+            if records.is_empty() {
+                crate::ui::render::info("no memories found for this agent");
             } else {
-                println!("{} memory(ies) for agent '{agent}':", items.len());
-                for (id, layer, content, valid_from, valid_until) in &items {
-                    let status = match valid_until {
-                        Some(_) => "invalidated",
-                        None => "valid",
-                    };
-                    println!("  [{id}] ({layer}, {status}, since {valid_from}) {content}");
-                }
+                crate::ui::render::section(&format!("{} memory(ies) for agent '{agent}'", records.len()));
+                crate::ui::table::print_table(
+                    &["id", "layer", "status", "valid_from", "content"],
+                    records
+                        .iter()
+                        .map(|r| {
+                            let status = if r.valid_until.is_some() {
+                                "invalidated"
+                            } else {
+                                "valid"
+                            };
+                            vec![
+                                r.id.clone(),
+                                theme::layer(r.layer.table(), Stream::Stdout),
+                                status.to_string(),
+                                r.valid_from.to_string(),
+                                crate::ui::table::wrap_excerpt(&r.content, 68),
+                            ]
+                        })
+                        .collect::<Vec<_>>(),
+                );
             }
         },
         || {
             serde_json::json!({
                 "agent": agent,
-                "memories": items.iter().map(|(id, layer, content, valid_from, valid_until)| serde_json::json!({
-                    "id": id,
-                    "layer": layer,
-                    "text": content,
-                    "valid_from": valid_from,
-                    "valid_until": valid_until,
+                "memories": records.iter().map(|r| serde_json::json!({
+                    "id": r.id,
+                    "layer": r.layer.table(),
+                    "text": r.content,
+                    "valid_from": r.valid_from,
+                    "valid_until": r.valid_until,
                 })).collect::<Vec<_>>(),
             })
         },
@@ -183,7 +201,7 @@ pub(crate) async fn forget(path: &Path, agent: &str, id: &str, format: Format) -
     let (engine, agent_id) = open_engine(path, agent).await?;
     engine.forget(&agent_id, id).await?;
     format.print(
-        || println!("forgot {id}"),
+        || crate::ui::render::success(&format!("forgot {id}")),
         || serde_json::json!({ "id": id, "action": "forget" }),
     );
     Ok(())
@@ -193,7 +211,7 @@ pub(crate) async fn invalidate(path: &Path, agent: &str, id: &str, format: Forma
     let (engine, agent_id) = open_engine(path, agent).await?;
     engine.invalidate(&agent_id, id, now_unix()).await?;
     format.print(
-        || println!("invalidated {id}"),
+        || crate::ui::render::success(&format!("invalidated {id}")),
         || serde_json::json!({ "id": id, "action": "invalidate" }),
     );
     Ok(())
@@ -208,7 +226,7 @@ pub(crate) async fn purge(path: &Path, agent: &str, yes: bool, format: Format) -
     let (engine, agent_id) = open_engine(path, agent).await?;
     engine.purge_agent(&agent_id).await?;
     format.print(
-        || println!("purged all data for agent '{agent}'"),
+        || crate::ui::render::success(&format!("purged all data for agent '{agent}'")),
         || serde_json::json!({ "agent": agent, "action": "purge" }),
     );
     Ok(())
@@ -226,7 +244,7 @@ pub(crate) async fn export(path: &Path, agent: &str, out: Option<String>, format
         Some(out_path) => {
             std::fs::write(&out_path, &jsonl)?;
             format.print(
-                || println!("exported agent '{agent}' to {out_path}"),
+                || crate::ui::render::success(&format!("exported agent '{agent}' to {out_path}")),
                 || serde_json::json!({ "agent": agent, "out": out_path }),
             );
         }
@@ -238,17 +256,26 @@ pub(crate) async fn export(path: &Path, agent: &str, out: Option<String>, format
 pub(crate) async fn import(path: &Path, agent: &str, file: &str, format: Format) -> Result<(), CliError> {
     let memory = open_memory(path, agent).await?;
     let jsonl = read_input(file)?;
+    let spinner = if format.is_text() {
+        crate::ui::progress::spinner("Importing JSONL snapshot...")
+    } else {
+        crate::ui::progress::Spinner::Disabled
+    };
     let report = memory.import_jsonl(&jsonl).await?;
+    spinner.finish_and_clear();
     format.print(
         || {
-            println!(
-                "imported: {} memories ({} skipped), {} entities ({} skipped), {} edges ({} skipped)",
-                report.memories,
-                report.memories_skipped,
-                report.entities,
-                report.entities_skipped,
-                report.edges,
-                report.edges_skipped
+            crate::ui::render::section("Import report");
+            crate::ui::table::print_table(
+                &["Metric", "Value"],
+                vec![
+                    vec!["memories".to_string(), report.memories.to_string()],
+                    vec!["memories_skipped".to_string(), report.memories_skipped.to_string()],
+                    vec!["entities".to_string(), report.entities.to_string()],
+                    vec!["entities_skipped".to_string(), report.entities_skipped.to_string()],
+                    vec!["edges".to_string(), report.edges.to_string()],
+                    vec!["edges_skipped".to_string(), report.edges_skipped.to_string()],
+                ],
             );
         },
         || {

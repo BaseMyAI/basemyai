@@ -4,7 +4,7 @@
 **Date** : Juin 2026
 **Statut** : Draft — En cours de validation
 
-> **Note backend (ADR-011)** : le socle a pivoté vers **libSQL** (vecteur natif `F32_BLOB` / `vector_top_k`, chiffrement intégré, traits async). Les mentions historiques de `sqlite-vec` / `rusqlite` / `deadpool` / `sqlcipher` ont été réconciliées dans ce document. Source de vérité du backend : `ADR.md`, ADR-011.
+> **Note backend (ADR-032)** : le socle est désormais **100 % moteur natif BaseMyAI** (`basemyai-engine` : WAL + memtable + SST pur Rust, index vectoriel LM-DiskANN/Vamana `F32`, graphe et FTS/BM25 natifs, chiffrement au repos AEAD XChaCha20-Poly1305). libSQL/V1 et la feature `crypto` (CMake) ont été **entièrement retirés** du code actif. Les mentions historiques de libSQL/`vector_top_k`/`crypto` sont conservées uniquement dans les ADR et le CHANGELOG (records immuables). Source de vérité du backend : `ADR.md`, ADR-024→032.
 
 ---
 
@@ -16,7 +16,7 @@ BaseMyAI est un **moteur de mémoire local** pour agents IA. Il fournit une mém
 
 **La thèse produit** : un développeur doit pouvoir donner à son agent une mémoire infinie, isolée par agent et chiffrée, en deux lignes de code, sans qu'aucune donnée ne quitte la machine.
 
-Architecturalement, BaseMyAI est **deux crates dans un seul workspace Cargo** : `basemyai-core` (socle agnostique métier : libSQL durci, vecteur natif libSQL, embeddings Candle, chiffrement libSQL, worker de maintenance) et `basemyai` (la sémantique mémoire posée dessus). Le même core alimente les SDK Python/Node **et** un consommateur Rust natif (ForgeMyAI).
+Architecturalement, BaseMyAI est **deux crates dans un seul workspace Cargo** : `basemyai-core` (socle agnostique métier : moteur de stockage natif `basemyai-engine`, index vectoriel/graphe/FTS natifs, embeddings Candle, chiffrement au repos natif, worker de maintenance) et `basemyai` (la sémantique mémoire posée dessus). Le même core alimente les SDK Python/Node **et** peut être consommé directement par des crates Rust tiers.
 
 ---
 
@@ -87,7 +87,7 @@ Tout garder en RAM                    Perdu au redémarrage
 
 **Douleur principale** : « Nos données de mémoire sont les plus sensibles du produit. On a besoin de chiffrement au repos et d'une garantie qu'un tenant ne lit jamais la mémoire d'un autre. »
 
-**Succès** : « BaseMyAI nous donne le chiffrement au repos obligatoire (libSQL, feature `crypto`) et l'isolation par `agent_id` au niveau SQL. La fuite cross-agent est structurellement impossible. »
+**Succès** : « BaseMyAI nous donne le chiffrement au repos obligatoire (AEAD natif, sans CMake) et l'isolation par `agent_id` structurelle dans le layout de clé. La fuite cross-agent est structurellement impossible. »
 
 ---
 
@@ -99,8 +99,8 @@ Tout garder en RAM                    Perdu au redémarrage
 1. Un agent IA peut acquérir une mémoire persistante, temporelle et
    isolée par agent en moins de 10 lignes de code
 
-2. Tout tourne en local : embeddings in-process, vecteurs natifs libSQL
-   dans le même fichier, zéro appel réseau par défaut
+2. Tout tourne en local : embeddings in-process, vecteurs natifs
+   dans le même store `.bmai`, zéro appel réseau par défaut
 
 3. Le RAG temporel retourne uniquement ce qui est pertinent ET valide
 
@@ -129,19 +129,18 @@ Tout garder en RAM                    Perdu au redémarrage
 ### 5.1 Inclus
 
 **`basemyai-core` (socle agnostique)**
-- `Store` libSQL durci et **async** : connexion libSQL partagée (clonée ; libSQL sérialise l'accès en interne), WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout` + exponential backoff
-- Runner de migrations versionnées (le consommateur déclare son schéma)
-- Vecteur **natif libSQL** (`F32_BLOB`, `libsql_vector_idx`, `vector_top_k` ANN) exposé en ops async sur `Store` (`vector_upsert`, `vector_knn(q, k, filtre SQL optionnel)`) — plus de trait `VectorIndex`, pas d'extension à linker
+- Moteur de stockage **natif** (`basemyai-engine`) : WAL + memtable + SST pur Rust, batches atomiques (`apply_batch`), recovery crash-consistent, mono-écrivain sync (versionnage de wire gouverné par `format.lock`)
+- Index vectoriel **natif** LM-DiskANN/Vamana (`F32`, in-store, pas d'extension à linker) : oversampling ×8 en présence d'un filtre (ADR-012), tombstones + réparation, rebuild depuis la donnée
 - `Embedder` Candle in-process, **sync** (CPU-bound) : `embed`, `embed_batch`, `model_id()`, `dim()` — modèle `all-MiniLM-L6-v2` (384 dims). **N'auto-télécharge jamais** : reçoit un chemin local.
-- Chiffrement au repos **optionnel** via la feature `crypto` de libSQL (clé fournie à l'ouverture, jamais stockée ; exige CMake)
+- Chiffrement au repos **natif** AEAD XChaCha20-Poly1305 (enveloppe DEK/KEK, WAL/SST scellés), clé fournie à l'ouverture, jamais stockée — **aucune feature Cargo, aucun CMake** (ADR-030)
 - `MaintenanceWorker` : boucle de fond async, tâches **injectées par le consommateur**
 
 **`basemyai` (sémantique mémoire)**
 - Les 4 couches mémoire : `short_term`, `episodic`, `procedural`, `semantic`
-- RAG temporel : colonnes `valid_from` / `valid_until`, requête hybride cosine + filtre temporel
-- Isolation multi-agent : filtrage obligatoire par `agent_id` au niveau SQL
-- Chiffrement au repos **obligatoire** (libSQL feature `crypto` ; la DB exige une `encryption_key`)
-- Active Worker : GC des lignes expirées (`valid_until` dépassé), `PRAGMA optimize`
+- RAG temporel : champs `valid_from` / `valid_until`, requête hybride cosine + filtre temporel
+- Isolation multi-agent : scoping obligatoire par `agent_id`, structurel dans le layout de clé du moteur
+- Chiffrement au repos **obligatoire** (AEAD natif ADR-030 ; le store exige une clé)
+- Active Worker : GC des souvenirs expirés (`valid_until` dépassé), compaction du moteur
 - **Setup hardware-aware** (`basemyai setup`) : détection matériel, sélection modèle/device, fetch explicite du modèle (ADR-010)
 
 **Bindings & surfaces**
@@ -156,7 +155,7 @@ Tout garder en RAM                    Perdu au redémarrage
 ### 5.2 Explicitement exclus de V1
 
 ```
-✗ Base vectorielle externe (Qdrant, LanceDB) — vecteurs natifs DANS libSQL, toujours
+✗ Base vectorielle externe (Qdrant, LanceDB) — vecteurs natifs DANS le store `.bmai`, toujours
 ✗ Inférence via API cloud (OpenAI embeddings…) — in-process uniquement
 ✗ Auto-download du modèle par l'Embedder — fetch orchestré par le produit
 ✗ Sync de mémoire multi-machines / réplication distribuée
@@ -172,29 +171,29 @@ Tout garder en RAM                    Perdu au redémarrage
 
 ### 6.1 Socle — `basemyai-core`
 
-**REQ-001** : `Store::open(path, key)` (async) doit ouvrir une connexion libSQL partagée et durcie (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`). La connexion est clonée et partagée — libSQL sérialise l'accès en interne ; pas de pool `deadpool`. Sous contention en écriture, les retries appliquent un exponential backoff.
+**REQ-001** : l'ouverture d'un store natif (`Engine`/`NativeMemoryStore`) doit être crash-consistent (WAL scellé par enregistrement, recovery au démarrage, batches atomiques `apply_batch`). Le moteur est mono-écrivain sync ; les lectures concurrentes sont servies sous verrou de lecture partagé (RwLock, ADR-N5.5).
 
 **REQ-002** : `basemyai-core` ne doit contenir **aucun** concept métier. Un `grep` de `agent_id`, `valid_from`, `valid_until`, `episode`, `Symbol`, `Edge` dans le crate doit retourner zéro (test d'agnosticité).
 
-**REQ-003** : les ops vecteur natives async de `Store` (`vector_knn(q, k, filter)`) doivent retourner les `k` plus proches voisins via le vecteur natif libSQL (`vector_top_k` ANN, distance cosine), en appliquant un filtre SQL **fourni par l'appelant**. Le core ne sait pas ce que le filtre signifie. (`vector_top_k` applique le filtre **après** le top-k → sur-échantillonner pour garantir `k` résultats filtrés.)
+**REQ-003** : la recherche vectorielle native (LM-DiskANN/Vamana, distance cosine) doit retourner les `k` plus proches voisins en appliquant un filtre **fourni par l'appelant**. Le core ne sait pas ce que le filtre signifie. Le filtre s'appliquant après le top-k, l'index sur-échantillonne (×8) pour garantir `k` résultats filtrés.
 
 **REQ-004** : `Embedder` (trait **sync**, CPU-bound) doit produire des vecteurs de 384 dimensions via Candle (`all-MiniLM-L6-v2`), in-process, sans ONNX. Il reçoit un chemin de modèle local et **ne déclenche jamais** de téléchargement réseau. Le consommateur l'enveloppe dans `spawn_blocking` si besoin depuis un contexte async.
 
-**REQ-005** : le chiffrement au repos (feature `crypto` de libSQL) est optionnel dans `basemyai-core` : `Store::open` accepte une clé `Option<EncryptionKey>`. La clé n'est jamais persistée. La feature `crypto` exige CMake à la compilation.
+**REQ-005** : le chiffrement au repos est **natif** (AEAD XChaCha20-Poly1305, enveloppe DEK/KEK, ADR-030) : l'ouverture chiffrée accepte une clé, jamais persistée. Rotation de clé O(1) par re-scellement, sans réouverture. **Aucune feature Cargo ni CMake requis.**
 
 **REQ-006** : Le `MaintenanceWorker` exécute des tâches **enregistrées par le consommateur**. Il n'embarque aucune tâche métier en dur.
 
 ### 6.2 Sémantique — `basemyai`
 
-**REQ-010** : Les 4 couches mémoire (`short_term`, `episodic`, `procedural`, `semantic`) doivent être persistées dans des tables distinctes, avec index B-Tree adaptés et colonnes `valid_from` / `valid_until` sur chacune.
+**REQ-010** : Les 4 couches mémoire (`short_term`, `episodic`, `procedural`, `semantic`) doivent être persistées avec leur couche et leurs champs `valid_from` / `valid_until` par souvenir, chacune interrogeable indépendamment.
 
-**REQ-011** : Toute écriture et toute lecture doivent être filtrées par `agent_id` au niveau SQL. Une requête sans `agent_id` valide doit échouer, jamais retourner des données d'un autre agent.
+**REQ-011** : Toute écriture et toute lecture doivent être scopées par `agent_id`, structurellement dans le layout de clé du moteur. Une requête sans `agent_id` valide doit échouer, jamais retourner des données d'un autre agent.
 
-**REQ-012** : La requête de recall doit être **hybride** : similarité cosine (vecteur natif libSQL, `vector_top_k`) **ET** `valid_until > now()` (ou `valid_until IS NULL`). Aucune mémoire expirée ne doit apparaître dans un recall.
+**REQ-012** : La requête de recall doit être **hybride** : similarité cosine (index vectoriel natif) **ET** `valid_until > now()` (ou `valid_until IS NULL`). Aucune mémoire expirée ne doit apparaître dans un recall.
 
-**REQ-013** : `basemyai` doit imposer le chiffrement (feature `crypto` de libSQL) : instancier une mémoire sans `encryption_key` doit échouer.
+**REQ-013** : `basemyai` doit imposer le chiffrement (AEAD natif ADR-030) : instancier une mémoire sur disque sans clé doit échouer.
 
-**REQ-014** : L'Active Worker doit, en tâche de fond : (a) GC ou archiver les lignes dont le `valid_until` est expiré, (b) lancer `PRAGMA optimize` périodiquement. Il ne doit jamais bloquer le chemin critique d'écriture/lecture.
+**REQ-014** : L'Active Worker doit, en tâche de fond : (a) GC ou archiver les souvenirs dont le `valid_until` est expiré, (b) déclencher la compaction du moteur périodiquement. Il ne doit jamais bloquer le chemin critique d'écriture/lecture.
 
 **REQ-015** : Un **setup hardware-aware** (`basemyai setup`, ou déclenché au 1ᵉʳ appel SDK si non configuré) doit, façon AnythingLLM : (a) détecter RAM / GPU / VRAM / device / cœurs / OS ; (b) résoudre le device Candle (CUDA > Metal > CPU) ; (c) sélectionner le modèle (baseline `all-MiniLM-L6-v2` en V1) ; (d) fetch explicite avec vérification de checksum, mis en cache dans `~/.basemyai/models/` ; (e) persister `{ model_id, dim, device }`. **Aucun download silencieux** : si le setup n'a pas été fait, le 1ᵉʳ usage échoue proprement avec un message d'invite, jamais un fetch surprise. La détection et la sélection sont faites par le produit ; `basemyai-core.Embedder` reçoit un chemin + device déjà résolus (ADR-010).
 
@@ -212,7 +211,7 @@ Tout garder en RAM                    Perdu au redémarrage
 
 **REQ-031** : L'isolation cross-agent doit être testée avec un dataset adversarial tentant de contourner le filtre `agent_id`. Zéro fuite tolérée.
 
-**REQ-032** : Tous les inputs d'agent insérés dans une requête SQL doivent être paramétrés, jamais interpolés (anti SQL injection).
+**REQ-032** : Le moteur natif est sans surface SQL : les inputs d'agent sont encodés dans des clés/valeurs binaires typées, jamais interpolés dans une requête (aucune surface d'injection SQL).
 
 ---
 
@@ -242,14 +241,14 @@ Configuration de référence : 4 cœurs, 8 GB RAM, sans GPU (inférence CPU).
 - Linux (glibc, x86_64), Windows 10+ (MSVC), macOS 12+ (Intel & ARM)
 - Python 3.9+ (wheels), Node 18+ (prebuilds)
 - Rust 1.78+
-- `basemyai-core` testé Linux **et** Windows dès son premier commit (il porte le backend libSQL ; le vecteur natif compile sans CMake, seule la feature `crypto` exige CMake)
+- `basemyai-core` testé Linux **et** Windows (moteur natif pur Rust : aucune dépendance C, aucun CMake, y compris pour le chiffrement)
 
 ### Maintenabilité
 
 - Couverture de tests : ≥ 85% sur `basemyai-core`, ≥ 80% sur `basemyai`
 - Clippy sans warning sur `--all-targets`
 - Chaque décision architecturale documentée dans un ADR
-- Semver strict sur `basemyai-core` (les consommateurs, dont ForgeMyAI, pin une version)
+- Semver strict sur `basemyai-core` (les consommateurs tiers pin une version)
 
 ---
 
@@ -259,13 +258,13 @@ Configuration de référence : 4 cœurs, 8 GB RAM, sans GPU (inférence CPU).
 
 **Contrainte d'agnosticité** : `basemyai-core` est business-agnostic. Les concepts métier (`agent_id`, couches, RAG temporel) vivent exclusivement dans `basemyai`.
 
-**Contrainte vectorielle** : les vecteurs sont stockés **dans** le fichier libSQL via le vecteur **natif** (`F32_BLOB`, `libsql_vector_idx`, `vector_top_k`). Pas d'extension à linker, aucune base vectorielle externe.
+**Contrainte vectorielle** : les vecteurs sont stockés **dans** le store `.bmai` via l'index **natif** LM-DiskANN/Vamana (`F32`). Pas d'extension à linker, aucune base vectorielle externe.
 
-**Contrainte backend** : backend = **libSQL** (crate `libsql`, embarqué local), traits `Store` et ops vecteur **async** ; `Embedder` **sync** (CPU-bound). Chemin futur : Turso DB (pur Rust) en production.
+**Contrainte backend** : backend unique = **moteur natif BaseMyAI** (`basemyai-engine`, pur Rust, embarqué local, mono-écrivain sync), exposé via le contrat `MemoryStore` **async** ; `Embedder` **sync** (CPU-bound). Pas de fallback libSQL (ADR-032).
 
 **Contrainte ML** : inférence pure Rust via Candle (`all-MiniLM-L6-v2`, 384 dims). Pas d'ONNX, pas de fastembed, pas d'API cloud.
 
-**Contrainte chiffrement** : chiffrement au repos via la feature `crypto` de libSQL (exige CMake), optionnel au core, **obligatoire** dans `basemyai`.
+**Contrainte chiffrement** : chiffrement au repos via l'enveloppe AEAD **native** (ADR-030, pur Rust, sans CMake), optionnel au core, **obligatoire** dans `basemyai`.
 
 **Contrainte réseau** : zéro réseau par défaut. L'`Embedder` ne télécharge jamais le modèle lui-même.
 
@@ -277,11 +276,11 @@ Configuration de référence : 4 cœurs, 8 GB RAM, sans GPU (inférence CPU).
 
 | Risque | Probabilité | Impact | Mitigation |
 |---|---|---|---|
-| Fuite cross-agent (contournement du filtre `agent_id`) | Faible | Critique | Filtre au niveau SQL, dataset adversarial en CI, isolation = invariant |
-| Le chiffrement libSQL exige CMake (feature `crypto`) | Moyen | Moyen | Feature **opt-in** et déférée ; le vecteur natif compile sans CMake. CMake provisionné en CI pour les builds chiffrés. Réduit à une dépendance de toolchain, pas un risque de code (le risque D4 de linkage sqlite-vec/sqlcipher disparaît avec le vecteur natif libSQL) |
-| Dépendance à libSQL (fork C, pas pur Rust) | Faible | Moyen | Assumé jusqu'à ce que Turso DB soit production-ready ; chemin de migration vers Turso DB (pur Rust, zéro C) ouvert (V2/V3) |
+| Fuite cross-agent (contournement du scoping `agent_id`) | Faible | Critique | Scoping structurel dans le layout de clé, dataset adversarial en CI, isolation = invariant |
+| Bug de durabilité/corruption du moteur natif | Faible | Critique | Harnais crash-consistency (kill réel, 5 modes × 20 cycles, 0 violation), fuzzing, `format.lock` anti-drift, recovery vérifiée |
+| Immaturité du moteur natif face à un backend éprouvé | Faible | Moyen | Parité prouvée (19 scénarios `backend_suite!`, recall@10 = 1.0, benchs 3,8×→13,8× vs l'ancien libSQL) avant bascule ADR-032 |
 | Fuite mémoire de l'inférence ML embarquée | Moyen | Haut | Stress-test 1h + profiling dès la Phase 5, traque des leaks Candle |
-| Wheel/prebuild ne compile pas sur une plateforme | Moyen | Haut | `basemyai-core` testé Linux + Windows dès le 1ᵉʳ commit (backend libSQL ; vecteur natif sans CMake) |
-| Perf insuffisante (< 100 writes/s) | Moyen | Moyen | Connexion libSQL partagée + batch + WAL ; bench dès la Phase 2 |
+| Wheel/prebuild ne compile pas sur une plateforme | Moyen | Haut | Moteur natif **pur Rust** (aucune dépendance C ni CMake), testé Linux + Windows |
+| Perf insuffisante (< 100 writes/s) | Moyen | Moyen | Batches WAL atomiques + compaction ; bench mesuré (~2,9× plus rapide en recall bout-en-bout que l'ancien backend) |
 | Intégrité du modèle téléchargé (supply chain) | Faible | Haut | Fetch orchestré par le produit, vérification de checksum, modèle mis en cache local |
 | Fuite de la sémantique métier dans `basemyai-core` | Moyen | Moyen | Test d'agnosticité automatisé (grep) en CI |

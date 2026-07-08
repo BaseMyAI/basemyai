@@ -14,53 +14,63 @@ pub trait MemoryProvider: Send + Sync {
     async fn open(&self, agent: AgentId) -> Result<Memory, basemyai::MemoryError>;
 }
 
-/// Provider de production : un fichier libSQL chiffré partagé, embedder partagé.
-#[cfg(feature = "crypto")]
-pub struct EncryptedFileProvider {
-    store_path: std::path::PathBuf,
-    key: basemyai_core::EncryptionKey,
+/// Provider de production : un store natif chiffré partagé, embedder partagé
+/// (ADR-032). Contrairement à un pool de connexions par agent, le moteur
+/// natif est mono-écrivain exclusif (ADR-025) : le store est ouvert **une
+/// seule fois** ici et partagé (`Arc`) entre tous les agents — jamais rouvert
+/// par agent.
+pub struct FileProvider {
+    store: std::sync::Arc<basemyai::storage::NativeMemoryStore>,
     embedder: std::sync::Arc<dyn basemyai_core::Embedder>,
 }
 
-#[cfg(feature = "crypto")]
-impl EncryptedFileProvider {
-    /// Construit le provider (chemin base chiffrée, clé, embedder partagé).
-    #[must_use]
-    pub fn new(
+impl FileProvider {
+    /// Ouvre (au besoin crée) un store natif chiffré à `store_path`.
+    ///
+    /// # Errors
+    /// Erreur de stockage si l'ouverture (recovery WAL, chargement des méta
+    /// d'index) échoue, ou si la clé est fausse.
+    pub async fn open(
         store_path: std::path::PathBuf,
-        key: basemyai_core::EncryptionKey,
+        key: String,
         embedder: std::sync::Arc<dyn basemyai_core::Embedder>,
-    ) -> Self {
-        Self {
-            store_path,
-            key,
-            embedder,
+    ) -> Result<Self, basemyai::MemoryError> {
+        if let Some(parent) = store_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                basemyai::MemoryError::Core(basemyai_core::CoreError::Storage(format!(
+                    "création du répertoire parent de '{}' : {e}",
+                    store_path.display()
+                )))
+            })?;
         }
+        let path = store_path.clone();
+        let store =
+            tokio::task::spawn_blocking(move || basemyai::storage::NativeMemoryStore::open_encrypted(&path, &key))
+                .await
+                .map_err(|e| {
+                    basemyai::MemoryError::Core(basemyai_core::CoreError::Storage(format!(
+                        "ouverture du store natif interrompue : {e}"
+                    )))
+                })??;
+        Ok(Self {
+            store: std::sync::Arc::new(store),
+            embedder,
+        })
     }
 }
 
-#[cfg(feature = "crypto")]
 #[async_trait::async_trait]
-impl MemoryProvider for EncryptedFileProvider {
+impl MemoryProvider for FileProvider {
     async fn open(&self, agent: AgentId) -> Result<Memory, basemyai::MemoryError> {
-        let store = basemyai_core::Store::open(&self.store_path, Some(self.key.clone()))
-            .await
-            .map_err(basemyai::MemoryError::from)?;
-        Memory::open(
-            store,
-            Box::new(SharedEmbedder(std::sync::Arc::clone(&self.embedder))),
-            agent,
-        )
-        .await
+        let embedder = Box::new(SharedEmbedder(std::sync::Arc::clone(&self.embedder)));
+        Memory::from_native_store(std::sync::Arc::clone(&self.store), embedder, agent).await
     }
 }
 
 /// Adaptateur : `Arc<dyn Embedder>` partagé vu comme `Box<dyn Embedder>` par
 /// chaque [`Memory`], sans cloner le modèle sous-jacent.
-#[cfg(feature = "crypto")]
 struct SharedEmbedder(std::sync::Arc<dyn basemyai_core::Embedder>);
 
-#[cfg(feature = "crypto")]
 impl basemyai_core::Embedder for SharedEmbedder {
     fn embed(&self, text: &str) -> basemyai_core::Result<Vec<f32>> {
         self.0.embed(text)
@@ -76,7 +86,7 @@ impl basemyai_core::Embedder for SharedEmbedder {
     }
 }
 
-/// Provider de test : base `:memory:` non chiffrée + embedder déterministe.
+/// Provider de test : base éphémère non chiffrée + embedder déterministe.
 #[cfg(feature = "test-util")]
 #[derive(Default)]
 pub struct InMemoryProvider;

@@ -4,8 +4,8 @@
 gives command-line access to the same engine consumed by the Rust crate,
 Python/Node SDKs, and the REST/MCP sidecars: provisioning, `.bmai` container
 lifecycle, the full memory lifecycle (`remember`/`recall`/`list`/`forget`/
-`invalidate`/`purge`/`export`/`import`), the entity/relation graph, one-shot
-maintenance tasks, and LLM-driven consolidation.
+`invalidate`/`purge`/`export`/`import`), the entity/relation graph, and
+LLM-driven consolidation (`consolidate`).
 
 Binary name: `basemyai`. Crate: `crates/basemyai-cli`. Status: see
 [`status.md` §6](status.md#6-cli-basemyai).
@@ -17,9 +17,9 @@ cargo build -p basemyai-cli --release
 # binary at target/release/basemyai
 ```
 
-Default features are `crypto` + `embed` (mirrors `basemyai-mcp`). Without
-them the binary still parses arguments but every command that touches a
-`.bmai` file fails with an explicit error — there is no silent degraded mode.
+Default feature is `embed` (Candle for `remember`/`recall`). Without it the
+binary still parses arguments but every command that needs the full memory
+stack fails with an explicit error — there is no silent degraded mode.
 
 ## Global flags
 
@@ -32,10 +32,20 @@ them:
 | `--db <path>` | `BASEMYAI_DB_PATH` → `~/.basemyai/config.toml` (`db-path`) | Required by every command except `init` (which takes the path positionally — creating a container without saying where would be dangerous to default). |
 | `--agent <id>` | `BASEMYAI_AGENT` → `~/.basemyai/config.toml` (`agent`) | Required by every command that touches memory/graph data. |
 | `--format <text\|json>` | `BASEMYAI_FORMAT` | `json` makes every command print one machine-readable JSON object on stdout — built so an AI agent can call this CLI as a tool without parsing human text. |
+| `--color <auto\|always\|never>` | `NO_COLOR` / `FORCE_COLOR` (when `auto`) | Controls ANSI styling in text mode. `never` is recommended for deterministic snapshots. |
+| `--quiet` | — | Suppresses non-essential informational text in `text` mode (errors still print). |
+| `--no-progress` | — | Disables spinners/progress bars for long operations. |
+| `-v`, `-vv` | — | Enables diagnostic logs on stderr (`info`/`debug`). |
 
 Encryption is mandatory (ADR-007): every command that opens a `.bmai` file
 requires the key via `BASEMYAI_DB_KEY`. There is no flag for the key and no
 way to open a file in plaintext.
+
+In `text` mode, `basemyai` now uses a terminal-aware presentation layer:
+tables for scanability, semantic color tokens, and progress feedback for long
+operations. Machine-readable contracts stay unchanged: in `json` mode, stdout
+remains clean JSON (no ANSI, no spinner output), while progress/errors stay on
+stderr.
 
 ## Exit codes & error shape
 
@@ -72,8 +82,8 @@ In `--format text` (default), errors print as `error: <message>` on stderr.
 
 Caveat: a *wrong* key (vs. an absent one) on an already-encrypted container
 isn't always distinguishable from generic storage corruption at this layer —
-libSQL surfaces it as a late, generic error on first query rather than a
-dedicated one. Only the "env var entirely unset" case reliably gets
+the native engine surfaces it as a late, generic error on first access rather
+than a dedicated one. Only the "env var entirely unset" case reliably gets
 `KEY_REQUIRED`/exit 3; a wrong key will usually fall through to the generic
 exit code 1.
 
@@ -106,10 +116,10 @@ explicit consent in the SDKs). See
 ## Container lifecycle
 
 ```bash
-basemyai init ./agent.bmai      # create an encrypted .bmai container (migrations + metadata)
+basemyai init ./agent.bmai      # create an encrypted native .bmai container (metadata)
 basemyai inspect                # container metadata + memory count
 basemyai verify                 # validate container: opens, expected format/engine/dim
-basemyai migrate                # apply pending schema migrations (idempotent)
+basemyai migrate                # idempotent open (native format applied at open time)
 basemyai stats                  # per-layer valid-memory counts for the resolved agent
 ```
 
@@ -151,19 +161,24 @@ basemyai graph add-edge shared-root points_to shared-leaf --weight 1.0
 basemyai graph traverse shared-root --depth 3
 ```
 
-Entities/relations scoped to the resolved agent; `traverse` is a recursive
-SQL CTE (cycle-safe, depth-bounded).
+Entities/relations scoped to the resolved agent; `traverse` is a depth-bounded
+BFS on the native graph index (cycle-safe).
 
-## Maintenance & consolidation
+## Consolidation
 
 ```bash
-basemyai maintenance gc                                            # delete expired memories (valid_until passed)
-basemyai maintenance forget-adaptive --capacity 5000 --half-life-secs 2592000
-basemyai consolidate                                                 # episodes -> facts + graph, via the best local LLM detected
+basemyai consolidate   # episodes -> facts + graph, via the best local LLM detected
 ```
 
-`consolidate` requires a local LLM backend (`basemyai llm detect` to
-diagnose) — it is never a hard dependency of the rest of the CLI.
+`consolidate` is a **root command** (not under `maintenance`). It requires a
+local LLM backend (`basemyai llm detect` to diagnose) — it is never a hard
+dependency of the rest of the CLI.
+
+> **Removed in ADR-033 (native-only).** The one-shot CLI commands
+> `maintenance gc` and `maintenance forget-adaptive` no longer exist — they
+> depended on libSQL-specific SQL windowing. GC temporel and adaptive forgetting
+> remain API concepts in the SDK docs; a native port would need its own design.
+> Use `invalidate`/`forget`/`purge` for explicit lifecycle management today.
 
 ## Shell completions
 
@@ -186,17 +201,13 @@ basemyai --db ./agent.bmai --agent demo recall "UI preference" --hybrid | jq '.r
 
 ## What's not here yet
 
-- No `gc --agent-id <id>` scoping (today `maintenance gc` runs across all
-  agents in the container).
 - No published binary release (`cargo-dist` or equivalent) — build from
   source today.
-- `assert_cmd` integration tests exist (`crates/basemyai-cli/tests/cli.rs`,
-  `cargo test -p basemyai-cli`) for every command that doesn't need the
-  Candle embedder — `init`/`inspect`/`verify`/`migrate`/`list`/`forget`/
-  `invalidate`/`purge`/`graph`/`maintenance gc`, plus the key/agent/
-  confirmation/already-exists/not-configured error paths. **Not yet wired
-  into CI** (`.github/workflows/ci.yml` has no job building both `crypto`
-  and `embed` together, which the CLI's default features require) and
-  `remember`/`recall`/`stats`/`export`/`import`/`consolidate` are still
-  untested (they load the embedding model, unavailable offline in CI). See
-  `docs/archive/TODO-2026-06.md` M5.
+- `assert_cmd` integration tests (`crates/basemyai-cli/tests/cli.rs`,
+  `cargo test -p basemyai-cli`, **wired in CI gate**) cover every command that
+  doesn't need the Candle embedder — `init`/`inspect`/`verify`/`migrate`/
+  `list`/`forget`/`invalidate`/`purge`/`graph`, plus key/agent/confirmation/
+  already-exists/not-configured paths and the explicit absence of
+  `maintenance *`. `remember`/`recall`/`stats`/`export`/`import`/
+  `consolidate` are still untested in CI (they load the embedding model,
+  unavailable offline in CI).

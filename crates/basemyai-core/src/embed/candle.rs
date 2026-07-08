@@ -15,7 +15,7 @@ use tokenizers::Tokenizer;
 use super::{Device, Embedder};
 use crate::{CoreError, Result};
 
-/// Modèle baseline V1 (compat `.idx` ForgeMyAI).
+/// Modèle baseline unique V1 (ADR-003).
 const MODEL_ID: &str = "all-MiniLM-L6-v2";
 /// Dimension des vecteurs produits par le baseline.
 const DIM: usize = 384;

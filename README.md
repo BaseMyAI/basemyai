@@ -79,13 +79,13 @@
 
 <h2><img height="20" src="./basemyai-branding/icons/documentation.svg">&nbsp;&nbsp;What is BaseMyAI?</h2>
 
-BaseMyAI is a **local memory engine** built in Rust that gives AI agents persistent, temporal, multi-layered memory — vector search, knowledge graph, and time-aware retrieval — inside a single encrypted local file. Zero cloud. Zero data leaks. Zero silent downloads.
+BaseMyAI is a **local memory engine** built in Rust that gives AI agents persistent, temporal, multi-layered memory — vector search, knowledge graph, and time-aware retrieval — inside a single encrypted `.bmai` container. Zero cloud. Zero data leaks. Zero silent downloads.
 
 AI agents have no memory by default. Every session starts from zero. Worse — the few solutions that *do* add memory route your conversations and embeddings to a cloud vector database. For anything sensitive — personal assistants, internal tools, regulated industries — that is a non-starter. And almost none of them handle **time**: a fact that was true last quarter is treated identically to a fact that is true right now.
 
 BaseMyAI solves all three problems in a single Rust binary:
 
-- **Privacy-first** — everything stays on-device, in one local libSQL file, AES-256 encrypted at rest
+- **Privacy-first** — everything stays on-device, in one encrypted `.bmai` container (native engine, XChaCha20-Poly1305 at rest — no CMake, no cloud)
 - **Temporal** — every memory carries `valid_from` / `valid_until`; retrieval returns only what is *currently* true
 - **Multi-signal** — vector similarity + knowledge graph + Reciprocal Rank Fusion in one query
 
@@ -98,7 +98,7 @@ forgetting, and encryption are part of the product contract. See
 
 - [What is BaseMyAI?](#what-is-basemyai)
 - [Features](#features)
-- [Architecture: core + semantics](#architecture-core--semantics)
+- [Architecture: core + engine + semantics](#architecture-core--engine--semantics)
 - [The 4 memory layers](#the-4-memory-layers)
 - [Phase 2 — Cognition](#phase-2--cognition)
 - [Temporal RAG](#temporal-rag)
@@ -116,18 +116,19 @@ forgetting, and encryption are part of the product contract. See
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;Features</h2>
 
 - [x] 100 % local — no data leaves your machine, no telemetry by default
+- [x] Pure Rust native storage engine (`basemyai-engine`) — LSM WAL+SST, no external database
 - [x] Four memory layers: short-term, episodic, procedural, semantic
 - [x] Temporal RAG — retrieval filtered by `valid_until`, never returns stale facts
-- [x] Vector search natively inside libSQL (`vector_top_k` ANN, no extension required)
-- [x] Knowledge graph — entities, relations, multi-hop traversal via recursive SQL CTE
-- [x] Hybrid search — vector similarity **+** BM25 full-text (FTS5), fused with Reciprocal Rank Fusion
+- [x] Native vector search (LM-DiskANN / Vamana ANN, recall@10 = 1.0 at 10k/100k)
+- [x] Knowledge graph — entities, relations, multi-hop BFS traversal
+- [x] Hybrid search — vector similarity **+** native BM25 full-text, fused with Reciprocal Rank Fusion
 - [x] Multi-signal retrieval with Reciprocal Rank Fusion (vector + graph, k = 60)
 - [x] Adaptive forgetting — hyperbolic importance × recency, capacity-bounded GC
 - [x] Episode-to-fact consolidation via injected LLM (any local runner, no hard dependency)
 - [x] Hardware-aware provisioning — no silent model downloads, explicit setup command
-- [x] Encryption at rest via libSQL `crypto` feature (key never stored, key never sent)
-- [x] Per-agent isolation enforced at the SQL level — cross-agent leakage is a security invariant
-- [x] Python SDK (PyO3 wheel), Node SDK (NAPI-RS prebuild), REST sidecar (axum), native Rust crate
+- [x] Encryption at rest via native envelope (ADR-030), key never stored/sent
+- [x] Per-agent isolation enforced structurally by key layout — cross-agent leakage is a security invariant
+- [x] MCP server (stdio + HTTP), CLI (`basemyai`), REST sidecar (axum), Python SDK (PyO3), Node SDK (NAPI-RS), native Rust crate
 
 <h2><img height="20" src="./basemyai-branding/icons/tick.svg">&nbsp;&nbsp;P1 Public Proofs</h2>
 
@@ -139,29 +140,38 @@ forgetting, and encryption are part of the product contract. See
 
 <img width="100%" src="./basemyai-branding/img/basemyai-memory-engine.png.png" alt="BaseMyAI memory engine" />
 
-<h2><img height="20" src="./basemyai-branding/icons/documentation.svg">&nbsp;&nbsp;Architecture: core + semantics</h2>
+<h2><img height="20" src="./basemyai-branding/icons/documentation.svg">&nbsp;&nbsp;Architecture: core + engine + semantics</h2>
 
-BaseMyAI is **two crates in one Cargo workspace**, publishable independently:
+BaseMyAI is a **Cargo workspace** with two publishable crates (`basemyai-core`, `basemyai`) and an internal native engine (`basemyai-engine`, ADR-024/032):
 
 ```
 ┌────────────────────────────────────────────────────────┐
 │  basemyai          (the memory semantics)               │
 │  4 memory layers · temporal RAG · per-agent isolation   │
-│  adaptive forgetting · cognition · Python/Node/REST     │
+│  adaptive forgetting · cognition · MCP/CLI/REST/SDKs    │
 └───────────────────────┬────────────────────────────────┘
                         │ built on top of
 ┌───────────────────────▼────────────────────────────────┐
 │  basemyai-core     (business-agnostic foundation)       │
-│  hardened libSQL · native vectors · Candle embeddings   │
-│  optional libSQL crypto · MaintenanceWorker             │
-└─────────────────────────────────────────────────────────┘
+│  StorageEngine trait · Candle embedder · maintenance    │
+└───────────────────────┬────────────────────────────────┘
+                        │ backed by
+┌───────────────────────▼────────────────────────────────┐
+│  basemyai-engine   (native storage engine)            │
+│  LSM (WAL+SST) · ANN vector index · native FTS/BM25   │
+│  knowledge graph · encryption envelope (ADR-030)      │
+└────────────────────────────────────────────────────────┘
 ```
 
-**`basemyai-core`** is deliberately business-agnostic. It knows libSQL pooling, native vector KNN/ANN, Candle in-process embeddings, optional encryption, and a background maintenance loop — nothing about agents, time windows, or memory layers. It provides **mechanism**; the consumer provides **meaning**.
+**`basemyai-core`** is deliberately business-agnostic. It exposes engine capabilities, Candle in-process embeddings, encryption primitives, and a background maintenance loop — nothing about agents, time windows, or memory layers. It provides **mechanism**; the consumer provides **meaning**.
 
-**`basemyai`** is the memory product built on top: the four layers, temporal RAG, per-agent isolation scoped at the SQL level, and all language binding surfaces.
+**`basemyai-engine`** is the durable storage layer: crash-consistent LSM, LM-DiskANN vector index, inverted FTS index, graph traversal, and at-rest encryption — all in pure Rust, no libSQL/SQLite dependency.
 
-This split powers more than one product. **[ForgeMyAI](../forgemyai-app/)** — the local code-context engine — consumes `basemyai-core` directly as a native Rust crate (no FFI, no HTTP), building its own code-specific semantics (symbols, call graph, FTS) on the same foundation. See [`../ECOSYSTEM_ARCHITECTURE.md`](../ECOSYSTEM_ARCHITECTURE.md).
+**`basemyai`** is the memory product built on top: the four layers, temporal RAG, per-agent isolation enforced structurally in the key layout, and all language binding surfaces.
+
+Since **[ADR-032](docs/adr/ADR-032-native-only.md)** (2026-07-08), the native engine is the **only** active backend. libSQL/V1 compatibility paths have been removed from the workspace.
+
+`basemyai-core` is also designed for third-party Rust consumers that build their own semantics on the same foundation (no FFI, no HTTP). See [`../ECOSYSTEM_ARCHITECTURE.md`](../ECOSYSTEM_ARCHITECTURE.md) for the wider ecosystem.
 
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;The 4 memory layers</h2>
 
@@ -182,7 +192,7 @@ Beyond storage and vector search, BaseMyAI implements a full five-ingredient mem
 
 ### Knowledge graph
 
-Entities and relations live in the same libSQL file alongside vectors. Multi-hop traversal via recursive SQL CTE (`UNION`, cycle-safe by construction). Scoped per `agent_id` and depth-bounded.
+Entities and relations live in the same `.bmai` container alongside vectors. Multi-hop traversal via native BFS in `basemyai-engine` (cycle-safe, depth-bounded). Scoped per `agent_id` through structural key isolation.
 
 ```rust
 graph.add_entity("alice", "person", "Alice")?;
@@ -205,7 +215,7 @@ let fused = rrf_fuse(&[
 
 ### Adaptive forgetting
 
-A capacity-bounded GC that keeps the most *important and recent* memories. Importance decays over time using a **hyperbolic curve** `H / (H + age)` — not exponential, which underflows to zero at real Unix timestamps.
+A capacity-bounded GC that keeps the most *important and recent* memories. Importance decays over time using a **hyperbolic curve** `H / (H + age)` — stable at real Unix timestamps without floating-point underflow.
 
 ```rust
 let gc = AdaptiveForgetting {
@@ -226,20 +236,22 @@ consolidate(&memory, &llm_backend).await?;
 
 <h2><img height="20" src="./basemyai-branding/icons/security.svg">&nbsp;&nbsp;Temporal RAG</h2>
 
-A retrieval that ignores time is a retrieval that lies. BaseMyAI's core query is **hybrid**: cosine similarity via libSQL native vectors **AND** a time filter in the same SQL statement.
+A retrieval that ignores time is a retrieval that lies. BaseMyAI's core query is **hybrid**: native vector similarity **AND** temporal validity filtering in the same retrieval pipeline.
 
 ```
 retrieve("what is the user's billing plan?")
-  → ANN cosine match  (vector_top_k, native libSQL, no extension)
+  → ANN cosine match (native index)
   → AND valid_until > now()
   → returns only memories that are both relevant AND still true
 ```
 
-Vectors live **inside** libSQL via its native `F32_BLOB` support (`libsql_vector_idx`, `vector_top_k` ANN). There is no second system to sync — no Qdrant, no LanceDB, no external vector database. One file.
+Vectors, graph edges, and FTS all live in BaseMyAI's **native engine** (`basemyai-engine`): no external vector database, no SQL surface, no sync layer.
+
+A `.bmai` file is a native engine container (WAL + SST + metadata). It is **not** a SQLite/libSQL database and is not interchangeable with V1 libSQL artifacts.
 
 <h2><img height="20" src="./basemyai-branding/icons/security.svg">&nbsp;&nbsp;Encryption at rest</h2>
 
-`basemyai` requires encryption at rest via libSQL's built-in **`crypto`** feature. The database is instantiated with an `encryption_key`; the file on disk is unreadable without it. The key is supplied at open time and never stored, never transmitted. In `basemyai-core`, encryption is optional; `basemyai` makes it mandatory.
+`basemyai` requires encryption at rest via the native envelope scheme (ADR-030, XChaCha20-Poly1305). The store is instantiated with an `encryption_key`; data on disk is unreadable without it. The key is supplied at open time and never stored, never transmitted.
 
 <p align="center">
   <img width="75%" src="./basemyai-branding/img/basemyai-database-plugin.png" alt="Database plugin architecture" />
@@ -301,17 +313,24 @@ const hits = await mem.recall("ui preferences", 5);
 
 `open_in_memory` (Python) and `openInMemory` (Node) intentionally stay
 test-only. They are compiled only with the `test-util` feature, use an
-ephemeral unencrypted `:memory:` store plus a deterministic fake embedder, and
-are not part of the documented production SDK surface. Production code should
-use `Memory.open(...)` with an encrypted file store and a local model path.
+ephemeral native temp store plus a deterministic fake embedder, and are not
+part of the documented production SDK surface. Production code should use
+`Memory.open(...)` with an encrypted file store and a local model path.
 
 **Rust (native)**
 
 ```rust
-use basemyai::{Memory, MemoryLayer};
+use basemyai::{AgentId, Memory, MemoryLayer};
+use basemyai_core::{CandleEmbedder, Device, EncryptionKey, Embedder};
 
-let mem = Memory::open("./agent.bmai", "agent-42", &key, model_path).await?;
-mem.remember("User is on Pro plan.", MemoryLayer::Semantic, None).await?;
+let key = EncryptionKey::new("…");
+let agent = AgentId::new("agent-42").unwrap();
+let model_path = dirs::home_dir().unwrap().join(".basemyai/models/all-MiniLM-L6-v2");
+let embedder: Box<dyn Embedder> =
+    Box::new(CandleEmbedder::load(&model_path, Device::Cpu)?);
+
+let mem = Memory::open_native("./agent.bmai", &key, embedder, agent).await?;
+mem.remember("User is on Pro plan.", MemoryLayer::Semantic).await?;
 let hits = mem.recall("billing plan", 5).await?;
 ```
 
@@ -328,7 +347,7 @@ pip install basemyai
 <h4><img width="20" src="./basemyai-branding/icons/cloud.svg">&nbsp;&nbsp;Node / TypeScript</h4>
 
 The public npm package is not live yet: `npm view basemyai` returned `404` from
-the public registry on 2026-06-22. Use this command only after the npm release
+the public registry as of 2026-07-08. Use this command only after the npm release
 workflow has published and verified `basemyai`.
 
 ```bash
@@ -341,7 +360,7 @@ npm install basemyai
 # Full memory product
 basemyai = "0.1"
 
-# Business-agnostic foundation only (e.g. for ForgeMyAI)
+# Business-agnostic foundation only (custom Rust consumers)
 basemyai-core = "0.1"
 ```
 
@@ -394,18 +413,33 @@ command that opens a `.bmai` container requires the encryption key via the
 basemyai setup --fetch        # provision the baseline embedder (explicit consent)
 basemyai status               # detected hardware + persisted provisioning config
 basemyai init ./agent.bmai    # create an encrypted .bmai container
-basemyai inspect ./agent.bmai # container metadata + memory count
-basemyai verify ./agent.bmai  # validate container + expected format version
-basemyai migrate ./agent.bmai # apply pending schema migrations (idempotent)
+basemyai inspect              # container metadata + memory count
+basemyai verify               # validate container + expected format version
 
-basemyai remember ./agent.bmai --agent assistant-42 --layer semantic "User is on Pro plan."
-basemyai recall   ./agent.bmai --agent assistant-42 "billing plan" -k 5 --hybrid
-basemyai stats    ./agent.bmai --agent assistant-42
-basemyai forget   ./agent.bmai --agent assistant-42 <id>   # physical delete — GDPR right to erasure
+basemyai remember "User is on Pro plan." --layer semantic
+basemyai recall "billing plan" -k 5 --hybrid
+basemyai list --layer semantic
+basemyai stats
+basemyai invalidate <id>      # soft-delete: valid_until = now
+basemyai forget <id>          # physical delete — GDPR right to erasure
+basemyai export --out backup.jsonl
+basemyai import --file backup.jsonl
+
+basemyai graph add-entity alice person "Alice"
+basemyai graph add-edge alice works_at acme
+basemyai graph traverse alice --depth 2
+
+basemyai maintenance gc
+basemyai maintenance forget-adaptive --capacity 10000
+basemyai consolidate          # episodes → facts + graph (requires local LLM)
 
 basemyai llm detect           # discover local LLM servers + best model
 basemyai llm suggest          # installable models matched to your hardware
 ```
+
+Set `BASEMYAI_DB_KEY`, `BASEMYAI_DB_PATH`, and `BASEMYAI_AGENT` (or use `--db` /
+`--agent` flags) so commands resolve the container and agent without repeating
+paths. Full reference: [docs/cli.md](docs/cli.md).
 
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;Quick look</h2>
 
@@ -469,15 +503,16 @@ procedures = await mem.recall_by_layer("how do I deploy?", "procedural", k=5)
 
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;Consumption surfaces</h2>
 
-The same Rust core, five ways to consume it:
+The same Rust core, six ways to consume it:
 
 | Surface | For | Crate consumed | Tech |
 |---|---|---|---|
+| **MCP server** | AI agents (Claude Code, Cursor, custom MCP clients) | `basemyai` | stdio + HTTP, 8 tools — see [MCP install guide](docs/mcp-install.md) |
 | **Python SDK** | Python agent builders (LangChain, LlamaIndex, custom) | `basemyai` | PyO3 + precompiled wheel |
 | **Node SDK** | JS / TS agent builders | `basemyai` | NAPI-RS + prebuild |
-| **REST sidecar** | Go, Ruby, any HTTP client | `basemyai` | Single self-contained binary (axum) |
-| **Native Rust crate** | Rust programs — e.g. ForgeMyAI | `basemyai-core` | Direct link, zero FFI overhead |
+| **REST sidecar** | Go, Ruby, any HTTP client | `basemyai` | axum, `/v1` routes + SSE live subscriptions |
 | **CLI** (`basemyai`) | Scripting, ops, ad-hoc inspection, agent-as-tool (`--format json`) | `basemyai` | Single binary (clap) — see [CLI reference](docs/cli.md) |
+| **Native Rust crate** | Rust programs on the agnostic core | `basemyai-core` | Direct link, zero FFI overhead |
 
 <h2><img height="20" src="./basemyai-branding/icons/community.svg">&nbsp;&nbsp;Community</h2>
 
@@ -495,7 +530,7 @@ Join our growing community around the world, for help, ideas, and discussions re
 
 We would love for you to get involved with BaseMyAI development! If you wish to help, you can learn more about how you can contribute to this project in the [contribution guide](CONTRIBUTING.md).
 
-Architecture decisions are documented in [docs/ADR.md](docs/ADR.md) (index) with each decision in its own file under [docs/adr/](docs/adr/). A decision that changes always produces a **new ADR** — existing ADRs are never edited. Read the ADR before touching cross-cutting concerns.
+Architecture decisions are documented in [docs/ADR.md](docs/ADR.md) (index) with each decision in its own file under [docs/adr/](docs/adr/). A decision that changes always produces a **new ADR** — existing ADRs are never edited. Read the ADR before touching cross-cutting concerns. Implementation status: [docs/status.md](docs/status.md).
 
 Rust gate before every commit — `cargo xtask ci` (fmt + per-crate clippy/test with the exact feature combinations CI uses; plain `cargo clippy --workspace`/`cargo test --workspace` do **not** reproduce CI):
 
@@ -508,8 +543,8 @@ cargo xtask ci
 For security issues, kindly email us at [security@basemyai.com](mailto:security@basemyai.com) instead of posting a public issue on GitHub.
 
 - **100 % local** — no data leaves your machine, no telemetry by default
-- **Per-agent isolation** — every query is filtered by `agent_id` at the SQL level; cross-agent leakage is a security invariant, not a config option
-- **Encrypted at rest** — libSQL `crypto` feature, AES-256, key never stored
+- **Per-agent isolation** — every access is scoped structurally by `agent_id`; cross-agent leakage is a security invariant, not a config option
+- **Encrypted at rest** — native envelope (ADR-030), key never stored
 - **No silent network** — the embedder receives a local model path and never auto-downloads
 
 See [SECURITY.md](SECURITY.md) for the full threat model and vulnerability reporting process.

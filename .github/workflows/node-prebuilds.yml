@@ -5,10 +5,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-# Construit les binaires natifs NAPI (.node, features crypto + embed) par
+# Construit les binaires natifs NAPI (.node, feature embed) par
 # plateforme. napi9 est stable au niveau ABI : un prebuild par OS/arch tourne
 # dès Node 18.17 (testé ci-dessous sur 20/22 — le CLI de build exige 20+).
-# crypto exige CMake.
 defaults:
   run:
     working-directory: bindings/basemyai-node
@@ -58,28 +57,10 @@ jobs:
       - name: Add Rust target to pinned toolchain
         run: rustup target add ${{ matrix.target }}
 
-      - name: Install CMake (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake
-
-      - name: Install CMake (macOS)
-        if: runner.os == 'macOS'
-        run: brew install cmake
-
-      - name: Install CMake (Windows)
-        if: runner.os == 'Windows'
-        run: pip install cmake
-
-      # libsql-ffi 0.9.30 appelle `cp`, absent du PATH Windows — Git le fournit.
-      - name: Add Git usr/bin to PATH (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: echo "C:/Program Files/Git/usr/bin" >> "$GITHUB_PATH"
-
       - run: npm install --include=dev
 
       - name: Build native addon
-        run: npx napi build --platform --release --target ${{ matrix.target }} --features crypto,embed
+        run: npx napi build --platform --release --target ${{ matrix.target }} --features embed
 
       - uses: actions/upload-artifact@v4
         with:
@@ -128,7 +109,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm install --include=dev
-      # Build debug sans crypto/embed (rapide) pour valider l'ABI sur chaque Node.
+      # Build debug test-util (rapide) pour valider l'ABI sur chaque Node.
       - run: npx napi build --platform --no-default-features --features test-util
       - run: npx jest
 

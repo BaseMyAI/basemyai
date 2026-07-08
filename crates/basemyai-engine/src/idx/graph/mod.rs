@@ -6,9 +6,8 @@
 //! (zero-drift) between an in-RAM flavor ([`RamGraph`]) and a KV-persisted
 //! flavor ([`PersistentGraph`]).
 //!
-//! This is a **literal behavioral port** of `basemyai`'s `graph_traverse`
-//! (a recursive CTE over `entity`/`edge` SQL tables,
-//! `crates/basemyai/src/storage/libsql_store.rs`) — see [`traverse`]'s
+//! This is a **literal behavioral port** of the original `graph_traverse`
+//! (a recursive CTE over `entity`/`edge` tables) — see [`traverse`]'s
 //! module doc for the exact semantics preserved, and
 //! `tests/graph_parity.rs` for the ported `crates/basemyai/tests/graph.rs`
 //! scenarios, run against both flavors.

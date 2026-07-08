@@ -21,7 +21,7 @@
 
 # ── Infra / storage ──────────────────────────────────────────────────────────
 "storage":
-  - '/(\blibsql\b|\bsqlite\b|\bvector.top.k\b|\bannf?\b)/i'
+  - '/(\bbasemyai.engine\b|\bnative\s+engine\b|\bwal\b|\bsst\b|\blsm\b|\bdiskann\b|\bvamana\b|\bannf?\b)/i'
 
 "embeddings":
   - '/(\bcandle\b|\bembedd?ing\b|\bminilm\b|\ball.minilm\b)/i'

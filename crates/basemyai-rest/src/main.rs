@@ -11,12 +11,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run().await
 }
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
+#[cfg(feature = "embed")]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
 
-    use basemyai_core::{CandleEmbedder, Device, Embedder, EncryptionKey};
-    use basemyai_rest::{AppState, Config, EncryptedFileProvider, build_app};
+    use basemyai_core::{CandleEmbedder, Device, Embedder};
+    use basemyai_rest::{AppState, Config, FileProvider, build_app};
     use tokio::net::TcpListener;
 
     let config = Config::from_env()?;
@@ -27,16 +27,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .into());
     }
 
-    // Clé de chiffrement de la base (obligatoire — chiffrement au repos, ADR-007).
+    // Clé de chiffrement de la base (obligatoire — chiffrement au repos, ADR-007 ;
+    // le backend natif chiffre sans CMake, ADR-030).
     let db_key = config
         .db_key
         .clone()
         .ok_or("BASEMYAI_REST_DB_KEY or BASEMYAI_DB_KEY is required (encryption is mandatory)")?;
 
     let db_path = config.db_path.clone();
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
 
     // Embedder : modèle local si fourni, sinon provisioning hardware-aware
     // (fetch seulement si consenti).
@@ -47,11 +45,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(CandleEmbedder::load(&mp.model_path, mp.device)?)
     };
 
-    let provider = Arc::new(EncryptedFileProvider::new(
-        db_path,
-        EncryptionKey::new(db_key),
-        embedder,
-    ));
+    let provider: Arc<dyn basemyai_rest::MemoryProvider> =
+        Arc::new(FileProvider::open(db_path, db_key, embedder).await?);
     let addr = config.socket_addr();
     let app = build_app(AppState::new(provider, config));
 
@@ -61,7 +56,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(all(feature = "crypto", feature = "embed")))]
+#[cfg(not(feature = "embed"))]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    Err("basemyai-rest must be built with the `crypto` and `embed` features for the production server".into())
+    Err(
+        "basemyai-rest must be built with the `embed` feature for the production server \
+         (it is in the default feature set)"
+            .into(),
+    )
 }

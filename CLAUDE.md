@@ -8,6 +8,10 @@ stockage maison, ADR-024/025, non publié) + **2 bindings**
 (`bindings/basemyai-py`, `bindings/basemyai-node`) + l'outil DX `xtask/`.
 Décisions : `docs/ADR.md` (index, un fichier par ADR sous `docs/adr/`). Relation d'écosystème : `../ECOSYSTEM_ARCHITECTURE.md`.
 
+**État 2026-07-08 (ADR-033)** : workspace **100 % moteur natif**.
+libSQL/V1, `Store`, `LibsqlMemoryStore`, feature `crypto` libSQL et
+double-backend sont retirés du code actif.
+
 ## Commandes
 
 **LE point d'entrée qui reproduit la CI est `cargo xtask`** (matrice exacte de
@@ -15,10 +19,9 @@ Décisions : `docs/ADR.md` (index, un fichier par ADR sous `docs/adr/`). Relatio
 
 ```bash
 cargo xtask check        # fmt --check + clippy par crate (features CI), -D warnings
-cargo xtask test         # tests par crate, config légère (sans embed/crypto)
+cargo xtask test         # tests par crate, config légère (sans embed)
 cargo xtask ci           # check + test — LE gate avant commit
 cargo xtask test-embed   # job CI `embed` (Candle, lourd)
-cargo xtask test-crypto  # job CI `crypto` — EXIGE CMake installé
 cargo xtask format-lock  # anti-drift basemyai-engine/format.lock (inclus dans check/ci)
 cargo xtask test-crash-consistency  # kill-loop réel basemyai-engine (~20 cycles, job CI dédié)
 ```
@@ -29,14 +32,13 @@ crate avec des features précises, ex. `-p basemyai-mcp --no-default-features
 brutes, gardées en référence :
 
 ```bash
-cargo test --workspace                                 # async (tokio) ; libSQL compile via bindgen/cc
+cargo test --workspace                                 # async (tokio)
 cargo clippy --workspace --all-targets -- -D warnings  # utile en local, mais ≠ matrice CI
 cargo build -p basemyai-core --features embed          # active Candle (lourd)
-cargo build -p basemyai-core --features crypto         # chiffrement libSQL — EXIGE CMake installé
 cargo build --profile profiling -p basemyai-rest       # binaire optimisé MAIS symbolisable (perf/flamegraph)
 ```
 
-Le **vecteur est natif libSQL** (compile sans CMake). Seule la feature `crypto` (chiffrement au repos) exige CMake. `embed` tire Candle (lourd).
+Le backend est **natif BaseMyAI** (`basemyai-engine`) ; `embed` tire Candle (lourd).
 
 **Profils** (définis dans le `Cargo.toml` racine) : `dev` est allégé (`debug = "line-tables-only"`) pour itérer vite malgré libSQL+Candle — backtraces panic conservées ; pour debugger sous gdb/lldb : `cargo build --config 'profile.dev.debug=2'`. `profiling` = release symbolisable (perf, flamegraphs).
 
@@ -45,11 +47,11 @@ Le **vecteur est natif libSQL** (compile sans CMake). Seule la feature `crypto` 
 ## Invariants — NE JAMAIS violer
 
 - **`basemyai-core` est agnostique métier.** Aucun `agent_id`, `valid_from/until`, couche mémoire, ni `Symbol/Edge` dedans. Ces concepts vivent dans `basemyai`. Un `grep -rE 'agent_id|valid_until|episodic|Symbol|Edge' crates/basemyai-core/src` doit retourner **zéro** (test d'agnosticité, ADR-001).
-- **Mécanisme au core, sens au consommateur.** Le core expose `knn(q, k, filter?)` et un worker de tâches *injectées*. Le sens (temps, agent) se passe via `Filter` paramétré, jamais en dur dans le core.
+- **Mécanisme au core, sens au consommateur.** Le core expose les primitives moteur (`StorageEngine`, capacités, chiffrement natif) et un worker de tâches *injectées*. Le sens (temps, agent) reste côté `basemyai`.
 - **L'`Embedder` ne télécharge jamais** et ne détecte jamais le matériel. Il reçoit chemin + `Device` résolus par `setup` (ADR-010). Zéro réseau hors setup explicite.
-- **`Filter` est paramétré** : fragment SQL + valeurs liées (`?`). Les inputs d'agent vont dans `params`, jamais interpolés (anti-injection, ADR-006).
-- **Chiffrement obligatoire dans `basemyai`** (libSQL feature `crypto`), optionnel dans `basemyai-core`.
-- **Backend = libSQL** (ADR-011), **async**. Vecteur **natif** (`vector_top_k`, pas d'extension), chiffrement intégré. `Store` est async ; l'`Embedder` reste **sync** (CPU-bound). Pas de DB externe. **Candle**, pas ONNX/fastembed. Chemin futur : **moteur natif BaseMyAI** (ADR-024, remplace le chemin Turso — voir `docs/PLAN-NATIVE-ENGINE.md`) ; libSQL reste le défaut jusqu'à parité prouvée.
+- **Pas de surface SQL-leaky dans le produit** : ni `Filter`, ni `Value`, ni `Store`, ni `LibsqlMemoryStore`.
+- **Chiffrement obligatoire dans `basemyai`** via l'enveloppe native ADR-030 (pas de dépendance CMake).
+- **Backend unique = moteur natif BaseMyAI** (ADR-024/025/026/027/028/030/032). Pas de fallback libSQL.
 
 ## Style Rust (2026, édition 2024)
 
@@ -61,15 +63,17 @@ Le **vecteur est natif libSQL** (compile sans CMake). Seule la feature `crypto` 
 
 **Politique de lints** : curée et commentée dans `[workspace.lints]` du `Cargo.toml` racine ; chaque crate l'hérite via `[lints] workspace = true`. Elle **encode ces règles dans le compilateur** : `unwrap_used`, `await_holding_lock` (= « pas de `Mutex` à travers `.await` »), `todo`, `clone_on_ref_ptr` + famille clonage/perf. Les tests sont exemptés de `unwrap_used` via `clippy.toml` (`allow-unwrap-in-tests`). **`expect_used` n'est volontairement PAS activé** : la règle autorise `expect("message")`, or ce lint interdit tout `expect`. Ne pas l'ajouter.
 
-## Layout (restructuré 12 juin 2026)
+## Layout (restructuré 12 juin 2026, mis à jour ADR-033)
 
 ### `basemyai-core/src/`
 
 ```text
-storage/          ← Recherche vectorielle + store libSQL
+storage/          ← Primitives moteur natif (ADR-024/025/030)
   ├─ mod.rs       ← re-exports
-  ├─ store.rs     ← Store async, migrations, chiffrement
-  └─ vector.rs    ← Filter, Value, Neighbor (types paramétrables)
+  ├─ engine.rs    ← StorageEngine, EngineCapabilities, EngineKind::Native
+  ├─ native.rs    ← NativeEngine (wrapper capability-only)
+  ├─ key.rs       ← EncryptionKey
+  └─ vector.rs    ← Metric (cosine/euclidean/hamming — mécanisme pur)
 
 embed/            ← Embeddings in-process
   ├─ mod.rs       ← Device enum, trait Embedder (object-safe)
@@ -77,7 +81,18 @@ embed/            ← Embeddings in-process
 
 error.rs          ← CoreError (thiserror, #[non_exhaustive])
 maintenance.rs    ← MaintenanceTask, MaintenanceWorker (injection)
-lib.rs            ← re-exports + libsql
+lib.rs            ← re-exports publics
+```
+
+### `basemyai-engine/src/` (non publié, BUSL-1.1)
+
+```text
+store/            ← WAL + memtable + SST, apply_batch
+idx/vector/       ← LM-DiskANN (ADR-026)
+idx/graph/        ← entités/arêtes + BFS (ADR-027/N4)
+idx/memory/       ← records mémoire + vecmap
+idx/fts/          ← BM25 inversé (ADR-028)
+format/           ← wire formats versionnés + format.lock
 ```
 
 ### `basemyai/src/`
@@ -86,24 +101,26 @@ lib.rs            ← re-exports + libsql
 memory/           ← Domaine mémoire (4 couches, isolation, validité)
   ├─ mod.rs       ← façade Memory (remember, recall, recall_by_layer, invalidate, forget, stats, search_graph)
   ├─ layer.rs     ← MemoryLayer enum, Record, AgentStats
-  ├─ schema.rs    ← Migrations SQL V1/V2/V3 (memory + graph), EMBEDDING_DIM
-  └─ isolation.rs ← AgentId newtype (isolation SQL ADR-006)
+  ├─ porting.rs   ← export/import JSONL
+  ├─ event.rs     ← MemoryEvent (ADR-022)
+  └─ isolation.rs ← AgentId newtype (isolation structurelle ADR-006)
 
 cognition/        ← Pipeline Phase 2 (graphe + consolidation + inférence)
   ├─ mod.rs
   ├─ inference.rs ← trait LlmInference (object-safe, injecté)
   ├─ consolidation.rs ← consolidate(memory, llm) → faits + graphe
-  └─ graph.rs     ← Graph {entity, edge}, traverse (CTE récursive)
+  └─ graph.rs     ← Graph {entity, edge}, traverse (BFS natif)
+
+storage/          ← Contrat MemoryStore
+  └─ native_store.rs ← NativeMemoryStore (unique implémentation)
 
 provision/        ← Provisioning hardware-aware
   ├─ mod.rs       ← re-exports
   ├─ embedder.rs  ← detect_hardware(), provision(), SHA256 verification
-  └─ llm.rs       ← KNOWN_MODELS, detect_llm_options(), choose_llm(), OpenAiCompatBackend (alias OllamaBackend)
+  └─ llm.rs       ← KNOWN_MODELS, detect_llm_options(), choose_llm()
 
-maintenance/      ← Tâches de fond
-  ├─ mod.rs       ← ConsolidationTask (Arc<Memory> + Arc<dyn LlmInference>)
-  ├─ gc.rs        ← ExpiredMemoryGc (ADR-005)
-  └─ forgetting.rs ← AdaptiveForgetting (importance × récence hyperbolique)
+maintenance/      ← Tâches de fond injectées
+  └─ mod.rs       ← ConsolidationTask uniquement (gc/oubli adaptatif retirés ADR-033)
 
 retrieval.rs      ← Racine : Ranking, Fused, rrf_fuse (pur méchanisme)
 temporal.rs       ← Racine : Validity (valid_from/until), temporal_filter()
@@ -114,132 +131,18 @@ lib.rs            ← re-exports
 **Organisation par domaine sémantique, pas par artefact.** Chaque dossier
 regroupe un concept métier et expose un API cohérent via `mod.rs`.
 
-`crates/basemyai/tests/` : TBD (sera restructuré en accord avec src/).
+## Statut (juillet 2026)
 
-## Statut (juin 2026)
+**Source de vérité détaillée : `docs/status.md`.**
 
-Phase 1 (socle) ✅ et Phase 2 (Cognition) ✅ implémentées :
-
-- **KNN réel** : distance cosine, oversampling ×8 quand filtre présent (ADR-012).
-- **Graphe** : entités/relations, CTE récursive `UNION` (cycle-safe), scopée `agent_id` + profondeur (ADR-012).
-- **RRF** : `rrf_fuse` multi-signal, k=60, déterministe (ADR-012).
-- **Oubli adaptatif** : `AdaptiveForgetting`, décroissance hyperbolique `H/(H+age)` (pas exponentielle — libSQL n'a pas `pow`/`exp`) (ADR-012).
-- **Consolidation** épisodes→faits : `consolidate(memory, llm)`, idempotente, `LlmInference` injecté (ADR-012).
-- **LLM provision** : `KNOWN_MODELS` 20 modèles juin 2026, 8 backends détectés, `choose_llm()` hardware-aware (ADR-013).
-
-Wiring consolidation dans `MaintenanceWorker` ✅ (`ConsolidationTask`, `maintenance/mod.rs`),
-bindings PyO3/NAPI ✅ (`bindings/basemyai-py`, `bindings/basemyai-node`), sidecar MCP ✅
-(`crates/basemyai-mcp`) et REST ✅ (`crates/basemyai-rest`) : tous implémentés et testés.
-
-**État réel : voir `docs/status.md` (source de vérité, 2026-07-04).** Le moteur (Phase 1 + 2)
-et les surfaces (MCP/REST/bindings/CLI) sont en place ; **crates.io et PyPI sont publiés**
-(`0.1.0` confirmé le 2026-06-22), tandis que la publication npm de `basemyai` reste à re-vérifier
-depuis cette machine (`npm view basemyai` renvoie `404`). Pas de binaire CLI distribué. CLI
-`basemyai-cli` ✅ : cycle de vie mémoire complet
-(`remember/recall/list/forget/invalidate/purge/export/import`), graphe, maintenance (`gc`/
-`forget-adaptive`/`consolidate`), `config`, `completions` — voir `docs/cli.md`. Reste ouvert (M5) :
-distribution binaire (cargo-dist), tests CLI en CI. `StorageEngine` : trait d'opérations mémoire
-`basemyai::storage::MemoryStore` + `LibsqlMemoryStore` fait (ADR-020, 2026-06-20), `Filter` confiné,
-tests de contrat ajoutés. Hardening (M6, 2026-07-02) : pool lecteur ✅ (ADR-021), bench KNN ✅
-(10k/100k réels archivés, `docs/benchmarks/m6-knn-results-2026-07-01.md` — 1M documenté comme
-non exécuté, coût de build de l'index natif ~78-79 ms/ligne), stress Candle 1h ✅ (stable, pas de
-fuite, `docs/benchmarks/m6-candle-stress-results-2026-07-01.md`), key rotation ✅ (`PRAGMA rekey`,
-`Store::rotate_key`/`Memory::rotate_key`). Live subscriptions vague 2 (ADR-022) : REST SSE ✅, MCP
-notifications ✅, PyO3 callback ✅, NAPI/Node reporté (pas d'équivalent direct de l'itérateur async
-Python en napi-rs). Reste ouvert : CUDA/NVML réel (M6), résultats KNN 1M, NAPI live subscriptions.
-
-**Moteur natif (ADR-024/025, `docs/TODO-NATIVE-ENGINE.md`)** : N1 (spike LSM vs B-tree) ✅ et
-**N2 (store durable) ✅ clos 2026-07-04** — `crates/basemyai-engine` (WAL+memtable+SST+recovery,
-batches atomiques `apply_batch`, `WAL_RECORD_VERSION` 2), harnais crash-consistency kill réel en CI,
-fuzzing (1 panic réel trouvé/corrigé), `format.lock` anti-drift, `EngineKind::Native` +
-`NativeEngine` capability-only dans `basemyai-core` (feature `engine-native`), runner déclaratif
-multi-backend `crates/basemyai/tests/memory_tests/` (vert sur Libsql, prêt pour Native).
-**N3 (index vectoriel natif) ✅ clos 2026-07-05** : LM-DiskANN/Vamana pur Rust
-(`idx/vector/{node,distance,graph,meta,persistent}.rs`, ADR-026), insert/delete/consolidate en
-`apply_batch` atomiques, tombstones + réparation FreshDiskANN, rebuild depuis la donnée. Recall@10 =
-1.0 partout (RAM, persistant, après churn, 10k/100k). Bench de parité M6
-(`docs/benchmarks/n3-vector-parity-2026-07-05.md`) : les 3 seuils ADR-026 tenus avec grande marge —
-requête 7.5 ms (10k) / 12.7 ms (100k) vs plafond ~48-49 ms libSQL ; build incrémental réel 5.7 ms/ligne
-(10k) / 17.3 ms/ligne (100k) vs 78-79 ms/ligne libSQL (qui n'a jamais fini son build incrémental 100k
-en 3h+, ce chiffre étant son taux de bulk-load, pas incrémental). Crash harness étendu aux deletes/
-consolidate : 0 violation sur plusieurs runs de 20 cycles. **N4 (graphe natif) ✅ clos 2026-07-05** :
-`idx/graph/{entity,edge,traverse,ram,persistent}.rs` — un nœud/une arête = un enregistrement KV
-(`relation`/`dst` dans la clé, pas la valeur, pour un scan préfixé par nœud source à chaque saut
-BFS), isolation par agent structurelle dans le layout de clé, `GraphEntity:1`/`GraphEdge:1` dans
-`format.lock`. Traversée = portage littéral 1:1 de la CTE récursive SQL, les 5 scénarios de
-`tests/graph.rs` rejoués fidèlement contre RAM et persistant (`tests/graph_parity.rs`), même code BFS
-partagé entre les deux (zéro dérive possible). Pas de méta/rebuild (design assumé : aucun état de
-navigation global à mettre en cache). Crash harness étendu mode `graph`, 20 cycles réels, 0 violation.
-**N5.1 (`NativeMemoryStore` hors FTS/crypto) ✅ clos 2026-07-05** — découpage N5 acté par ADR-027 :
-`idx/memory/` moteur (`MemoryRecord:1`/`MemoryVecMap:1`/`MemoryIndexMeta:1` dans `format.lock`,
-allocateur `vec_id` monotone auto-guérissant), `PersistentVectorIndex::insert_with`/`delete_with`
-(les enregistrements du consommateur montent dans le même `apply_batch` que l'index — un `remember`
-natif = UN enregistrement WAL, atomicité transaction-libSQL retrouvée), `NativeMemoryStore` dans
-`basemyai` (feature `engine-native`, jamais défaut) : parité requête par requête avec
-`LibsqlMemoryStore` (oversampling ×8 ADR-012, non-filtres préservés), FTS/BM25 et métriques
-non-cosinus en erreur franche (N5.2/N5.3). **Le diff multi-backend du runner N2 est prouvé** :
-`backend_suite!` vert sur Libsql ET Native (`cargo test -p basemyai --features
-test-util,engine-native --test memory_tests`), matrice xtask/CI étendue en miroir strict,
-capacités `NativeEngine` honnêtes (`vectors`/`recursive_queries` → true).
-**N5.2 (FTS/BM25 natif) ✅ clos 2026-07-06** (ADR-028) : troisième index moteur `idx/fts/`
-(inversé `FtsPosting:1` + direct `FtsDocTerms:1` + stats par agent healables `FtsStats:1`),
-tokenizer casefold+pliage d'accents (racinisation Porter différée, gap assumé et documenté) ;
-`PersistentFts::stage_insert`/`stage_delete` composent dans le `Batch` de l'appelant, fusionnés
-par `PersistentMemoryIndex::put`/`forget`/`purge_agent` dans le même `extra` batch que
-vecteur+mémoire — un `remember` natif reste UN enregistrement WAL étendu au troisième index.
-Scoring Okapi (`k1=1.2`/`b=0.75`, défauts FTS5), `df` dérivé du scan des postings.
-`NativeMemoryStore::keyword_ranking_ids` branché (fin de l'erreur franche) — un bug de parité
-(filtre de validité temporelle absent) trouvé et corrigé pendant l'implémentation. Deux
-scénarios `backend_suite!` (classement par pertinence, validité temporelle + forget) rejoués
-Libsql/Native, zéro divergence ; `EngineCapabilities::native().full_text` → `true` ; aucune
-extension xtask/CI nécessaire (nouveau module sous des entrées déjà couvertes) ; `cargo xtask ci`
-vert (18 étapes) + crash-consistency re-exécuté (4 modes, 0 violation).
-**N5.3 (100 % des contrats sur Native) ✅ clos 2026-07-06** : les 12 scénarios
-`storage_contract.rs` restants (isolation multi-agent recall/hydrate/purge/exact-fact, batch
-atomique+vide, filtre de couche, expiration/pas-encore-valide, stats par couche, classement
-vecteur+mot-clé isolé, traversée graphe scopée agent, épisodes récents) portés dans le runner
-déclaratif (`memory_tests/scenarios.rs`, 7→19 scénarios) ; `Step`/`Scenario` étendus d'un champ
-`agent: Option<&'static str>` par étape (séquences multi-agent dans un seul scénario), 6
-nouvelles variantes (`RememberBatch`/`PurgeAgent`/`ExpectVectorRankingIds`/`ExpectHydrate`/
-`ExpectAgentStatsByLayer`/`ExpectRecentEpisodes`/`ExpectExactFactExists`). 16/16 tests de
-`storage_contract.rs` rejoués verbatim contre Libsql ET Native, zéro divergence
-(`cargo test -p basemyai --features test-util,engine-native --test memory_tests`) ;
-`contracts.rs` hors scope (teste `Memory`/`Store` libSQL directement, aucune variation par
-backend). `cargo xtask check`/`test` verts (seul incident : le flake connu et pré-existant
-`basemyai-mcp --test server::isolation_between_agents`, sans rapport avec ce travail).
-**N5.4 (chiffrement au repos natif) ✅ clos 2026-07-06** (ADR-030) : AEAD XChaCha20-Poly1305
-pur Rust (aucune feature gate — contrairement au `crypto` libSQL qui exige CMake), enveloppe
-DEK/KEK — la clé utilisateur dérive une KEK (SHA-256 salée+domaine) qui scelle une DEK
-aléatoire dans `crypto.meta` ; WAL scellé par enregistrement (`WalEnvelope:1`, torn-tail
-préservé, un batch = une enveloppe), SST scellé fichier entier (`SstEnvelope:1`) — tous les
-index transitent par WAL+SST donc couverts. Erreurs franches typées (mauvaise clé, clé
-absente, clé sur store en clair). `Engine::rotate_key` = re-scellement O(1), commit atomique
-un-fichier, instance utilisable après rotation (mieux que `PRAGMA rekey`) ; écart assumé :
-DEK inchangée (ADR-030 §4). Surfaces : `EngineCapabilities::native(encrypted)` (dernière
-capacité `false` levée), `NativeEngine::open_encrypted`,
-`NativeMemoryStore::{open_encrypted,rotate_key}`. `format.lock` +3 (`CryptoMeta:1`/
-`WalEnvelope:1`/`SstEnvelope:1`). Vérifié : 19 scénarios `backend_suite!` rejoués contre un
-3e backend `native_encrypted` (zéro divergence), rotation roundtrip `MemoryStore`, crash
-harness 5e mode `encrypted_batch` (5 modes × 20 cycles kill réels, 0 violation).
-**N5.5 (barre hardening M6) ✅ clos 2026-07-07** : `put_memory_batch` tout-ou-rien
-(`PersistentVectorIndex::insert_many_with` — un `OverlayProvider` planifie chaque insert du
-groupe contre l'état que les précédents produiront, pending par-dessus cache par-dessus store)
-plus `PersistentFts::stage_insert_many` (une seule mise à jour BM25 agrégée) plus
-`PersistentMemoryIndex::put_many` qui vérifie tous les doublons — store et intra-lot — avant
-d'écrire quoi que ce soit,
-un seul enregistrement WAL pour tout le groupe ; résorbe l'écart initial d'ADR-027 §6, `put`
-devient un `put_many` à un item). Mode `memory` du harnais crash-consistency (schéma
-déterministe put/forget exerçant le triplet record+vecteur+FTS sous kill réel, + variante
-chiffrée) : 20 cycles × 2 (clair/chiffré), 0 violation. Concurrence mesurée : cache de
-`PersistentVectorIndex` devenu interior-mutable (`Mutex<HashMap>`, `search`/`search_scored`
-passent à `&self`), `NativeMemoryStore` d'`Arc<Mutex>` à `Arc<RwLock>` — lectures pures sous
-verrou de lecture concurrent, chemins hybrides (`recall_vector`/`hydrate`) en deux passes
-(recherche en lecture, `touch` en écriture brève séparée), écritures sérialisées entre elles
-inchangé (`Engine` mono-écrivain sync) ; mesuré ~3× plus rapide en concurrent sur 64 lectures
-mixtes. Bench KNN via le chemin `MemoryStore` complet
-(`docs/benchmarks/n5.5-memorystore-knn-bench-2026-07-07.md`) : à N=10 000 `--release`, insert
-~12.96 ms/`put_memory` (cohérent avec la fourchette N3 sur l'index nu) et `recall_vector`
-~17.03 ms/requête contre ~48.98 ms pour le `vector_top_k` nu libSQL — ~2.9× plus rapide malgré
-plus de travail par requête. `cargo xtask check`/`test`/`test-crash-consistency` verts. Reste
-N5.6 : ADR de bascule du défaut libSQL→Native — décision humaine séparée, jamais prise en
-passant ; stress long à 100k+ resté hors scope de cette passe.
+- **Moteur natif (N0→N5.6 + ADR-033) : ✅ clos** — `basemyai-engine` est le backend
+  unique (LSM, vecteur LM-DiskANN, graphe, FTS/BM25, chiffrement ADR-030).
+- **Phase 1 + 2 mémoire/cognition : ✅** — API `Memory`, graphe, RRF, consolidation,
+  oubli adaptatif, provisioning LLM.
+- **Surfaces : ✅** — MCP, REST, CLI, bindings PyO3/NAPI.
+- **CI :** `cargo xtask ci` (+ `test-embed`, `test-crash-consistency` séparés).
+- **Publication :** `0.1.0` crates.io/PyPI (libSQL). **Prochaine : `0.2.0` native-only**
+  (breaking). npm à vérifier ; cargo-dist CLI ouvert.
+- **Reste ouvert :** release 0.2.0, doc format `.bmai` natif, NAPI live watch,
+  CUDA/NVML, bench Mem0+Qdrant, image Docker REST.
+- **V2 :** sync P2P, langage de requête, multi-modèles, Studio/Tauri.

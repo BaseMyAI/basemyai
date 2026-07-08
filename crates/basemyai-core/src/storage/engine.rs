@@ -6,15 +6,15 @@
 //! semantics stay in the consumer; backend-specific mechanics stay behind
 //! [`Store`](crate::Store).
 
-/// Built-in storage backend kind.
+/// Built-in storage backend kind. `Libsql` existed through ADR-011; removed
+/// entirely by ADR-032 (native-only) — kept as a single variant so the type
+/// isn't a redundant unit struct, but every implementor is `Native` today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EngineKind {
-    /// libSQL-compatible embedded backend.
-    Libsql,
-    /// Home-grown `basemyai-engine` backend (ADR-024/ADR-025). Feature-gated
-    /// behind `engine-native`; see [`EngineCapabilities::native`] for what it
-    /// honestly supports today.
+    /// Home-grown `basemyai-engine` backend (ADR-024/ADR-025/ADR-032), the
+    /// only workspace backend; see
+    /// [`EngineCapabilities::native`] for what it honestly supports today.
     Native,
 }
 
@@ -37,22 +37,8 @@ pub struct EngineCapabilities {
 }
 
 impl EngineCapabilities {
-    /// Capabilities of the current libSQL backend instance.
-    #[must_use]
-    pub const fn libsql(encrypted: bool) -> Self {
-        Self {
-            kind: EngineKind::Libsql,
-            vectors: true,
-            full_text: true,
-            recursive_queries: true,
-            transactions: true,
-            encrypted,
-        }
-    }
-
     /// Capabilities of the current `basemyai-engine` (native) backend
-    /// instance. `encrypted` reflects the opened instance, same contract as
-    /// [`EngineCapabilities::libsql`].
+    /// instance. `encrypted` reflects whether the opened instance is encrypted.
     ///
     /// Honest as of N5.4 (`docs/TODO-NATIVE-ENGINE.md`, ADR-027/028/030):
     /// `basemyai-engine` is a WAL+memtable+SST KV engine with atomic

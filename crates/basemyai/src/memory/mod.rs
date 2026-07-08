@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: BUSL-1.1
-//! Façade mémoire. Injecte les primitives du core (`Store`, `VectorIndex`,
-//! `Embedder`) — testable en isolation via des doubles. Applique l'isolation
-//! par agent et le RAG temporel par-dessus.
+//! Façade mémoire. Injecte les primitives du core (moteur natif, `Embedder`)
+//! — testable en isolation via des doubles. Applique l'isolation par agent et
+//! le RAG temporel par-dessus.
 
 mod event;
 mod isolation;
 mod layer;
 mod porting;
-pub(crate) mod schema;
 #[cfg(feature = "test-util")]
 mod testutil;
 
@@ -18,7 +17,7 @@ pub use porting::ImportReport;
 #[cfg(feature = "test-util")]
 pub use testutil::HashEmbedder;
 
-use basemyai_core::{Embedder, Metric, Store, libsql};
+use basemyai_core::{Embedder, Metric};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -26,7 +25,7 @@ use uuid::Uuid;
 
 use event::DEFAULT_EVENT_CAPACITY;
 
-use crate::storage::{LibsqlMemoryStore, MemoryStore, NewMemory};
+use crate::storage::{MemoryStore, NativeMemoryStore, NewMemory};
 use crate::temporal::Validity;
 use crate::{MemoryError, RRF_K, Ranking, Result, now_unix, rrf_fuse};
 
@@ -34,7 +33,8 @@ use crate::{MemoryError, RRF_K, Ranking, Result, now_unix, rrf_fuse};
 /// saturerait le prompt de consolidation (`MAX_EPISODES` ne borne que le
 /// *nombre* d'épisodes, pas leur taille individuelle) — DoS de contexte.
 /// Cohérent avec la limite documentée côté REST (`crates/basemyai-rest/openapi.yaml`).
-pub const MAX_TEXT_LEN: usize = 65_536;
+/// Bornée à `u16::MAX` pour rester compatible avec le format des termes FTS.
+pub const MAX_TEXT_LEN: usize = 65_535;
 
 /// Provenance par défaut d'un souvenir mémorisé directement par l'agent (par
 /// opposition à `"consolidation"`, faits promus par le pipeline LLM).
@@ -47,10 +47,10 @@ const META_EMBEDDING_DIM: &str = "embedding_dim";
 /// événement [`MemoryEventKind::Consolidated`] d'un [`MemoryEventKind::Remembered`].
 pub(crate) const SOURCE_CONSOLIDATION: &str = "consolidation";
 
-/// Mémoire d'un agent : moteur de stockage (vecteur natif) + embedder,
-/// scellés par un [`AgentId`]. Le chiffrement est obligatoire (ADR-007).
+/// Mémoire d'un agent : moteur de stockage natif + embedder, scellés par un
+/// [`AgentId`]. Le chiffrement est obligatoire (ADR-007/ADR-030).
 pub struct Memory {
-    engine: Arc<LibsqlMemoryStore>,
+    engine: Arc<NativeMemoryStore>,
     embedder: Box<dyn Embedder>,
     agent: AgentId,
     /// Diffuseur d'événements mémoire (abonnements temps réel). Émis **après**
@@ -60,35 +60,75 @@ pub struct Memory {
 }
 
 impl Memory {
-    /// Assemble une mémoire à partir des primitives du core déjà construites,
-    /// **sans** migrer le schéma (à utiliser quand le schéma est déjà en place).
-    #[must_use]
-    fn from_migrated_store(store: Store, embedder: Box<dyn Embedder>, agent: AgentId) -> Self {
+    /// Assemble une mémoire sur un store natif déjà ouvert, **partagé**
+    /// (`Arc`) : vérifie le contrat embedding puis scelle la façade par
+    /// `agent`.
+    ///
+    /// Le moteur natif est **mono-écrivain exclusif** (ADR-025) : ouvrir deux
+    /// fois le même répertoire-store corromprait le WAL. Un même
+    /// `Arc<NativeMemoryStore>` doit donc être **partagé** entre toutes les
+    /// `Memory` d'agents différents qui pointent vers le même store (le
+    /// pattern des providers REST/MCP — isolation structurelle par préfixe de
+    /// clé, ADR-027 §2, jamais une instance de store par agent). Réservé aux
+    /// consommateurs qui construisent/possèdent déjà leur `NativeMemoryStore`
+    /// (providers de surface, éphémère de test) — [`Memory::open_native`]
+    /// gère le cas commun d'une seule `Memory`.
+    ///
+    /// # Errors
+    /// [`crate::MemoryError::EmbeddingModelMismatch`] si le store a été créé
+    /// avec un autre modèle/dimension d'embedding ; propage les erreurs de
+    /// stockage.
+    pub async fn from_native_store(
+        store: Arc<NativeMemoryStore>,
+        embedder: Box<dyn Embedder>,
+        agent: AgentId,
+    ) -> Result<Self> {
+        ensure_embedding_contract(&store, embedder.as_ref()).await?;
         let (events, _) = broadcast::channel(DEFAULT_EVENT_CAPACITY);
-        Self {
-            engine: Arc::new(LibsqlMemoryStore::new(store)),
+        Ok(Self {
+            engine: store,
             embedder,
             agent,
             events,
-        }
+        })
     }
 
-    /// Ouvre une mémoire : vérifie le chiffrement, applique le schéma
-    /// (`memory` + index vecteur natif), puis renvoie la façade scellée par `agent`.
+    /// Ouvre une mémoire sur un répertoire-store `.bmai` (au besoin le crée),
+    /// **chiffré au repos** (ADR-030 — la clé est obligatoire, ADR-007 ; sans
+    /// CMake), vérifie le contrat embedding, puis renvoie la façade scellée
+    /// par `agent`.
     ///
-    /// Le chiffrement est **obligatoire** pour les stores sur fichier (ADR-007) :
-    /// un store `:memory:` est éphémère, la règle ne s'y applique pas.
+    /// Ouvre un **nouveau** `NativeMemoryStore` à chaque appel (mono-écrivain
+    /// exclusif, ADR-025) : n'appeler qu'**une fois** par répertoire-store
+    /// par process — c'est le cas commun d'une seule `Memory` (CLI, spike).
+    /// Un consommateur qui sert **plusieurs agents** sur le même store (un
+    /// provider REST/MCP) doit ouvrir une fois via
+    /// [`NativeMemoryStore::open_encrypted`], l'envelopper en `Arc`, puis
+    /// appeler [`Memory::from_native_store`] pour chaque agent — jamais
+    /// rouvrir le répertoire.
     ///
     /// # Errors
-    /// [`crate::MemoryError::EncryptionRequired`] si le store est sur fichier et non chiffré.
-    /// [`crate::MemoryError::Core`] si la migration échoue.
-    pub async fn open(store: Store, embedder: Box<dyn Embedder>, agent: AgentId) -> Result<Self> {
-        if store.path().is_some() && !store.is_encrypted() {
-            return Err(crate::MemoryError::EncryptionRequired);
-        }
-        store.migrate(&schema::schema()).await?;
-        ensure_embedding_contract(&store, embedder.as_ref()).await?;
-        Ok(Self::from_migrated_store(store, embedder, agent))
+    /// Erreur de stockage typée si la clé est fausse ou si `path` contient un
+    /// store en clair ; [`crate::MemoryError::EmbeddingModelMismatch`] si le
+    /// store a été créé avec un autre modèle/dimension d'embedding.
+    pub async fn open_native(
+        path: impl AsRef<std::path::Path>,
+        key: &basemyai_core::EncryptionKey,
+        embedder: Box<dyn Embedder>,
+        agent: AgentId,
+    ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let key = key.expose().to_string();
+        // L'ouverture (recovery WAL, chargement des méta d'index) est
+        // bloquante — jamais sur un thread du runtime.
+        let store = tokio::task::spawn_blocking(move || NativeMemoryStore::open_encrypted(&path, &key))
+            .await
+            .map_err(|e| {
+                crate::MemoryError::Core(basemyai_core::CoreError::Storage(format!(
+                    "ouverture du store natif interrompue : {e}"
+                )))
+            })??;
+        Self::from_native_store(Arc::new(store), embedder, agent).await
     }
 
     /// L'agent propriétaire de cette mémoire.
@@ -106,7 +146,7 @@ impl Memory {
     /// d'un autre agent ne reçoit que les événements de cet autre agent — il ne
     /// peut pas remonter au-delà de ce que [`Memory`] émet, et chaque `Memory`
     /// n'émet que pour son propre agent. La sécurité multi-tenant repose sur
-    /// l'isolation SQL en amont (ADR-006) ; ce filtre la prolonge au flux.
+    /// l'isolation structurelle en amont (ADR-006) ; ce filtre la prolonge au flux.
     #[must_use]
     pub fn watch(&self, agent_id: &str, layer: Option<MemoryLayer>) -> MemorySubscription {
         MemorySubscription::new(self.events.subscribe(), agent_id.to_string(), layer)
@@ -131,10 +171,10 @@ impl Memory {
         Arc::clone(&self.engine) as Arc<dyn MemoryStore>
     }
 
-    /// Moteur de stockage **concret**. `pub(crate)` : réservé à
-    /// `memory::porting` (export/import JSONL), qui a besoin de colonnes hors
-    /// du contrat sémantique [`MemoryStore`] (cf. [`LibsqlMemoryStore::store`]).
-    pub(crate) fn libsql_engine(&self) -> &LibsqlMemoryStore {
+    /// Moteur natif **concret**. `pub(crate)` : réservé à `memory::porting`
+    /// (export/import JSONL) et à la rotation de clé — jamais aux chemins
+    /// sémantiques, qui passent par le contrat [`MemoryStore`].
+    pub(crate) fn native_engine(&self) -> &Arc<NativeMemoryStore> {
         &self.engine
     }
 
@@ -142,48 +182,30 @@ impl Memory {
     ///
     /// Permet aux consommateurs externes (MCP, REST, bindings) de traverser le
     /// graphe entités/relations (`recall_graph`) sans accéder au moteur, tout
-    /// en conservant l'isolation par agent au niveau SQL (ADR-006).
+    /// en conservant l'isolation par agent (ADR-006).
     #[must_use]
     pub fn graph(&self) -> crate::Graph {
         crate::Graph::new(self.engine(), self.agent.clone())
     }
 
-    /// Ouvre une mémoire **éphémère, non chiffrée** (`:memory:`) dotée d'un
-    /// embedder déterministe sans modèle ([`HashEmbedder`]).
+    /// Ouvre une mémoire **éphémère, non chiffrée** dotée d'un embedder
+    /// déterministe sans modèle ([`HashEmbedder`]) — le backend que les
+    /// utilisateurs reçoivent réellement, la suite de tests façade l'exerce
+    /// tel quel.
     ///
     /// Réservé aux **tests et aux spikes des bindings** : ni Candle, ni fichiers
     /// modèle, ni CMake — un roundtrip remember/recall fonctionne hors-ligne.
-    /// **Jamais en production** (vecteurs non sémantiques). Le store `:memory:`
-    /// est éphémère : la règle de chiffrement obligatoire ne s'y applique pas.
+    /// **Jamais en production** (vecteurs non sémantiques). Le store est
+    /// éphémère : la règle de chiffrement obligatoire ne s'y applique pas.
     ///
     /// # Errors
     /// [`crate::MemoryError::MissingAgent`] si `agent_id` est vide ;
-    /// [`crate::MemoryError::Core`] si l'ouverture/migration échoue.
+    /// [`crate::MemoryError::Core`] si l'ouverture échoue.
     #[cfg(feature = "test-util")]
     pub async fn open_in_memory(agent_id: &str) -> Result<Self> {
         let agent = AgentId::new(agent_id).ok_or(crate::MemoryError::MissingAgent)?;
-        let store = Store::open_in_memory().await?;
-        Self::open(store, Box::new(HashEmbedder::new()), agent).await
-    }
-
-    /// Ouvre une mémoire sur un fichier libSQL **non chiffré** avec l'embedder
-    /// déterministe de test, en contournant volontairement la règle de
-    /// chiffrement obligatoire de [`Memory::open`].
-    ///
-    /// Réservé aux **tests et spikes des bindings** (`test-util`) : vérifie
-    /// l'isolation SQL réelle entre agents sur un vrai fichier partagé, sans
-    /// Candle ni CMake. **Jamais en production** — le seul bypass de chiffrement
-    /// du crate vit ici, strictement confiné à cette feature.
-    ///
-    /// # Errors
-    /// [`crate::MemoryError::MissingAgent`] si `agent_id` est vide ;
-    /// [`crate::MemoryError::Core`] si l'ouverture/migration échoue.
-    #[cfg(feature = "test-util")]
-    pub async fn open_test_file(path: &std::path::Path, agent_id: &str) -> Result<Self> {
-        let agent = AgentId::new(agent_id).ok_or(crate::MemoryError::MissingAgent)?;
-        let store = Store::open(path, None).await?;
-        store.migrate(&schema::schema()).await?;
-        Ok(Self::from_migrated_store(store, Box::new(HashEmbedder::new()), agent))
+        let store = NativeMemoryStore::open_ephemeral()?;
+        Self::from_native_store(Arc::new(store), Box::new(HashEmbedder::new()), agent).await
     }
 
     /// Mémorise un texte dans une couche, valide dès maintenant et sans
@@ -200,8 +222,9 @@ impl Memory {
     /// l'identifiant (UUID v4) du souvenir créé — les consommateurs (MCP, REST,
     /// bindings) le retournent à l'appelant pour invalidation/effacement ultérieurs.
     ///
-    /// L'insertion `memory` + miroir FTS est **atomique** ([`Store::begin_write`]) :
-    /// jamais de souvenir visible par vecteur mais invisible en BM25, ou l'inverse.
+    /// L'insertion souvenir + miroir FTS est **atomique** (un seul batch WAL,
+    /// N5.5) : jamais de souvenir visible par vecteur mais invisible en BM25,
+    /// ou l'inverse.
     ///
     /// # Errors
     /// [`MemoryError::TextTooLong`] si `text` dépasse [`MAX_TEXT_LEN`].
@@ -255,14 +278,14 @@ impl Memory {
     }
 
     /// Mémorise un lot avec une fenêtre de validité explicite : **une** passe
-    /// d'embedding ([`Embedder::embed_batch`]) et **une** transaction — le lot
-    /// devient visible d'un coup, ou pas du tout. C'est le chemin de
-    /// l'ingestion initiale (import d'historique, seed de connaissances).
+    /// d'embedding ([`Embedder::embed_batch`]) et **un seul batch atomique**
+    /// (N5.5) — le lot devient visible d'un coup, ou pas du tout. C'est le
+    /// chemin de l'ingestion initiale (import d'historique, seed de connaissances).
     ///
     /// # Errors
     /// [`MemoryError::TextTooLong`] si un texte du lot dépasse [`MAX_TEXT_LEN`]
     /// (fail-fast : le premier texte trop long stoppe le lot, rien n'est inséré
-    /// puisque la validation précède l'embedding/la transaction).
+    /// puisque la validation précède l'embedding/l'insertion).
     /// Propage aussi les erreurs d'embedding/stockage.
     pub async fn remember_batch_with(
         &self,
@@ -325,7 +348,7 @@ impl Memory {
     ///
     /// L'isolation (`agent_id`) et le filtre temporel sont appliqués par le
     /// moteur de stockage ([`MemoryStore::recall_vector`]) — `Memory` ne
-    /// connaît plus le SQL, seulement le vecteur de requête et l'agent.
+    /// connaît que le vecteur de requête et l'agent.
     ///
     /// # Errors
     /// Propage les erreurs d'embedding/recherche.
@@ -340,8 +363,10 @@ impl Memory {
     /// Recall sémantique temporel avec **métrique explicite** ([`Metric`]).
     ///
     /// [`Metric::Cosine`] emprunte le chemin natif ; [`Metric::Euclidean`] et
-    /// [`Metric::Hamming`] sur-échantillonnent les candidats cosinus puis sont
-    /// re-classées en Rust (ADR-012). Met à jour `last_access` sur les résultats.
+    /// [`Metric::Hamming`] n'ont pas d'implémentation de re-classement sur le
+    /// backend natif aujourd'hui (erreur franche, jamais un résultat
+    /// silencieusement faux — ADR-032). Met à jour `last_access` sur les
+    /// résultats.
     ///
     /// # Errors
     /// Propage les erreurs d'embedding/recherche.
@@ -354,7 +379,7 @@ impl Memory {
     }
 
     /// Recall **hybride** (ADR-014) : fusionne le classement **vectoriel** et le
-    /// classement **BM25** (full-text natif libSQL) par Reciprocal Rank Fusion
+    /// classement **BM25** (full-text natif, ADR-028) par Reciprocal Rank Fusion
     /// ([`rrf_fuse`]). Un terme exact que l'embedding rate (sigle, identifiant
     /// rare, nom propre) remonte par BM25 ; une reformulation que les mots-clés
     /// ratent remonte par le vecteur. Borné à l'agent et à la validité.
@@ -445,7 +470,7 @@ impl Memory {
     }
 
     /// Suppression physique d'un souvenir (RGPD, droit à l'effacement).
-    /// Atomique : la ligne `memory` et son miroir FTS disparaissent ensemble.
+    /// Atomique : le souvenir et son miroir FTS disparaissent ensemble.
     ///
     /// # Errors
     /// Propage les erreurs de stockage.
@@ -460,10 +485,9 @@ impl Memory {
         Ok(())
     }
 
-    /// Purge **toutes** les données de cet agent : souvenirs (`memory`), entités
-    /// (`entity`) et relations (`edge`). Irréversible (RGPD, droit à l'oubli).
-    /// Idempotent : ne renvoie pas d'erreur si l'agent n'a aucune donnée.
-    /// Atomique : pas de purge partielle possible (tout ou rien).
+    /// Purge **toutes** les données de cet agent : souvenirs, entités et
+    /// relations. Irréversible (RGPD, droit à l'oubli). Idempotent : ne
+    /// renvoie pas d'erreur si l'agent n'a aucune donnée.
     ///
     /// # Errors
     /// Propage les erreurs de stockage.
@@ -490,26 +514,17 @@ impl Memory {
         self.engine.recall_graph_filtered(&self.agent, &qvec, k, now).await
     }
 
-    /// Change la clé de chiffrement du store sous-jacent **en place**
-    /// (`PRAGMA rekey`, cf. [`basemyai_core::Store::rotate_key`]) — sans
-    /// recréer le fichier `.bmai`.
-    ///
-    /// **Après un appel réussi, cette `Memory` (et le `Store` qu'elle
-    /// enveloppe) devient caduque** : le pool de lecteurs du core retient
-    /// l'ancienne clé et libSQL ne permet pas de la rafraîchir après coup
-    /// (détail complet dans la doc de
-    /// [`basemyai_core::Store::rotate_key`]). L'appelant doit laisser tomber
-    /// cette `Memory` et rouvrir via [`Memory::open`] avec `new_key` — le
-    /// même `Store` (même fichier) mais une clé neuve.
+    /// Change la clé de chiffrement du store sous-jacent **en place** —
+    /// re-scellement O(1) de la DEK sous la nouvelle clé (ADR-030) : cette
+    /// `Memory` **reste pleinement utilisable** après l'appel, aucune
+    /// réouverture requise.
     ///
     /// # Errors
     /// [`basemyai_core::CoreError::Encryption`] si le store n'est pas
-    /// chiffré ; [`basemyai_core::CoreError::Storage`] si le `PRAGMA rekey`
-    /// échoue. Les deux remontent enveloppées dans [`MemoryError::Core`].
-    #[cfg(feature = "crypto")]
+    /// chiffré ; [`basemyai_core::CoreError::Storage`] si la rotation échoue.
+    /// Les deux remontent enveloppées dans [`MemoryError::Core`].
     pub async fn rotate_key(&self, new_key: basemyai_core::EncryptionKey) -> Result<()> {
-        self.engine.store().rotate_key(new_key).await?;
-        Ok(())
+        self.engine.rotate_key(new_key.expose()).await
     }
 }
 
@@ -522,65 +537,33 @@ fn check_text_len(text: &str) -> Result<()> {
     Ok(())
 }
 
-async fn ensure_embedding_contract(store: &Store, embedder: &dyn Embedder) -> Result<()> {
-    let conn = store.connect();
-    conn.execute(
-        "INSERT OR IGNORE INTO bmai_meta (key, value) VALUES (?1, ?2)",
-        libsql::params![META_EMBEDDING_MODEL_ID, embedder.model_id()],
-    )
-    .await
-    .map_err(storage)?;
-    conn.execute(
-        "INSERT OR IGNORE INTO bmai_meta (key, value) VALUES (?1, ?2)",
-        libsql::params![META_EMBEDDING_DIM, embedder.dim().to_string()],
-    )
-    .await
-    .map_err(storage)?;
-
-    let mut rows = conn
-        .query(
-            "SELECT key, value FROM bmai_meta WHERE key IN (?1, ?2)",
-            libsql::params![META_EMBEDDING_MODEL_ID, META_EMBEDDING_DIM],
-        )
-        .await
-        .map_err(storage)?;
-
-    let mut meta = HashMap::new();
-    while let Some(row) = rows.next().await.map_err(storage)? {
-        meta.insert(
-            row.get::<String>(0).map_err(storage)?,
-            row.get::<String>(1).map_err(storage)?,
-        );
-    }
-
-    let stored_model = meta
-        .get(META_EMBEDDING_MODEL_ID)
-        .ok_or_else(|| MemoryError::EmbeddingMetadata("missing embedding_model_id".into()))?;
-    let stored_dim = meta
-        .get(META_EMBEDDING_DIM)
-        .ok_or_else(|| MemoryError::EmbeddingMetadata("missing embedding_dim".into()))?
+/// Vérifie/scelle le contrat embedding (`embedding_model_id`/`embedding_dim`)
+/// sur la méta consommateur du moteur ([`NativeMemoryStore::meta_ensure`]) :
+/// sémantique `INSERT OR IGNORE` puis vérification stricte — un embedder
+/// différent de celui qui a créé le store est rejeté plutôt que de produire
+/// des vecteurs silencieusement incompatibles.
+async fn ensure_embedding_contract(store: &NativeMemoryStore, embedder: &dyn Embedder) -> Result<()> {
+    let stored_model = store.meta_ensure(META_EMBEDDING_MODEL_ID, embedder.model_id()).await?;
+    let stored_dim = store
+        .meta_ensure(META_EMBEDDING_DIM, &embedder.dim().to_string())
+        .await?
         .parse::<usize>()
         .map_err(|e| MemoryError::EmbeddingMetadata(format!("invalid embedding_dim: {e}")))?;
 
     if stored_model != embedder.model_id() || stored_dim != embedder.dim() {
         return Err(MemoryError::EmbeddingModelMismatch {
-            stored_model: stored_model.clone(),
+            stored_model,
             stored_dim,
             embedder_model: embedder.model_id().to_string(),
             embedder_dim: embedder.dim(),
         });
     }
-
     Ok(())
 }
 
-fn storage(e: libsql::Error) -> MemoryError {
-    basemyai_core::CoreError::Storage(e.to_string()).into()
-}
-
-/// Construit une expression FTS5 MATCH sûre depuis une requête libre : tokens
-/// alphanumériques, chacun cité (literal, donc insensible aux mots-clés FTS5
-/// comme AND/OR/NEAR) et joints par OR (orienté rappel). `None` si aucun token.
+/// Construit une expression FTS `MATCH` sûre depuis une requête libre : tokens
+/// alphanumériques, chacun cité (literal) et joints par OR (orienté rappel).
+/// `None` si aucun token.
 fn fts_match_expr(query: &str) -> Option<String> {
     let tokens: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric())
@@ -599,6 +582,16 @@ fn fts_match_expr(query: &str) -> Option<String> {
 mod tests {
     use super::*;
     use basemyai_core::Result as CoreResult;
+    use std::sync::{LazyLock, Mutex};
+
+    static TEMP_DIR_GUARDS: LazyLock<Mutex<Vec<tempfile::TempDir>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+    fn open_native_store_for_tests() -> Arc<NativeMemoryStore> {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let store = NativeMemoryStore::open(dir.path()).expect("native store opens");
+        TEMP_DIR_GUARDS.lock().expect("tempdir guard mutex poisoned").push(dir);
+        Arc::new(store)
+    }
 
     struct TestEmbedder {
         model: &'static str,
@@ -625,41 +618,36 @@ mod tests {
 
     #[tokio::test]
     async fn open_records_embedding_model_metadata() {
-        let store = Store::open_in_memory().await.expect("store opens");
+        let store = open_native_store_for_tests();
         let agent = AgentId::new("metadata-agent").expect("valid agent");
-        let memory = Memory::open(
-            store,
+        let memory = Memory::from_native_store(
+            Arc::clone(&store),
             Box::new(TestEmbedder {
                 model: "test-model-a",
-                dim: schema::EMBEDDING_DIM,
+                dim: crate::EMBEDDING_DIM,
             }),
             agent,
         )
         .await
         .expect("memory opens");
+        drop(memory);
 
-        let conn = memory.libsql_engine().store().connect();
-        let mut rows = conn
-            .query(
-                "SELECT value FROM bmai_meta WHERE key = ?1",
-                libsql::params![META_EMBEDDING_MODEL_ID],
-            )
+        let stored = store
+            .meta_ensure(META_EMBEDDING_MODEL_ID, "should-not-overwrite")
             .await
-            .expect("metadata query");
-        let row = rows.next().await.expect("row read").expect("metadata row");
-        let model = row.get::<String>(0).expect("model value");
-        assert_eq!(model, "test-model-a");
+            .expect("meta read");
+        assert_eq!(stored, "test-model-a");
     }
 
     #[tokio::test]
     async fn open_rejects_incompatible_embedding_model() {
-        let store = Store::open_in_memory().await.expect("store opens");
+        let store = open_native_store_for_tests();
         let agent = AgentId::new("metadata-agent").expect("valid agent");
-        let memory = Memory::open(
-            store,
+        let _memory = Memory::from_native_store(
+            Arc::clone(&store),
             Box::new(TestEmbedder {
                 model: "test-model-a",
-                dim: schema::EMBEDDING_DIM,
+                dim: crate::EMBEDDING_DIM,
             }),
             agent,
         )
@@ -667,10 +655,10 @@ mod tests {
         .expect("memory opens");
 
         let err = ensure_embedding_contract(
-            memory.libsql_engine().store(),
+            &store,
             &TestEmbedder {
                 model: "test-model-b",
-                dim: schema::EMBEDDING_DIM,
+                dim: crate::EMBEDDING_DIM,
             },
         )
         .await

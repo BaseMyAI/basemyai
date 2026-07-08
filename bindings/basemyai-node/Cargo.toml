@@ -12,8 +12,7 @@ repository.workspace  = true
 crate-type = ["cdylib"]
 
 [features]
-default   = ["crypto", "embed"]
-crypto    = ["basemyai/crypto"]
+default   = ["embed"]
 embed     = ["basemyai/embed"]
 # `test-util` : expose Memory.openInMemory (base :memory:, embedder déterministe)
 # pour les tests/spikes sans CMake ni modèle.

@@ -12,13 +12,13 @@ mod provision;
 
 use std::path::PathBuf;
 
-use crate::cli::{Cli, Command, GraphAction, LlmAction, MaintenanceAction};
+use crate::cli::{Cli, Command, GraphAction, LlmAction};
 use crate::context::open_memory;
 use crate::error::CliError;
 use crate::output::Format;
 use crate::persisted_config::CliConfig;
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
+#[cfg(feature = "embed")]
 pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
     let cfg = CliConfig::load();
     let resolve_path =
@@ -41,12 +41,17 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
             let s = mem.stats().await?;
             format.print(
                 || {
-                    println!("Agent '{agent}' — valid memories:");
-                    println!("  short_term: {}", s.short_term);
-                    println!("  episodic:   {}", s.episodic);
-                    println!("  procedural: {}", s.procedural);
-                    println!("  semantic:   {}", s.semantic);
-                    println!("  total:      {}", s.total());
+                    crate::ui::render::section(&format!("Agent '{agent}' — valid memories"));
+                    crate::ui::table::print_table(
+                        &["Layer", "Count"],
+                        vec![
+                            vec!["short_term".to_string(), s.short_term.to_string()],
+                            vec!["episodic".to_string(), s.episodic.to_string()],
+                            vec!["procedural".to_string(), s.procedural.to_string()],
+                            vec!["semantic".to_string(), s.semantic.to_string()],
+                            vec!["total".to_string(), s.total().to_string()],
+                        ],
+                    );
                 },
                 || {
                     serde_json::json!({
@@ -129,16 +134,6 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
                 GraphAction::Traverse { start, depth } => graph::traverse(&path, &agent, &start, depth, format).await,
             }
         }
-        Command::Maintenance { action } => {
-            let path = resolve_path()?;
-            match action {
-                MaintenanceAction::Gc => maintenance::gc(&path, format).await,
-                MaintenanceAction::ForgetAdaptive {
-                    capacity,
-                    half_life_secs,
-                } => maintenance::forget_adaptive(&path, capacity, half_life_secs, format).await,
-            }
-        }
         Command::Consolidate => {
             let path = resolve_path()?;
             let agent = resolve_agent()?;
@@ -160,10 +155,9 @@ fn completions(shell: clap_complete::Shell) {
     clap_complete::generate(shell, &mut cmd, "basemyai", &mut std::io::stdout());
 }
 
-#[cfg(not(all(feature = "crypto", feature = "embed")))]
+#[cfg(not(feature = "embed"))]
 pub(crate) async fn dispatch(_cli: Cli, _format: Format) -> Result<(), CliError> {
     Err(CliError::Config(
-        "basemyai CLI must be built with the `crypto` and `embed` features (they are in the default feature set)"
-            .to_string(),
+        "basemyai CLI must be built with the `embed` feature (it is in the default feature set)".to_string(),
     ))
 }

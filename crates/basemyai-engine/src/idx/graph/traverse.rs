@@ -6,9 +6,8 @@
 //! `idx::vector::graph`'s shared Vamana algorithm already established
 //! between its RAM and persistent flavors.
 //!
-//! This is a **literal behavioral port** of `basemyai`'s
-//! `LibsqlMemoryStore::graph_traverse` (a recursive CTE over `entity`/`edge`
-//! SQL tables, `crates/basemyai/src/storage/libsql_store.rs`), not a
+//! This is a **literal behavioral port** of the original graph traversal
+//! (a recursive CTE over `entity`/`edge` tables), not a
 //! reinvention — `crates/basemyai/tests/graph.rs` is the spec of behavior to
 //! equal exactly (ported scenario-for-scenario into
 //! `crates/basemyai-engine/tests/graph_parity.rs`), and one deliberate

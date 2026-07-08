@@ -72,11 +72,6 @@ pub(crate) enum CliError {
     /// Échec IO (lecture d'un fichier `--file`, écriture d'un export `--out`).
     #[error(transparent)]
     Io(#[from] std::io::Error),
-
-    /// Erreur SQL bas niveau, pour les rares lectures directes hors
-    /// `basemyai::storage::MemoryStore` (métadonnées `bmai_meta`, `list`).
-    #[error("storage error: {0}")]
-    Sql(#[from] basemyai_core::libsql::Error),
 }
 
 impl CliError {
@@ -97,7 +92,6 @@ impl CliError {
             Self::Core(e) => core_error_code(e),
             Self::Config(_) => "CONFIG_ERROR",
             Self::Io(_) => "IO_ERROR",
-            Self::Sql(_) => "STORAGE_ERROR",
         }
     }
 
@@ -117,7 +111,6 @@ impl CliError {
             Self::Core(e) => core_error_exit(e),
             Self::Config(_) => exit::USAGE,
             Self::Io(_) => exit::GENERIC,
-            Self::Sql(_) => exit::GENERIC,
         }
     }
 }

@@ -2,8 +2,8 @@
 //! Binaire `basemyai-mcp` : serveur MCP de production.
 //!
 //! Wiring de prod : provisioning hardware-aware de l'embedder (Candle) → provider
-//! libSQL **chiffré** → serveur MCP sur **stdio** (défaut, intégration agent local)
-//! ou **HTTP** local (`BASEMYAI_MCP_TRANSPORT=http`).
+//! natif **chiffré** (ADR-032) → serveur MCP sur **stdio** (défaut, intégration
+//! agent local) ou **HTTP** local (`BASEMYAI_MCP_TRANSPORT=http`).
 //!
 //! ## Plug-and-play (le cas d'usage principal)
 //!
@@ -29,12 +29,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run().await
 }
 
-#[cfg(all(feature = "crypto", feature = "embed"))]
+#[cfg(feature = "embed")]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
 
-    use basemyai_core::{CandleEmbedder, Embedder, EncryptionKey};
-    use basemyai_mcp::{Config, EncryptedFileProvider, McpServer, run_http, run_stdio};
+    use basemyai_core::{CandleEmbedder, Embedder};
+    use basemyai_mcp::{Config, FileProvider, McpServer, run_http, run_stdio};
 
     // Logs sur STDERR uniquement : en stdio, STDOUT est le canal MCP — y écrire
     // corromprait le protocole. `with_ansi(false)` : sortie propre dans les logs d'hôte.
@@ -46,27 +46,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
     let transport = std::env::var("BASEMYAI_MCP_TRANSPORT").unwrap_or_else(|_| "stdio".to_string());
 
-    // Clé de chiffrement de la base (obligatoire — chiffrement au repos, ADR-007).
+    // Clé de chiffrement de la base (obligatoire — chiffrement au repos, ADR-007 ;
+    // le backend natif chiffre sans CMake, ADR-030).
     let db_key =
         std::env::var("BASEMYAI_DB_KEY").map_err(|_| "BASEMYAI_DB_KEY is required (encryption is mandatory)")?;
 
-    // Chemin de la base partagée : ~/.basemyai/memory.bmai (isolation par agent au niveau SQL).
+    // Chemin de la base partagée : ~/.basemyai/memory.bmai (isolation par agent
+    // structurelle sous préfixe de clé, ADR-006/ADR-027).
     let home = dirs::home_dir().ok_or("cannot resolve home directory")?;
     let db_path = home.join(".basemyai").join("memory.bmai");
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
 
     // Embedder : provisioning hardware-aware. Fetch du modèle SEULEMENT si consenti.
     let consent = std::env::var("BASEMYAI_FETCH").map(|v| v == "1").unwrap_or(false);
     let mp = basemyai::provision(consent).await?;
     let embedder: Arc<dyn Embedder> = Arc::new(CandleEmbedder::load(&mp.model_path, mp.device)?);
 
-    let provider = Arc::new(EncryptedFileProvider::new(
-        db_path,
-        EncryptionKey::new(db_key),
-        embedder,
-    ));
+    let provider = Arc::new(FileProvider::open(db_path, db_key, embedder).await?);
     let server = McpServer::new(provider, config.clone());
 
     match transport.as_str() {
@@ -86,11 +81,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(all(feature = "crypto", feature = "embed")))]
+#[cfg(not(feature = "embed"))]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Err(
-        "basemyai-mcp must be built with the `crypto` and `embed` features for the production server \
-         (they are in the default feature set)"
+        "basemyai-mcp must be built with the `embed` feature for the production server \
+         (it is in the default feature set)"
             .into(),
     )
 }

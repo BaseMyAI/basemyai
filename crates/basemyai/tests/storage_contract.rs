@@ -1,22 +1,21 @@
 //! Tests de **contrat** pour [`basemyai::storage::MemoryStore`] (suivi
 //! ADR-019/ADR-020 : « add backend contract tests before any second backend
 //! exists »). Pilotés par le trait directement, **pas** par `Memory` — pour
-//! qu'ils restent valides verbatim contre une future implémentation autre que
-//! [`LibsqlMemoryStore`].
+//! qu'ils restent valides verbatim contre une future seconde implémentation
+//! (aujourd'hui, [`NativeMemoryStore`] est l'unique backend, ADR-032).
 
-use basemyai::storage::{LibsqlMemoryStore, MemoryStore, NewMemory};
+use basemyai::storage::{MemoryStore, NativeMemoryStore, NewMemory};
 use basemyai::temporal::Validity;
 use basemyai::{AgentId, MemoryLayer};
-use basemyai_core::{Metric, Store};
+use basemyai_core::Metric;
+mod support;
 
 fn agent(id: &str) -> AgentId {
     AgentId::new(id).expect("non-empty agent id")
 }
 
-async fn engine() -> LibsqlMemoryStore {
-    let store = Store::open_in_memory().await.expect("open");
-    store.migrate(&basemyai::schema()).await.expect("migrate");
-    LibsqlMemoryStore::new(store)
+async fn engine() -> NativeMemoryStore {
+    support::open_native_store()
 }
 
 /// Vecteur déterministe à la dimension du schéma (`EMBEDDING_DIM`) : deux

@@ -14,6 +14,11 @@ pub(crate) enum Format {
 }
 
 impl Format {
+    #[must_use]
+    pub(crate) fn is_text(self) -> bool {
+        self == Self::Text
+    }
+
     /// Résout le format effectif : flag explicite, sinon `BASEMYAI_FORMAT`, sinon texte.
     #[must_use]
     pub(crate) fn resolve(explicit: Option<Format>) -> Self {
@@ -40,7 +45,7 @@ impl Format {
     /// `message`, qui peut changer de formulation).
     pub(crate) fn print_error(self, err: &crate::error::CliError) {
         match self {
-            Format::Text => eprintln!("error: {err}"),
+            Format::Text => crate::ui::error::print_cli_error(err),
             Format::Json => {
                 eprintln!(
                     "{}",

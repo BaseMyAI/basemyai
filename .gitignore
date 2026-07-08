@@ -79,6 +79,9 @@ iai/
 *.swp
 *.orig
 
+# Smoke tests CLI locaux (facts, export JSONL, conteneur de test)
+.tmp-cli-smoke/
+
 # ── Fichiers de plan temporaires (Claude) ────────────────────────────────────
 cr*.md
 

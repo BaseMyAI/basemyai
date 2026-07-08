@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-/// Concepts métier interdits dans le socle (mémoire d'agent + code ForgeMyAI).
+/// Concepts métier interdits dans le socle (mémoire d'agent + sémantique code).
 const FORBIDDEN: &[&str] = &["agent_id", "valid_from", "valid_until", "episodic", "Symbol", "Edge"];
 
 fn scan(dir: &Path, hits: &mut Vec<String>) {

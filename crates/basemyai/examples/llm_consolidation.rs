@@ -6,7 +6,7 @@
 //! Run: `cargo run --example llm_consolidation -p basemyai`
 
 use basemyai::{AgentId, LlmInference, Memory, MemoryLayer, consolidate};
-use basemyai_core::{Embedder, Store};
+use basemyai_core::{Embedder, EncryptionKey};
 
 struct FakeEmbedder;
 
@@ -50,9 +50,10 @@ impl LlmInference for FakeLlm {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let store = Store::open_in_memory().await?;
+    let dir = tempfile::tempdir()?;
+    let key = EncryptionKey::new("demo-key-do-not-use-in-prod");
     let agent = AgentId::new("consolidation-demo").expect("non-empty id");
-    let memory = Memory::open(store, Box::new(FakeEmbedder), agent).await?;
+    let memory = Memory::open_native(dir.path(), &key, Box::new(FakeEmbedder), agent).await?;
 
     // Store a raw episode (what happened).
     memory

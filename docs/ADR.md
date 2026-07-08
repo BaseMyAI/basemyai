@@ -18,7 +18,7 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-008](adr/ADR-008-active-worker.md) | Active Worker — thread de fond | ✅ Accepted |
 | [ADR-009](adr/ADR-009-three-binding-surfaces.md) | Trois surfaces de binding + wheels précompilés | ✅ Accepted |
 | [ADR-010](adr/ADR-010-hardware-aware-model-provisioning.md) | Provisioning du modèle hardware-aware (setup intelligent) | ✅ Accepted |
-| [ADR-011](adr/ADR-011-libsql-pivot.md) | Pivot vers libSQL (vecteur natif + chiffrement), traits async | ✅ Accepted |
+| [ADR-011](adr/ADR-011-libsql-pivot.md) | Pivot vers libSQL (vecteur natif + chiffrement), traits async | 🔵 Superseded by ADR-033 |
 | [ADR-012](adr/ADR-012-phase2-cognition.md) | Phase 2 Cognition — Graphe, RRF, Oubli adaptatif, Consolidation | ✅ Accepted |
 | [ADR-013](adr/ADR-013-llm-inference-model-agnostic.md) | Inférence LLM model-agnostic + provisioning hardware-aware | ✅ Accepted |
 | [ADR-014](adr/ADR-014-hybrid-search-bm25-rrf.md) | Recherche hybride : full-text BM25 (FTS5) fusionné au vecteur par RRF | ✅ Accepted |
@@ -26,9 +26,9 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-016](adr/ADR-016-anythingllm-backend.md) | AnythingLLM comme backend LLM de premier rang via API workspace-chat | ✅ Accepted |
 | [ADR-017](adr/ADR-017-mcp-sampling-consolidation.md) | Consolidation par sampling MCP (emprunter le LLM du client) + politique des modes LLM | ⛔ Superseded by ADR-018 |
 | [ADR-018](adr/ADR-018-agent-driven-consolidation.md) | Consolidation pilotée par l'agent — politique d'inférence à niveaux | ✅ Accepted |
-| [ADR-019](adr/ADR-019-agent-memory-database-format-and-engine.md) | Agent Memory Database, format `.bmai` V1 et frontière StorageEngine | ✅ Accepted |
-| [ADR-020](adr/ADR-020-memory-store-trait.md) | `MemoryStore` : contrat d'opérations mémoire dans `basemyai` | ✅ Accepted |
-| [ADR-021](adr/ADR-021-libsql-reader-pool.md) | Pool de connexions lecteur libSQL + writer unique sérialisé, sous WAL | ✅ Accepted |
+| [ADR-019](adr/ADR-019-agent-memory-database-format-and-engine.md) | Agent Memory Database, format `.bmai` V1 et frontière StorageEngine | 🟡 Amended by ADR-033 |
+| [ADR-020](adr/ADR-020-memory-store-trait.md) | `MemoryStore` : contrat d'opérations mémoire dans `basemyai` | 🟡 Amended by ADR-033 |
+| [ADR-021](adr/ADR-021-libsql-reader-pool.md) | Pool de connexions lecteur libSQL + writer unique sérialisé, sous WAL | 🔵 Superseded by ADR-033 |
 | [ADR-022](adr/ADR-022-memory-event-broadcast.md) | `MemoryEvent` : abonnements mémoire en direct via canal tokio broadcast | ✅ Accepted |
 | ADR-023 | *(numéro non attribué)* | — |
 | [ADR-024](adr/ADR-024-native-engine.md) | Moteur natif BaseMyAI (stockage/vecteur/graphe/langage maison) — remplace le chemin Turso DB | ✅ Accepted |
@@ -39,3 +39,5 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-029](adr/ADR-029-license-split-and-trademark-policy.md) | Découpage de licence (open-core, BUSL-1.1 sur `basemyai-engine`) et politique de marque | ⛔ Superseded by ADR-031 |
 | [ADR-030](adr/ADR-030-native-encryption-at-rest.md) | Chiffrement au repos du moteur natif : AEAD XChaCha20-Poly1305 + enveloppe DEK/KEK, rotation O(1) | ✅ Accepted |
 | [ADR-031](adr/ADR-031-unified-busl-license.md) | Licence BUSL-1.1 unifiée sur tout le workspace (remplace le découpage open-core) | ✅ Accepted |
+| [ADR-032](adr/ADR-032-native-engine-default.md) | Bascule du défaut libSQL→Native (compat V1 conservée) | 🔵 Superseded by ADR-033 |
+| [ADR-033](adr/ADR-033-native-only.md) | Migration 100 % moteur natif : retrait libSQL/V1/crypto/dual-backend | ✅ Accepted |
