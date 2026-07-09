@@ -25,6 +25,10 @@ pub(crate) fn success(message: &str) {
     println!("{}", theme::success(message, Stream::Stdout));
 }
 
+pub(crate) fn error(message: &str) {
+    eprintln!("{}", theme::error(message, Stream::Stderr));
+}
+
 pub(crate) fn warning(message: &str) {
     eprintln!(
         "{} {}",

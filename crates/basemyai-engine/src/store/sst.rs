@@ -52,8 +52,8 @@ impl SstFile {
             .collect();
         let mut bytes = sst::encode(&encoded_entries);
         if let Some(crypto) = crypto {
-            let (nonce, ciphertext) = crypto.seal(&bytes, &envelope::sst_envelope_aad())?;
-            bytes = envelope::encode_sst_envelope(&nonce, &ciphertext);
+            let sealed = crypto.seal(&bytes, &envelope::sst_envelope_aad())?;
+            bytes = envelope::encode_sst_envelope(&sealed.nonce, &sealed.ciphertext);
         }
 
         {

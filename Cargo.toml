@@ -42,8 +42,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"
-# libSQL : SQLite-compatible, vecteur natif + chiffrement intégrés, async-natif.
-# (déclaré directement dans basemyai-core pour gérer ses features.)
+# Backend natif BaseMyAI (ADR-024/025/030) — vecteur, graphe, FTS, chiffrement pur Rust.
 async-trait = "0.1"
 # ML (Candle) — lourd, activé par la feature `embed` seulement.
 candle-core = "0.10"
@@ -64,6 +63,8 @@ sha2 = "0.11"
 # Pur Rust (RustCrypto), sans feature gate côté moteur — contrairement au
 # `crypto` libSQL, il n'y a aucun coût d'installation (CMake) à éviter.
 chacha20poly1305 = "0.10"
+# Effacement mémoire des clés DEK (ADR-030, basemyai-engine).
+zeroize = { version = "1", features = ["derive"] }
 # HTTP framework — basemyai-mcp (transport HTTP) et basemyai-rest.
 axum        = { version = "0.8", features = ["macros"] }
 tower       = { version = "0.5", features = ["util"] }

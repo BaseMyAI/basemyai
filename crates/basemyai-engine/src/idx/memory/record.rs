@@ -15,8 +15,8 @@
 //! `vec_id` links the record to its vector-index node
 //! ([`crate::idx::vector`]); the reverse direction lives in its own
 //! [`super::vecmap`] record. `importance`/`last_access` are carried for
-//! parity with the libSQL schema's columns (adaptive forgetting / GC read
-//! them there) even though the N5.1 `MemoryStore` contract only ever writes
+//! parity with the historical V1 schema columns (`importance` / `last_access`
+//! for future GC) even though the N5.1 `MemoryStore` contract only ever writes
 //! them — reserving them now avoids a format bump later.
 //!
 //! Block layout (all integers little-endian):

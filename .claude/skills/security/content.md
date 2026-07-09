@@ -1,180 +1,91 @@
-# Skill: security — BaseMyAI
+# Skill: security — BaseMyAI (moteur natif, ADR-033)
 
 ## Surface d'attaque principale
 
-BaseMyAI est un moteur de mémoire local. Les vecteurs d'attaque réalistes sont :
+BaseMyAI est un moteur de mémoire **local**. Vecteurs réalistes :
 
-1. **Injection SQL** via `agent_id` ou contenu fourni par un agent externe
-2. **Exfiltration de clé de chiffrement** (libSQL crypto)
-3. **Contournement d'isolation** entre agents (mauvais scope `agent_id`)
-4. **Timing attacks** sur la comparaison de tokens (MCP auth)
-5. **Auto-download silencieux** de modèles (réseau non consenti)
-6. **Logging de contenu** dans les traces d'audit
+1. **Contournement d'isolation** entre `agent_id` (fuite cross-tenant)
+2. **Memory poisoning** — contenu hostile rappelé dans le contexte LLM
+3. **Exfiltration de passphrase** (logs, config, disque)
+4. **Store corrompu** — panic ou lecture silencieuse sur `.bmai` malveillant
+5. **REST/MCP exposés** sans auth ou hors loopback
+6. **Auto-download silencieux** de modèles (réseau non consenti)
+
+Docs détaillées : `docs/security/` et `SECURITY.md`.
 
 ---
 
-## Anti-SQL injection : `Filter` paramétré (ADR-006)
+## Isolation multi-agent (ADR-006)
 
-**Règle absolue** : tout input externe (agent_id, texte utilisateur, query) va dans `params`, jamais interpolé.
+**Invariant** : chaque opération storage est scellée par `AgentId` au niveau moteur
+(préfixes KV natifs), pas seulement dans la façade `Memory`.
 
 ```rust
-// BON — paramètres liés
-let filter = Filter {
-    sql: "agent_id = ?1 AND valid_until IS NULL".into(),
-    params: vec![Value::Text(agent_id.as_str().to_string())],
-};
+// BON — AgentId newtype, jamais de concat SQL
+let agent = AgentId::new("tenant-a")?;
+memory.remember("fact", layer).await?;
 
-// MAUVAIS — injection possible
-let filter = Filter {
-    sql: format!("agent_id = '{}'", agent_id.as_str()), // DANGEREUX
-    params: vec![],
-};
+// MAUVAIS — string brute là où AgentId est attendu
 ```
 
-`AgentId` est un **newtype** `(String)` non-`Clone` public. Son constructeur valide le format (non-vide, pas d'espace). Cela empêche d'utiliser une string brute là où un `AgentId` est attendu.
+Tests adversariaux CI : `p1_isolation_adversarial`, `export_isolation_adversarial`,
+`isolation_recall_graph_adversarial`.
+
+---
+
+## Chiffrement natif (ADR-030)
 
 ```rust
-// basemyai/src/memory/isolation.rs
-pub struct AgentId(String);
+// Production — toujours chiffré
+NativeMemoryStore::open_encrypted(path, key)?;
 
-impl AgentId {
-    pub fn new(id: &str) -> Result<Self, MemoryError> {
-        if id.trim().is_empty() {
-            return Err(MemoryError::InvalidAgentId);
-        }
-        Ok(Self(id.to_string()))
-    }
-    pub fn as_str(&self) -> &str { &self.0 }
-}
+// Clair — test-util uniquement
+#[cfg(feature = "test-util")]
+NativeMemoryStore::open(path)?;
 ```
 
----
+Passphrase : `EncryptionKey::resolve()` (ADR-034). Jamais dans `config.toml`.
+`Debug` masqué. Rotation : `rotate_key` (re-wrap DEK O(1)).
 
-## Anti-timing attack : comparaison constante (MCP HTTP auth)
-
-```rust
-// basemyai-mcp/src/auth.rs
-use subtle::ConstantTimeEq;
-
-impl BearerAuthService {
-    fn verify(&self, token: &str) -> bool {
-        let expected = self.api_key.as_bytes();
-        let provided = token.as_bytes();
-        // Longueur différente → false en temps constant
-        expected.ct_eq(provided).into()
-    }
-}
-```
-
-**Ne jamais** comparer des tokens avec `==` ou `starts_with` — observable par timing.
+Erreurs stables : `WRONG_ENCRYPTION_KEY`, `ENCRYPTION_KEY_REQUIRED`, etc.
 
 ---
 
-## Chiffrement libSQL (ADR-007)
+## Memory poisoning (ADR-035)
 
-```rust
-// basemyai EXIGE une clé — ne peut pas ouvrir sans
-pub struct Memory {
-    store: Arc<Store>,
-    agent: AgentId,
-    enc_key: EncryptionKey,  // obligatoire
-}
-
-impl Memory {
-    pub async fn open(
-        path: &Path,
-        agent_id: AgentId,
-        key: EncryptionKey,  // pas Option<>
-    ) -> Result<Self, MemoryError> { ... }
-
-    // Test-only (feature "test-util") — sans chiffrement
-    #[cfg(feature = "test-util")]
-    pub async fn open_in_memory(agent_id: &str) -> Result<Self, MemoryError> { ... }
-}
-```
-
-**`basemyai-core`** : chiffrement optionnel (`Option<EncryptionKey>`).
-**`basemyai`** : chiffrement **obligatoire** — refus explicite si pas de clé.
+- `recall()` **exclut** `MemoryLayer::Procedural` par défaut.
+- Opt-in : `RecallOptions { include_procedural: true }`.
+- `Record.source` pour la provenance.
+- Import JSONL : `--trusted` requis pour lignes procedural.
 
 ---
 
-## Audit MCP — ne jamais logger le contenu
+## REST / MCP
 
-```rust
-// basemyai-mcp/src/audit.rs
-pub fn emit_audit(tool: &str, agent_id: &str, outcome: Outcome, time_ms: u64) {
-    tracing::info!(
-        tool = tool,
-        agent_id = agent_id,
-        outcome = %outcome,
-        time_ms = time_ms,
-        "mcp_audit"
-    );
-    // INTERDIT dans cet appel :
-    // - le texte mémorisé
-    // - les vecteurs
-    // - les résultats de recall
-    // - toute PII
-}
-```
+- REST : bind `127.0.0.1` par défaut ; Bearer obligatoire sauf `dev` + loopback.
+- `Config::validate()` refuse `dev=true` + bind public.
+- MCP HTTP : Bearer comparé en temps constant (`subtle`).
 
 ---
 
-## Isolation multi-agent
+## Moteur natif — formats
 
-Chaque `Memory` est construite avec un `AgentId` — toutes les requêtes SQL incluent `WHERE agent_id = ?`. Un agent ne peut pas accéder aux mémoires d'un autre.
-
-```sql
--- Toutes les requêtes de recall incluent ce filtre
-SELECT id, content, vec_distance_cosine(embedding, ?) AS score
-FROM memories
-WHERE agent_id = ?1
-  AND (valid_until IS NULL OR valid_until > unixepoch())
-ORDER BY score
-LIMIT ?
-```
+- WAL/SST : CRC32 + AEAD ; `MAX_BATCH_OPS` sur decode batch.
+- Fuzz nightly : `crates/basemyai-engine/fuzz/` (Linux/WSL, pas Windows MSVC).
+- `format.lock` en CI.
 
 ---
 
-## Zéro réseau dans la lib (ADR-010)
+## Zero network
 
-```rust
-// INTERDIT dans basemyai-core et basemyai
-impl CandleEmbedder {
-    // NON — téléchargement silencieux
-    pub fn new_auto() -> Result<Self> {
-        download_model_if_needed()?; // INTERDIT
-        ...
-    }
-    
-    // OUI — chemin fourni par l'appelant (setup::provision)
-    pub fn from_path(model_path: &Path, device: Device) -> Result<Self> { ... }
-}
-```
-
-Le réseau est **uniquement** dans `basemyai/provision/embedder.rs` et `provision/llm.rs`, derrière un consentement explicite (`consent: bool`).
+Après setup explicite du modèle, `remember`/`recall`/graphe n'ouvrent pas de socket.
+Test CI : `zero_network_recall`, `provision_without_consent_fails_when_model_absent`.
 
 ---
 
-## Checklist de review sécurité
+## Checklist avant commit touchant la sécurité
 
-| Point | Check |
-|-------|-------|
-| Input externe dans SQL | Passe par `Filter.params`, jamais interpolé |
-| Comparaison de token | `subtle::ConstantTimeEq`, jamais `==` |
-| Chiffrement basemyai | `EncryptionKey` obligatoire (pas `Option`) |
-| AgentId | Construit via `AgentId::new()` validé |
-| Audit log | Contient outil + outcome + durée, JAMAIS le contenu |
-| Réseau en lib | Aucun `reqwest`/`ureq`/`hyper` dans basemyai-core ou basemyai |
-| `static mut` | Interdit — utiliser `OnceLock`/`RwLock` |
-| Secrets dans les erreurs | Erreurs ne contiennent pas de clés ou de vecteurs |
-
----
-
-## Vecteurs d'attaque spécifiques MCP
-
-Le serveur MCP écoute des connexions de clients (agents LLM externes). Risques :
-
-- **Prompt injection via le contenu mémorisé** : le contenu rappelé est retourné tel quel à l'agent appelant. Ne peut pas être filtré (c'est la donnée). Mitigation : isolation stricte par `agent_id`.
-- **DDoS mémoire** : recall de très grands volumes. Mitigation : `max_result_bytes` dans `Config` (défaut 256 KiB), troncation avec `TruncationMarker`.
-- **Brute-force Bearer token** : Mitigation : `BearerAuthLayer` avec `ConstantTimeEq` + pas de différence de timing entre "token trop court" et "token invalide".
+1. `cargo xtask ci` vert
+2. Pas de `unwrap()` en lib ; pas de secret loggé
+3. Nouveau comportement sensible → test adversarial + doc `docs/security/`
+4. Décision architecturale → nouvel ADR (ne pas modifier les ADR existants)

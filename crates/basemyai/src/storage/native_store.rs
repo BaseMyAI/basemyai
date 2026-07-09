@@ -130,7 +130,7 @@ pub struct NativeMemoryStore {
     inner: Arc<RwLock<NativeInner>>,
     /// Garde de vie du répertoire temporaire d'[`Self::open_ephemeral`] —
     /// supprimé au drop du store (store éphémère test-only).
-    #[cfg(feature = "test-util")]
+    #[cfg(any(test, feature = "test-util"))]
     _tempdir: Option<tempfile::TempDir>,
 }
 
@@ -148,17 +148,33 @@ fn storage(e: impl std::fmt::Display) -> crate::MemoryError {
     basemyai_core::CoreError::Storage(e.to_string()).into()
 }
 
+/// Traduit les erreurs crypto/ouverture du moteur en variantes stables du
+/// core — sans exposer chemins disque ni matériel de clé dans le message.
+fn map_engine_error(e: basemyai_engine::EngineError) -> crate::MemoryError {
+    use basemyai_core::CoreError;
+    use basemyai_engine::EngineError;
+    match e {
+        EngineError::MissingEncryptionKey { .. } => CoreError::EncryptionKeyRequired.into(),
+        EngineError::WrongEncryptionKey { .. } => CoreError::WrongEncryptionKey.into(),
+        EngineError::CorruptCryptoMeta { .. } => CoreError::CorruptEncryptionMetadata.into(),
+        EngineError::PlaintextStoreKeySupplied { .. } => CoreError::PlaintextStoreEncryptedKeySupplied.into(),
+        EngineError::NotEncrypted { .. } => CoreError::Encryption.into(),
+        EngineError::CryptoFailure { .. } => CoreError::Encryption.into(),
+        other => CoreError::Storage(other.to_string()).into(),
+    }
+}
+
 impl NativeMemoryStore {
-    /// Ouvre (en le créant au besoin) un store natif dans le répertoire
-    /// `path`, à la dimension d'embedding du schéma
-    /// ([`crate::EMBEDDING_DIM`]).
+    /// Ouvre (en le créant au besoin) un store natif **en clair** dans le
+    /// répertoire `path` — **réservé aux tests** (`test-util`).
+    ///
+    /// La production utilise [`Self::open_encrypted`] (ADR-030/033).
     ///
     /// # Errors
-    /// Erreur de stockage si le moteur ou l'un de ses index ne s'ouvre pas
-    /// (I/O, corruption non réparable, dimension incompatible avec un index
-    /// existant).
+    /// Erreur de stockage si le moteur ou l'un de ses index ne s'ouvre pas.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_engine(Engine::open(path).map_err(storage)?)
+        Self::from_engine(Engine::open(path).map_err(map_engine_error)?)
     }
 
     /// Ouvre (en le créant au besoin) un store natif **chiffré au repos**
@@ -171,7 +187,7 @@ impl NativeMemoryStore {
     /// store en clair (pas de chiffrement a posteriori, ADR-030 §2), ou sur
     /// toute erreur I/O/corruption d'ouverture.
     pub fn open_encrypted(path: impl AsRef<Path>, key: &str) -> Result<Self> {
-        Self::from_engine(Engine::open_encrypted(path, key.as_bytes()).map_err(storage)?)
+        Self::from_engine(Engine::open_encrypted(path, key.as_bytes()).map_err(map_engine_error)?)
     }
 
     fn from_engine(mut engine: Engine) -> Result<Self> {
@@ -187,7 +203,7 @@ impl NativeMemoryStore {
                 graph: PersistentGraph::new(),
                 fts: PersistentFts::new(),
             })),
-            #[cfg(feature = "test-util")]
+            #[cfg(any(test, feature = "test-util"))]
             _tempdir: None,
         })
     }
@@ -204,7 +220,7 @@ impl NativeMemoryStore {
     /// si le remplacement atomique échoue.
     pub async fn rotate_key(&self, new_key: &str) -> Result<()> {
         let new_key = new_key.to_string();
-        self.with_inner(move |inner| inner.engine.rotate_key(new_key.as_bytes()).map_err(storage))
+        self.with_inner(move |inner| inner.engine.rotate_key(new_key.as_bytes()).map_err(map_engine_error))
             .await
     }
 
@@ -214,7 +230,7 @@ impl NativeMemoryStore {
     /// # Errors
     /// Erreur de stockage si le répertoire temporaire ou le store ne se
     /// crée pas.
-    #[cfg(feature = "test-util")]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn open_ephemeral() -> Result<Self> {
         let dir = tempfile::tempdir().map_err(storage)?;
         let mut store = Self::open(dir.path())?;
@@ -230,7 +246,7 @@ impl NativeMemoryStore {
     /// # Errors
     /// Erreur de stockage si le répertoire temporaire ou le store ne se
     /// crée pas.
-    #[cfg(feature = "test-util")]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn open_ephemeral_encrypted(key: &str) -> Result<Self> {
         let dir = tempfile::tempdir().map_err(storage)?;
         let mut store = Self::open_encrypted(dir.path(), key)?;
@@ -545,6 +561,7 @@ impl NativeInner {
         k: usize,
         layer: Option<MemoryLayer>,
         now: i64,
+        include_procedural: bool,
     ) -> Result<Vec<(String, basemyai_engine::MemoryRecord, f32)>> {
         let Self {
             engine,
@@ -574,6 +591,9 @@ impl NativeInner {
             if let Some(l) = layer
                 && record.layer != l.table()
             {
+                continue;
+            }
+            if !include_procedural && layer.is_none() && record.layer == MemoryLayer::Procedural.table() {
                 continue;
             }
             out.push((mapping.id, record, distance));
@@ -733,6 +753,7 @@ impl MemoryStore for NativeMemoryStore {
         layer: Option<MemoryLayer>,
         metric: Metric,
         now: i64,
+        include_procedural: bool,
     ) -> Result<Vec<Record>> {
         // L'index natif est cosinus (ADR-026) ; les métriques par
         // re-classement (ADR-015) arrivent avec la parité contrats N5.3 —
@@ -749,7 +770,7 @@ impl MemoryStore for NativeMemoryStore {
         // verrou exclusif.
         let (agent2, query2) = (agent.clone(), query.clone());
         let found = self
-            .with_inner_read(move |inner| inner.search_filtered(&agent2, &query2, k, layer, now))
+            .with_inner_read(move |inner| inner.search_filtered(&agent2, &query2, k, layer, now, include_procedural))
             .await?;
         let ids: Vec<String> = found.iter().map(|(id, _, _)| id.clone()).collect();
         self.with_inner(move |inner| inner.touch(&agent, &ids, now)).await?;
@@ -761,12 +782,20 @@ impl MemoryStore for NativeMemoryStore {
                     text: record.content,
                     layer: MemoryLayer::from_table(&record.layer)?,
                     score: distance,
+                    source: record.source,
                 })
             })
             .collect()
     }
 
-    async fn recall_graph_filtered(&self, agent: &AgentId, query: &[f32], k: usize, now: i64) -> Result<Vec<Record>> {
+    async fn recall_graph_filtered(
+        &self,
+        agent: &AgentId,
+        query: &[f32],
+        k: usize,
+        now: i64,
+        include_procedural: bool,
+    ) -> Result<Vec<Record>> {
         let (agent, query) = (agent.clone(), query.to_vec());
         // Même découpage lecture/écriture que `recall_vector` (N5.5).
         let (agent2, query2) = (agent.clone(), query.clone());
@@ -784,7 +813,14 @@ impl MemoryStore for NativeMemoryStore {
                     .collect();
                 // Oversample large puis filtre « le contenu mentionne un
                 // label » (l'`instr(content, entity.label) > 0` original).
-                let candidates = inner.search_filtered(&agent2, &query2, k.saturating_mul(OVERSAMPLE), None, now)?;
+                let candidates = inner.search_filtered(
+                    &agent2,
+                    &query2,
+                    k.saturating_mul(OVERSAMPLE),
+                    None,
+                    now,
+                    include_procedural,
+                )?;
                 Ok(candidates
                     .into_iter()
                     .filter(|(_, record, _)| labels.iter().any(|label| record.content.contains(label.as_str())))
@@ -802,18 +838,26 @@ impl MemoryStore for NativeMemoryStore {
                     text: record.content,
                     layer: MemoryLayer::from_table(&record.layer)?,
                     score: distance,
+                    source: record.source,
                 })
             })
             .collect()
     }
 
-    async fn vector_ranking_ids(&self, agent: &AgentId, query: &[f32], k: usize, now: i64) -> Result<Vec<String>> {
+    async fn vector_ranking_ids(
+        &self,
+        agent: &AgentId,
+        query: &[f32],
+        k: usize,
+        now: i64,
+        include_procedural: bool,
+    ) -> Result<Vec<String>> {
         let (agent, query) = (agent.clone(), query.to_vec());
         // Lecture pure — aucun `touch` (parité avec l'original, ADR-027
         // §6) — verrou de lecture partagé (N5.5).
         self.with_inner_read(move |inner| {
             Ok(inner
-                .search_filtered(&agent, &query, k, None, now)?
+                .search_filtered(&agent, &query, k, None, now, include_procedural)?
                 .into_iter()
                 .map(|(id, _, _)| id)
                 .collect())
@@ -821,7 +865,14 @@ impl MemoryStore for NativeMemoryStore {
         .await
     }
 
-    async fn keyword_ranking_ids(&self, agent: &AgentId, match_expr: &str, k: usize, now: i64) -> Result<Vec<String>> {
+    async fn keyword_ranking_ids(
+        &self,
+        agent: &AgentId,
+        match_expr: &str,
+        k: usize,
+        now: i64,
+        include_procedural: bool,
+    ) -> Result<Vec<String>> {
         let (agent, match_expr) = (agent.clone(), match_expr.to_string());
         // Lecture pure — verrou de lecture partagé (N5.5).
         self.with_inner_read(move |inner| {
@@ -854,6 +905,9 @@ impl MemoryStore for NativeMemoryStore {
                 if !record_valid_at(&record, now) {
                     continue;
                 }
+                if !include_procedural && record.layer == MemoryLayer::Procedural.table() {
+                    continue;
+                }
                 ids.push(mapping.id);
                 if ids.len() == k {
                     break;
@@ -879,6 +933,7 @@ impl MemoryStore for NativeMemoryStore {
                             id: id.clone(),
                             text: record.content,
                             layer: MemoryLayer::from_table(&record.layer)?,
+                            source: record.source,
                         });
                     }
                 }
@@ -1065,17 +1120,20 @@ impl MemoryStore for NativeMemoryStore {
         .await
     }
 
-    async fn exact_fact_exists(&self, agent: &AgentId, content: &str) -> Result<bool> {
+    async fn exact_fact_exists(&self, agent: &AgentId, content: &str, at: i64) -> Result<bool> {
         let (agent, content) = (agent.clone(), content.to_string());
         // Lecture pure — verrou de lecture partagé (N5.5).
         self.with_inner_read(move |inner| {
             let NativeInner { engine, memory, .. } = inner;
-            // Parité : pas de filtre de validité (l'original n'en a pas).
             Ok(memory
                 .scan_agent(engine, agent.as_str())
                 .map_err(storage)?
                 .into_iter()
-                .any(|(_, record)| record.layer == MemoryLayer::Semantic.table() && record.content == content))
+                .any(|(_, record)| {
+                    record.layer == MemoryLayer::Semantic.table()
+                        && record.content == content
+                        && record_valid_at(&record, at)
+                }))
         })
         .await
     }

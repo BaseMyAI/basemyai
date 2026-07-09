@@ -4,6 +4,7 @@
 //! `provision`) ; ce module ne fait que router `cli::Command` vers eux.
 
 mod config;
+mod config_key;
 mod container;
 mod graph;
 mod maintenance;
@@ -113,10 +114,14 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
             let agent = resolve_agent()?;
             memory::export(&path, &agent, out, format).await
         }
-        Command::Import { file } => {
+        Command::Import { file, trusted } => {
             let path = resolve_path()?;
             let agent = resolve_agent()?;
-            memory::import(&path, &agent, &file, format).await
+            memory::import(&path, &agent, &file, trusted, format).await
+        }
+        Command::RotateKey { new_key } => {
+            let path = resolve_path()?;
+            container::rotate_key(&path, new_key, format).await
         }
         Command::Graph { action } => {
             let path = resolve_path()?;

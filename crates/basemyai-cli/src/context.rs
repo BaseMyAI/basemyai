@@ -6,6 +6,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use basemyai_core::{EncryptionKey, KeyResolveError};
+
 use crate::cli::Layer;
 use crate::error::CliError;
 
@@ -19,10 +21,16 @@ pub(crate) fn memory_layer(layer: Layer) -> basemyai::MemoryLayer {
     }
 }
 
-/// Clé de chiffrement depuis `BASEMYAI_DB_KEY` (obligatoire, ADR-007).
+/// Passphrase de chiffrement via la résolution centralisée ADR-034.
 pub(crate) fn require_key() -> Result<basemyai_core::EncryptionKey, CliError> {
-    let raw = std::env::var("BASEMYAI_DB_KEY").map_err(|_| CliError::MissingKey)?;
-    Ok(basemyai_core::EncryptionKey::new(raw))
+    EncryptionKey::resolve(None).map_err(map_key_error)
+}
+
+fn map_key_error(err: KeyResolveError) -> CliError {
+    match err {
+        KeyResolveError::Missing(msg) => CliError::MissingKey(msg),
+        other => CliError::KeyResolution(other.to_string()),
+    }
 }
 
 /// Charge l'embedder baseline depuis le cache (sans téléchargement). Guide vers

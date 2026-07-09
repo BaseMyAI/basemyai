@@ -359,3 +359,124 @@ fn color_never_disables_ansi_sequences() {
         .success()
         .stdout(predicate::str::contains('\u{1b}').not());
 }
+
+fn write_default_key_file(home: &Path, key: &str) {
+    let dir = home.join(".basemyai");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .expect("dir");
+        let path = dir.join("key");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .expect("open key");
+        writeln!(file, "{key}").expect("write key");
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("key"), format!("{key}\n")).expect("write key");
+    }
+}
+
+#[test]
+fn init_succeeds_with_default_key_file_without_env() {
+    let home = tempfile::tempdir().expect("tempdir");
+    write_default_key_file(home.path(), KEY);
+    let db = db_path(home.path());
+    isolated(home.path())
+        .args(["--format", "json", "init"])
+        .arg(&db)
+        .assert()
+        .success();
+}
+
+#[test]
+fn config_key_generate_never_prints_key_material() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let out = isolated(home.path())
+        .args(["config", "key", "generate"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let key_path = home.path().join(".basemyai").join("key");
+    assert!(key_path.exists());
+    let secret = std::fs::read_to_string(&key_path).expect("read key").trim().to_string();
+    assert!(!secret.is_empty());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!combined.contains(&secret));
+}
+
+#[test]
+fn config_key_generate_refuses_overwrite() {
+    let home = tempfile::tempdir().expect("tempdir");
+    write_default_key_file(home.path(), KEY);
+    isolated(home.path())
+        .args(["config", "key", "generate"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn config_key_check_ok_when_env_set() {
+    let home = tempfile::tempdir().expect("tempdir");
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .args(["--format", "json", "config", "key", "check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"ok\":true"))
+        .stdout(predicate::str::contains("env_db_key"));
+}
+
+const ROTATED_KEY: &str = "rotated-test-key-do-not-use-in-prod";
+
+#[test]
+fn rotate_key_rewraps_dek_and_old_key_stops_working() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .args([
+            "--format",
+            "json",
+            "--db",
+            db.to_str().expect("utf-8 path"),
+            "rotate-key",
+            "--new-key",
+            ROTATED_KEY,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"rotated\":true"));
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", ROTATED_KEY)
+        .args(["--format", "json", "--db", db.to_str().expect("utf-8 path"), "verify"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"valid\":true"));
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .args(["--format", "json", "--db", db.to_str().expect("utf-8 path"), "verify"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("WRONG_ENCRYPTION_KEY"));
+}

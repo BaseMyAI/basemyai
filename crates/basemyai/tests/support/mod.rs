@@ -1,6 +1,7 @@
-//! Helpers de tests d'intégration pour ouvrir un store natif via l'API
-//! production (`open` / `open_encrypted`) sans dépendre des helpers
-//! `test-util`.
+//! Helpers de tests d'intégration — ouverture de stores natifs via
+//! `test-util` (`open` / `open_encrypted` / `open_ephemeral`).
+
+#![allow(dead_code)]
 
 use std::sync::{LazyLock, Mutex};
 
@@ -28,4 +29,42 @@ pub(crate) fn open_encrypted_native_store(key: &str) -> NativeMemoryStore {
     let store = NativeMemoryStore::open_encrypted(dir.path(), key).expect("open encrypted native store");
     keep_tempdir_alive(dir);
     store
+}
+
+const DIM: usize = 384;
+
+/// Embedder déterministe sans modèle — pour les tests d'intégration mémoire.
+pub(crate) struct FakeEmbedder;
+
+impl FakeEmbedder {
+    pub(crate) fn vec_for(text: &str) -> Vec<f32> {
+        let mut v = vec![0.0_f32; DIM];
+        for (i, b) in text.bytes().enumerate() {
+            v[i % DIM] += f32::from(b) + 1.0;
+        }
+        v[0] += 1.0;
+        v
+    }
+}
+
+impl basemyai_core::Embedder for FakeEmbedder {
+    fn embed(&self, text: &str) -> basemyai_core::Result<Vec<f32>> {
+        Ok(Self::vec_for(text))
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> basemyai_core::Result<Vec<Vec<f32>>> {
+        Ok(texts.iter().map(|t| Self::vec_for(t)).collect())
+    }
+
+    fn model_id(&self) -> &str {
+        "fake-deterministic"
+    }
+
+    fn dim(&self) -> usize {
+        DIM
+    }
+}
+
+pub(crate) fn agent(id: &str) -> basemyai::AgentId {
+    basemyai::AgentId::new(id).expect("non-empty agent id")
 }

@@ -174,6 +174,7 @@ pub(crate) enum Step {
         agent: Option<&'static str>,
         label: &'static str,
         content: &'static str,
+        now: i64,
         expect: bool,
     },
 }
@@ -318,7 +319,7 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
                 let agent = resolve(*agent);
                 let ctx = step_ctx(scenario.name, i, label);
                 let got = store
-                    .recall_vector(&agent, &vec_for(*query_seed), *k, *layer, Metric::Cosine, *now)
+                    .recall_vector(&agent, &vec_for(*query_seed), *k, *layer, Metric::Cosine, *now, true)
                     .await
                     .unwrap_or_else(|e| panic!("{ctx}: recall_vector a échoué: {e}"));
                 let got_ids: Vec<&str> = got.iter().map(|r| r.id.as_str()).collect();
@@ -335,7 +336,7 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
                 let agent = resolve(*agent);
                 let ctx = step_ctx(scenario.name, i, label);
                 let got = store
-                    .vector_ranking_ids(&agent, &vec_for(*query_seed), *k, *now)
+                    .vector_ranking_ids(&agent, &vec_for(*query_seed), *k, *now, true)
                     .await
                     .unwrap_or_else(|e| panic!("{ctx}: vector_ranking_ids a échoué: {e}"));
                 let got_ids: Vec<&str> = got.iter().map(String::as_str).collect();
@@ -403,7 +404,7 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
                 let agent = resolve(*agent);
                 let ctx = step_ctx(scenario.name, i, label);
                 let got = store
-                    .keyword_ranking_ids(&agent, match_expr, *k, *now)
+                    .keyword_ranking_ids(&agent, match_expr, *k, *now, true)
                     .await
                     .unwrap_or_else(|e| panic!("{ctx}: keyword_ranking_ids a échoué: {e}"));
                 let got_ids: Vec<&str> = got.iter().map(String::as_str).collect();
@@ -446,12 +447,13 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
                 agent,
                 label,
                 content,
+                now,
                 expect,
             } => {
                 let agent = resolve(*agent);
                 let ctx = step_ctx(scenario.name, i, label);
                 let got = store
-                    .exact_fact_exists(&agent, content)
+                    .exact_fact_exists(&agent, content, *now)
                     .await
                     .unwrap_or_else(|e| panic!("{ctx}: exact_fact_exists a échoué: {e}"));
                 assert_eq!(got, *expect, "{ctx}: exact_fact_exists inattendu");

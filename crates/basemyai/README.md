@@ -4,9 +4,9 @@
 [![docs.rs](https://img.shields.io/docsrs/basemyai)](https://docs.rs/basemyai)
 [![License](https://img.shields.io/crates/l/basemyai)](https://github.com/basemyai/basemyai/blob/main/LICENSE)
 
-**Local memory engine for AI agents** — four memory layers, temporal RAG, per-agent isolation, knowledge graph, adaptive forgetting, and mandatory encryption at rest.
+**Local memory engine for AI agents** — four memory layers, temporal RAG, per-agent isolation, knowledge graph, and mandatory encryption at rest.
 
-Built in Rust on top of [`basemyai-core`](https://crates.io/crates/basemyai-core). Everything stays on-device in a single encrypted `.bmai` file powered by the native BaseMyAI storage engine.
+Built in Rust on top of [`basemyai-core`](https://crates.io/crates/basemyai-core). Everything stays on-device in an encrypted `.bmai` **directory** (WAL, SST, `crypto.meta`) powered by the native BaseMyAI storage engine. Production code opens stores **only** via `Memory::open_native` / `NativeMemoryStore::open_encrypted` — plaintext persistent stores exist behind the `test-util` feature for tests only.
 
 > For the full product overview, bindings (Python, Node, REST), and CLI, see the [main repository](https://github.com/basemyai/basemyai).
 
@@ -43,7 +43,7 @@ basemyai = { version = "0.1", features = ["embed"] }
 | `embed` (recommended) | Candle BERT embedder (`all-MiniLM-L6-v2`, 384d) |
 | `test-util` | `HashEmbedder` + `Memory::open_in_memory` for tests only |
 
-The native storage engine (`basemyai-engine`) is always included — it is the sole backend since [ADR-032](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-032-native-only.md).
+The native storage engine (`basemyai-engine`) is always included — it is the sole backend since [ADR-033](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-033-native-only.md).
 
 ## Quick start
 
@@ -53,7 +53,7 @@ use basemyai_core::{CandleEmbedder, Device, EncryptionKey, Embedder};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let key = EncryptionKey::new("your-secret-key");
+    let key = EncryptionKey::resolve(None)?; // or EncryptionKey::new("…") for explicit override
     let agent = AgentId::new("agent-42").expect("non-empty id");
     let model_path = dirs::home_dir()
         .unwrap()
@@ -109,7 +109,7 @@ let fused = rrf_fuse(&[
 
 ## Encryption
 
-Encryption at rest is **mandatory**. Open with `EncryptionKey::new(...)` — the key is supplied at open time and never stored or transmitted. Data on disk uses the native envelope scheme ([ADR-030](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-030-native-encryption-at-rest.md), XChaCha20-Poly1305).
+Encryption at rest is **mandatory**. Supply a passphrase via `EncryptionKey::new(...)` or resolve it with `EncryptionKey::resolve(None)?` ([ADR-034](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-034-user-key-resolution.md) — env vars, Docker secrets, `~/.basemyai/key`). The engine never stores or logs the passphrase. Data on disk uses the native envelope scheme ([ADR-030](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-030-native-encryption-at-rest.md), XChaCha20-Poly1305).
 
 ## Hardware-aware setup
 
@@ -137,6 +137,7 @@ The same Rust core is also available via:
 
 - [docs.rs](https://docs.rs/basemyai)
 - [Main README](https://github.com/basemyai/basemyai)
+- [Key resolution (ADR-034)](https://github.com/basemyai/basemyai/blob/main/docs/security/key-resolution.md)
 - [CLI reference](https://github.com/basemyai/basemyai/blob/main/docs/cli.md)
 - [Architecture decisions (ADR)](https://github.com/basemyai/basemyai/blob/main/docs/ADR.md)
 - [BaseMyAI is not a vector DB](https://github.com/basemyai/basemyai/blob/main/docs/not-a-vector-db.md)

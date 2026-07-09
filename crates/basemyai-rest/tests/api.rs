@@ -88,6 +88,19 @@ async fn dev_mode_allows_requests_without_bearer() {
     assert_eq!(resp.status(), StatusCode::CREATED);
 }
 
+#[test]
+fn dev_mode_rejects_non_loopback_bind() {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let config = Config {
+        dev: true,
+        bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        ..Config::default()
+    };
+    let err = config.validate().expect_err("dev hors loopback interdit");
+    assert!(err.to_string().contains("loopback"), "message explicite : {err}");
+}
+
 #[tokio::test]
 async fn fixed_agent_policy_rejects_other_agents() {
     let config = Config {

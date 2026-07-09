@@ -177,6 +177,12 @@ pub fn decode(buf: &[u8], path: &Path) -> Result<Vec<SstEntry>> {
         pos += val_len;
         entries.push(SstEntry { key, value });
     }
+    if pos != crc_at {
+        return Err(corrupt(format!(
+            "trailing bytes after declared entries ({} bytes)",
+            crc_at - pos
+        )));
+    }
     Ok(entries)
 }
 
@@ -227,6 +233,23 @@ mod tests {
         let last = bytes.len() - 1;
         bytes[last] ^= 0xFF;
         let err = decode(&bytes, &path()).expect_err("checksum should fail");
+        assert!(matches!(err, EngineError::CorruptSst { .. }));
+    }
+
+    #[test]
+    fn trailing_bytes_after_declared_entries_are_rejected() {
+        let entries = vec![SstEntry {
+            key: b"a".to_vec(),
+            value: Some(b"1".to_vec()),
+        }];
+        let mut bytes = encode(&entries);
+        let old_crc_at = bytes.len() - CRC_LEN;
+        bytes.insert(old_crc_at, 0xAA);
+        let new_crc_at = bytes.len() - CRC_LEN;
+        let crc = crc32(&bytes[..new_crc_at]);
+        bytes[new_crc_at..].copy_from_slice(&crc.to_le_bytes());
+
+        let err = decode(&bytes, &path()).expect_err("trailing bytes are corrupt");
         assert!(matches!(err, EngineError::CorruptSst { .. }));
     }
 

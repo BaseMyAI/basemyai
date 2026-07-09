@@ -80,7 +80,7 @@ async fn bench_recall_vector(n: usize, num_queries: usize, k: usize) {
         // with an inserted id's exact vector.
         let query = vec_for(1_000_000_000 + q as u64, DIM);
         let got = store
-            .recall_vector(&agent, &query, k, None, Metric::Cosine, 0)
+            .recall_vector(&agent, &query, k, None, Metric::Cosine, 0, true)
             .await
             .expect("recall_vector");
         assert_eq!(got.len(), k.min(n), "recall_vector must return k results once n >= k");

@@ -52,7 +52,7 @@ components:
 
     Record:
       type: object
-      required: [id, text, layer, score]
+      required: [id, text, layer, score, source, trust]
       properties:
         id:
           type: string
@@ -72,6 +72,15 @@ components:
           maximum: 1.0
           description: Similarité cosine normalisée (1 = identique).
           example: 0.92
+        source:
+          type: string
+          description: Tag wire de provenance (`user`, `consolidation`, `import`, …).
+          example: user
+        trust:
+          type: string
+          description: Provenance typée (ADR-036), dérivée de `source`.
+          enum: [user, consolidation, import, unknown]
+          example: user
 
     AgentStats:
       type: object
@@ -195,6 +204,14 @@ components:
         layer:
           $ref: "#/components/schemas/MemoryLayer"
           description: Optionnel. Filtre le recall sur cette couche uniquement.
+        include_procedural:
+          type: boolean
+          default: false
+          description: Inclure la couche procedural (ADR-035). Défaut false.
+        exclude_imported:
+          type: boolean
+          default: false
+          description: Exclure les souvenirs importés (ADR-036). Défaut false.
 
     RecallGraphRequest:
       type: object
@@ -595,7 +612,7 @@ paths:
       operationId: health
       summary: Liveness/readiness check.
       description: >
-        Vérifie que le store libSQL est accessible (SELECT 1).
+        Vérifie que le store natif chiffré est accessible.
         Pas d'auth requise — utilisable par les probes sans clé.
       tags: [System]
       security: []

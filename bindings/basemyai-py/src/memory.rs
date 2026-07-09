@@ -22,6 +22,8 @@ use basemyai_core::EncryptionKey;
 use basemyai_core::{CandleEmbedder, Device, Embedder};
 
 #[cfg(feature = "embed")]
+use crate::errors::EncryptionError;
+#[cfg(feature = "embed")]
 use crate::errors::ValidationError;
 use crate::errors::to_pyerr;
 use crate::types::{AgentStats, Entity, Record, WatchEvent};
@@ -47,16 +49,18 @@ impl Memory {
     /// Ouvre une mémoire persistante chiffrée (moteur natif, ADR-032) avec
     /// l'embedder Candle local.
     ///
+    /// Si `encryption_key` est omis, la résolution ADR-034 s'applique (`BASEMYAI_DB_KEY`,
+    /// `BASEMYAI_DB_KEY_FILE`, `~/.basemyai/key`, etc.).
     /// Si `model_dir` est absent, le provisioning ne télécharge le modèle que si
     /// `consent_to_fetch=True`. Par défaut, aucun accès réseau n'est déclenché.
     #[cfg(feature = "embed")]
     #[staticmethod]
-    #[pyo3(signature = (path, agent_id, encryption_key, *, model_dir = None, device = "auto".to_string(), consent_to_fetch = false))]
+    #[pyo3(signature = (path, agent_id, *, encryption_key = None, model_dir = None, device = "auto".to_string(), consent_to_fetch = false))]
     fn open(
         py: Python<'_>,
         path: String,
         agent_id: String,
-        encryption_key: String,
+        encryption_key: Option<String>,
         model_dir: Option<String>,
         device: String,
         consent_to_fetch: bool,
@@ -79,7 +83,8 @@ impl Memory {
                     .map_err(basemyai::MemoryError::from)
                     .map_err(to_pyerr)?,
             );
-            let key = EncryptionKey::new(encryption_key);
+            let key = EncryptionKey::resolve(encryption_key.as_deref())
+                .map_err(|e| EncryptionError::new_err(e.to_string()))?;
             let mem = basemyai::Memory::open_native(PathBuf::from(path), &key, embedder, agent)
                 .await
                 .map_err(to_pyerr)?;
@@ -114,11 +119,22 @@ impl Memory {
     }
 
     /// Recall temporel sémantique : rend une `list[Record]`.
-    #[pyo3(signature = (query, k = 5))]
-    fn recall<'p>(&self, py: Python<'p>, query: String, k: usize) -> PyResult<Bound<'p, PyAny>> {
+    #[pyo3(signature = (query, k = 5, *, include_procedural = false, exclude_imported = false))]
+    fn recall<'p>(
+        &self,
+        py: Python<'p>,
+        query: String,
+        k: usize,
+        include_procedural: bool,
+        exclude_imported: bool,
+    ) -> PyResult<Bound<'p, PyAny>> {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
-            let records = inner.recall(&query, k).await.map_err(to_pyerr)?;
+            let options = basemyai::RecallOptions {
+                include_procedural,
+                exclude_imported,
+            };
+            let records = inner.recall_with_options(&query, k, options).await.map_err(to_pyerr)?;
             Ok(records.into_iter().map(Record::from).collect::<Vec<_>>())
         })
     }
@@ -142,22 +158,26 @@ impl Memory {
 
     /// Recall hybride : vecteur + BM25 (full-text) fusionnés par RRF. Rend une
     /// `list[Record]` (le `score` porte le score RRF fusionné).
-    #[pyo3(signature = (query, k = 5))]
-    fn recall_hybrid<'p>(&self, py: Python<'p>, query: String, k: usize) -> PyResult<Bound<'p, PyAny>> {
+    #[pyo3(signature = (query, k = 5, *, include_procedural = false, exclude_imported = false))]
+    fn recall_hybrid<'p>(
+        &self,
+        py: Python<'p>,
+        query: String,
+        k: usize,
+        include_procedural: bool,
+        exclude_imported: bool,
+    ) -> PyResult<Bound<'p, PyAny>> {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
-            let records = inner.recall_hybrid(&query, k).await.map_err(to_pyerr)?;
-            // Ici `score` est le score RRF fusionné : on le garde tel quel (pas de
-            // conversion en similarité comme pour `recall`).
-            Ok(records
-                .into_iter()
-                .map(|r| Record {
-                    id: r.id,
-                    text: r.text,
-                    layer: r.layer.table().to_string(),
-                    score: r.score,
-                })
-                .collect::<Vec<_>>())
+            let options = basemyai::RecallOptions {
+                include_procedural,
+                exclude_imported,
+            };
+            let records = inner
+                .recall_hybrid_with_options(&query, k, options)
+                .await
+                .map_err(to_pyerr)?;
+            Ok(records.into_iter().map(Record::from_hybrid).collect::<Vec<_>>())
         })
     }
 

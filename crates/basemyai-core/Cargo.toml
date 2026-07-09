@@ -17,6 +17,8 @@ default = []
 # Inférence ML (Candle) — opt-in : un consommateur peut fournir son propre
 # Embedder via le trait sans compiler Candle.
 embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:serde_json"]
+# Ouvre des stores natifs en clair pour les tests unitaires du core.
+test-util = ["basemyai-engine/test-util"]
 
 [dependencies]
 thiserror.workspace = true
@@ -30,6 +32,7 @@ candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+uuid = { workspace = true }
 # Backend natif (ADR-024/ADR-025/ADR-032) — dépendance directe et unique.
 # Interne, non publié (voir crates/basemyai-engine/Cargo.toml).
 basemyai-engine = { path = "../basemyai-engine" }

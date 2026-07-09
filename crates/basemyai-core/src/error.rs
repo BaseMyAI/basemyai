@@ -11,7 +11,7 @@ pub enum CoreError {
     #[error("storage error: {0}")]
     Storage(String),
 
-    /// Échec côté index vectoriel (sqlite-vec).
+    /// Échec côté index vectoriel (moteur natif LM-DiskANN).
     #[error("vector index error: {0}")]
     Vector(String),
 
@@ -19,9 +19,25 @@ pub enum CoreError {
     #[error("embedding error: {0}")]
     Embed(String),
 
-    /// Clé absente/invalide, ou base chiffrée illisible.
+    /// Opération chiffrement sur un store non chiffré (ex. `rotate_key`).
     #[error("encryption error")]
     Encryption,
+
+    /// Store chiffré ouvert sans clé.
+    #[error("encryption key required")]
+    EncryptionKeyRequired,
+
+    /// Clé fournie mais ne déverrouille pas le store (DEK invalide).
+    #[error("wrong encryption key")]
+    WrongEncryptionKey,
+
+    /// Fichier `crypto.meta` structurellement invalide (pas un cas « mauvaise clé »).
+    #[error("corrupt encryption metadata")]
+    CorruptEncryptionMetadata,
+
+    /// Store déjà en clair : impossible d'appliquer une clé a posteriori.
+    #[error("plaintext store cannot be encrypted in place")]
+    PlaintextStoreEncryptedKeySupplied,
 
     /// Modèle non provisionné : le setup hardware-aware doit tourner d'abord
     /// (le core ne télécharge jamais — cf. ADR-003 / ADR-010).

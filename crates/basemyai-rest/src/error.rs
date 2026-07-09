@@ -74,9 +74,32 @@ impl RestError {
                 M::MissingAgent => (StatusCode::BAD_REQUEST, "MISSING_AGENT", e.to_string()),
                 M::UnknownLayer(_) => (StatusCode::BAD_REQUEST, "UNKNOWN_LAYER", e.to_string()),
                 M::EncryptionRequired => (StatusCode::INTERNAL_SERVER_ERROR, "ENCRYPTION_REQUIRED", e.to_string()),
-                M::Core(CoreError::Encryption) => {
-                    (StatusCode::INTERNAL_SERVER_ERROR, "ENCRYPTION_REQUIRED", e.to_string())
-                }
+                M::Extraction(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
+                M::Core(CoreError::EncryptionKeyRequired) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ENCRYPTION_KEY_REQUIRED",
+                    "encryption key required".to_string(),
+                ),
+                M::Core(CoreError::WrongEncryptionKey) => (
+                    StatusCode::FORBIDDEN,
+                    "WRONG_ENCRYPTION_KEY",
+                    "wrong encryption key".to_string(),
+                ),
+                M::Core(CoreError::CorruptEncryptionMetadata) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "CORRUPT_ENCRYPTION_METADATA",
+                    "corrupt encryption metadata".to_string(),
+                ),
+                M::Core(CoreError::Encryption) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ENCRYPTION_ERROR",
+                    "encryption operation failed".to_string(),
+                ),
+                M::Core(CoreError::PlaintextStoreEncryptedKeySupplied) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ENCRYPTION_REQUIRED",
+                    "plaintext store cannot be encrypted in place".to_string(),
+                ),
                 _ => {
                     tracing::error!(error = %e, "internal error in REST handler");
                     (
@@ -100,5 +123,22 @@ impl IntoResponse for RestError {
             }),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use basemyai::MemoryError;
+    use basemyai_core::CoreError;
+
+    use super::RestError;
+
+    #[test]
+    fn wrong_encryption_key_maps_to_stable_rest_code() {
+        let err = RestError::Memory(MemoryError::Core(CoreError::WrongEncryptionKey));
+        let (status, code, _) = err.parts();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(code, "WRONG_ENCRYPTION_KEY");
     }
 }

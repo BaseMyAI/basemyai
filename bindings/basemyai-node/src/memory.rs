@@ -6,9 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use napi::Result;
-#[cfg(not(feature = "embed"))]
-use napi::{Error, Status};
+use napi::{Error, Result, Status};
 use napi_derive::napi;
 
 use basemyai::MemoryLayer;
@@ -51,10 +49,20 @@ impl Memory {
 
     /// Recall temporel sémantique : résout vers un tableau de `Record`.
     #[napi]
-    pub async fn recall(&self, query: String, k: Option<u32>) -> Result<Vec<Record>> {
+    pub async fn recall(
+        &self,
+        query: String,
+        k: Option<u32>,
+        include_procedural: Option<bool>,
+        exclude_imported: Option<bool>,
+    ) -> Result<Vec<Record>> {
         let inner = Arc::clone(&self.inner);
         let k = k.unwrap_or(5) as usize;
-        let records = inner.recall(&query, k).await.map_err(to_napi)?;
+        let options = basemyai::RecallOptions {
+            include_procedural: include_procedural.unwrap_or(false),
+            exclude_imported: exclude_imported.unwrap_or(false),
+        };
+        let records = inner.recall_with_options(&query, k, options).await.map_err(to_napi)?;
         Ok(records.into_iter().map(Record::from).collect())
     }
 
@@ -71,20 +79,24 @@ impl Memory {
     /// Recall hybride : vecteur + BM25 (full-text) fusionnés par RRF. Résout vers
     /// un tableau de `Record` (le `score` porte le score RRF fusionné).
     #[napi(js_name = "recallHybrid")]
-    pub async fn recall_hybrid(&self, query: String, k: Option<u32>) -> Result<Vec<Record>> {
+    pub async fn recall_hybrid(
+        &self,
+        query: String,
+        k: Option<u32>,
+        include_procedural: Option<bool>,
+        exclude_imported: Option<bool>,
+    ) -> Result<Vec<Record>> {
         let inner = Arc::clone(&self.inner);
         let k = k.unwrap_or(5) as usize;
-        let records = inner.recall_hybrid(&query, k).await.map_err(to_napi)?;
-        // `score` = score RRF fusionné, conservé tel quel (pas de similarité).
-        Ok(records
-            .into_iter()
-            .map(|r| Record {
-                id: r.id,
-                text: r.text,
-                layer: r.layer.table().to_string(),
-                score: f64::from(r.score),
-            })
-            .collect())
+        let options = basemyai::RecallOptions {
+            include_procedural: include_procedural.unwrap_or(false),
+            exclude_imported: exclude_imported.unwrap_or(false),
+        };
+        let records = inner
+            .recall_hybrid_with_options(&query, k, options)
+            .await
+            .map_err(to_napi)?;
+        Ok(records.into_iter().map(Record::from_hybrid).collect())
     }
 
     /// Invalide (soft-delete) un souvenir par son id.
@@ -163,7 +175,8 @@ async fn open_production(options: MemoryOpenOptions) -> Result<Memory> {
         .map_err(basemyai::MemoryError::from)
         .map_err(to_napi)?;
     let db_path = PathBuf::from(path);
-    let key = EncryptionKey::new(encryption_key);
+    let key = EncryptionKey::resolve(encryption_key.as_deref())
+        .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
     let mem = basemyai::Memory::open_native(db_path, &key, Box::new(embedder), agent)
         .await
         .map_err(to_napi)?;

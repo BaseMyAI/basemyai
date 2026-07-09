@@ -60,6 +60,7 @@ dist/
 *.p12
 *.pfx
 secrets/
+.basemyai/key
 
 # ── Profiling / coverage ──────────────────────────────────────────────────────
 *.profraw

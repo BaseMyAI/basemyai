@@ -15,11 +15,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
 
-    use basemyai_core::{CandleEmbedder, Device, Embedder};
+    use basemyai_core::{CandleEmbedder, Device, Embedder, EncryptionKey, KeyResolveError};
     use basemyai_rest::{AppState, Config, FileProvider, build_app};
     use tokio::net::TcpListener;
 
     let config = Config::from_env()?;
+    config.validate()?;
 
     if !config.dev && config.api_key.is_none() {
         return Err("no API key configured: set [rest].api_key, BASEMYAI_REST_API_KEY, \
@@ -29,10 +30,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Clé de chiffrement de la base (obligatoire — chiffrement au repos, ADR-007 ;
     // le backend natif chiffre sans CMake, ADR-030).
-    let db_key = config
-        .db_key
-        .clone()
-        .ok_or("BASEMYAI_REST_DB_KEY or BASEMYAI_DB_KEY is required (encryption is mandatory)")?;
+    let db_key = EncryptionKey::resolve(config.db_key.as_deref()).map_err(|e| match e {
+        KeyResolveError::Missing(msg) => msg,
+        other => other.to_string(),
+    })?;
 
     let db_path = config.db_path.clone();
 
@@ -46,7 +47,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let provider: Arc<dyn basemyai_rest::MemoryProvider> =
-        Arc::new(FileProvider::open(db_path, db_key, embedder).await?);
+        Arc::new(FileProvider::open(db_path, db_key.expose().to_string(), embedder).await?);
     let addr = config.socket_addr();
     let app = build_app(AppState::new(provider, config));
 

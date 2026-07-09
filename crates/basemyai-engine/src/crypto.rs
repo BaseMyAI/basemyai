@@ -11,18 +11,28 @@
 //! 32-byte DEK; WAL records and SST files are sealed under the DEK. Key
 //! rotation therefore re-wraps the DEK in a new `crypto.meta` (one atomic
 //! tmp+fsync+rename) and never touches the data files (ADR-030 §4).
+//!
+//! Typed nonces, salts, and DEKs live in [`material`] — see
+//! [`docs/security/crypto-material.md`](../../docs/security/crypto-material.md).
+
+mod material;
+
+#[cfg(test)]
+pub(crate) mod test_support;
+
+pub(crate) use material::{Dek, Nonce, Salt, Sealed};
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use chacha20poly1305::aead::rand_core::RngCore;
-use chacha20poly1305::aead::{Aead, KeyInit, OsRng, Payload};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::error::{EngineError, Result};
-use crate::format::crypto::{self as fmt, CryptoMeta, NONCE_LEN, SALT_LEN};
+use crate::format::crypto::{self as fmt, CryptoMeta};
 
 /// File name of the per-store key-wrap record, next to `wal.log`.
 pub(crate) const CRYPTO_META_FILENAME: &str = "crypto.meta";
@@ -34,14 +44,14 @@ const KEK_DOMAIN: &[u8] = b"basemyai-engine/kek/v1";
 
 /// Derives the key-encryption key from the user key and the store's salt.
 /// No key stretching (Argon2/PBKDF2) by design — the input is assumed
-/// high-entropy, same posture as ADR-007 where the key goes to SQLCipher
+/// high-entropy, same posture as ADR-007 (user-supplied passphrase, never stored).
 /// as-is (ADR-030 §1 records the follow-up if that assumption changes).
-fn derive_kek(user_key: &[u8], salt: &[u8; SALT_LEN]) -> [u8; 32] {
+fn derive_kek(user_key: &[u8], salt: &Salt) -> Zeroizing<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(KEK_DOMAIN);
-    hasher.update(salt);
+    hasher.update(salt.as_bytes());
     hasher.update(user_key);
-    hasher.finalize().into()
+    Zeroizing::new(hasher.finalize().into())
 }
 
 /// The live encryption state of an opened encrypted store: the unsealed DEK
@@ -51,7 +61,7 @@ fn derive_kek(user_key: &[u8], salt: &[u8; SALT_LEN]) -> [u8; 32] {
 pub(crate) struct CryptoContext {
     /// Raw DEK, retained (not just the cipher) because `rotate_key` must
     /// re-wrap it under a fresh KEK (ADR-030 §4).
-    dek: [u8; 32],
+    dek: Dek,
     cipher: XChaCha20Poly1305,
 }
 
@@ -62,34 +72,41 @@ impl std::fmt::Debug for CryptoContext {
 }
 
 impl CryptoContext {
-    fn from_dek(dek: [u8; 32]) -> Self {
-        let cipher = XChaCha20Poly1305::new((&dek).into());
+    fn from_dek(dek: Dek) -> Self {
+        let cipher = XChaCha20Poly1305::new(dek.as_bytes().into());
         Self { dek, cipher }
     }
 
     /// Seals `plaintext` under the DEK with a fresh random nonce.
     /// XChaCha20's 24-byte nonce space makes random nonces safe without any
     /// persisted counter to crash-reconcile (ADR-030 §1).
-    pub(crate) fn seal(&self, plaintext: &[u8], aad: &[u8]) -> Result<([u8; NONCE_LEN], Vec<u8>)> {
-        let mut nonce = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut nonce);
+    pub(crate) fn seal(&self, plaintext: &[u8], aad: &[u8]) -> Result<Sealed> {
+        let nonce = Nonce::generate();
         let ciphertext = self
             .cipher
-            .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext, aad })
+            .encrypt(XNonce::from_slice(nonce.as_bytes()), Payload { msg: plaintext, aad })
             .map_err(|_| EngineError::CryptoFailure {
                 reason: "AEAD seal failed".to_string(),
             })?;
-        Ok((nonce, ciphertext))
+        Ok(Sealed { nonce, ciphertext })
     }
 
     /// Opens a seal produced by [`CryptoContext::seal`]. An error here means
     /// tampering or corruption — by the time data is being opened, the key
     /// itself was already verified against `crypto.meta`'s wrap. The caller
     /// maps the failure onto its artifact-specific corruption variant.
-    pub(crate) fn open(&self, nonce: &[u8; NONCE_LEN], ciphertext: &[u8], aad: &[u8]) -> Option<Vec<u8>> {
+    ///
+    /// `nonce` must come from persisted wire bytes ([`Nonce::from_wire`]) —
+    /// never from a fresh [`Nonce::generate`] used for sealing.
+    pub(crate) fn open(&self, nonce: &Nonce, ciphertext: &[u8], aad: &[u8]) -> Option<Vec<u8>> {
         self.cipher
-            .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad })
+            .decrypt(XNonce::from_slice(nonce.as_bytes()), Payload { msg: ciphertext, aad })
             .ok()
+    }
+
+    #[cfg(test)]
+    fn test_dek_bytes(&self) -> &[u8; 32] {
+        self.dek.as_bytes()
     }
 }
 
@@ -101,9 +118,7 @@ pub(crate) fn crypto_meta_path(dir: &Path) -> PathBuf {
 /// salt, DEK sealed under the derived KEK, written tmp+fsync+rename (the
 /// same crash-safe recipe as SSTs). Returns the live context.
 pub(crate) fn create_meta(dir: &Path, user_key: &[u8]) -> Result<CryptoContext> {
-    let mut dek = [0u8; 32];
-    OsRng.fill_bytes(&mut dek);
-    let ctx = CryptoContext::from_dek(dek);
+    let ctx = CryptoContext::from_dek(Dek::generate());
     write_meta(dir, user_key, &ctx)?;
     Ok(ctx)
 }
@@ -113,30 +128,35 @@ pub(crate) fn create_meta(dir: &Path, user_key: &[u8]) -> Result<CryptoContext> 
 /// creation and key rotation — rotation *is* exactly this operation
 /// (ADR-030 §4).
 pub(crate) fn write_meta(dir: &Path, user_key: &[u8], ctx: &CryptoContext) -> Result<()> {
-    let mut salt = [0u8; SALT_LEN];
-    OsRng.fill_bytes(&mut salt);
+    let salt = Salt::generate();
     let kek = derive_kek(user_key, &salt);
-    let wrap_cipher = XChaCha20Poly1305::new((&kek).into());
+    let wrap_cipher = XChaCha20Poly1305::new((&*kek).into());
+    let wrap_nonce = Nonce::generate();
 
-    let mut meta = CryptoMeta {
-        salt,
-        wrap_nonce: [0u8; NONCE_LEN],
+    let wrap_aad = CryptoMeta {
+        salt: salt.clone(),
+        wrap_nonce: wrap_nonce.clone(),
         wrapped_dek: Vec::new(),
-    };
-    let mut nonce = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce);
-    meta.wrap_nonce = nonce;
-    meta.wrapped_dek = wrap_cipher
+    }
+    .wrap_aad();
+
+    let wrapped_dek = wrap_cipher
         .encrypt(
-            XNonce::from_slice(&nonce),
+            XNonce::from_slice(wrap_nonce.as_bytes()),
             Payload {
-                msg: &ctx.dek,
-                aad: &meta.wrap_aad(),
+                msg: ctx.dek.as_bytes(),
+                aad: &wrap_aad,
             },
         )
         .map_err(|_| EngineError::CryptoFailure {
             reason: "DEK wrap failed".to_string(),
         })?;
+
+    let meta = CryptoMeta {
+        salt,
+        wrap_nonce,
+        wrapped_dek,
+    };
 
     let final_path = crypto_meta_path(dir);
     let tmp_path = final_path.with_extension("meta.tmp");
@@ -170,24 +190,26 @@ pub(crate) fn load_meta(dir: &Path, user_key: &[u8]) -> Result<CryptoContext> {
     let meta = fmt::decode_crypto_meta(&buf, &path)?;
 
     let kek = derive_kek(user_key, &meta.salt);
-    let wrap_cipher = XChaCha20Poly1305::new((&kek).into());
-    let dek_bytes = wrap_cipher
-        .decrypt(
-            XNonce::from_slice(&meta.wrap_nonce),
-            Payload {
-                msg: meta.wrapped_dek.as_slice(),
-                aad: &meta.wrap_aad(),
-            },
-        )
-        .map_err(|_| EngineError::WrongEncryptionKey { path: path.clone() })?;
-    let dek: [u8; 32] = dek_bytes
+    let wrap_cipher = XChaCha20Poly1305::new((&*kek).into());
+    let dek_bytes = Zeroizing::new(
+        wrap_cipher
+            .decrypt(
+                XNonce::from_slice(meta.wrap_nonce.as_bytes()),
+                Payload {
+                    msg: meta.wrapped_dek.as_slice(),
+                    aad: &meta.wrap_aad(),
+                },
+            )
+            .map_err(|_| EngineError::WrongEncryptionKey { path: path.clone() })?,
+    );
+    let dek_array: [u8; 32] = dek_bytes
         .as_slice()
         .try_into()
         .map_err(|_| EngineError::CorruptCryptoMeta {
             path,
             reason: format!("unwrapped DEK is {} bytes, expected 32", dek_bytes.len()),
         })?;
-    Ok(CryptoContext::from_dek(dek))
+    Ok(CryptoContext::from_dek(Dek::from_unwrapped(dek_array)))
 }
 
 #[cfg(test)]
@@ -199,7 +221,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let created = create_meta(dir.path(), b"user key").expect("create");
         let loaded = load_meta(dir.path(), b"user key").expect("load");
-        assert_eq!(created.dek, loaded.dek);
+        assert_eq!(created.test_dek_bytes(), loaded.test_dek_bytes());
     }
 
     #[test]
@@ -219,27 +241,34 @@ mod tests {
         let err = load_meta(dir.path(), b"old key").expect_err("old key must no longer unwrap");
         assert!(matches!(err, EngineError::WrongEncryptionKey { .. }));
         let reloaded = load_meta(dir.path(), b"new key").expect("new key unwraps");
-        assert_eq!(reloaded.dek, ctx.dek, "rotation must never change the DEK");
+        assert_eq!(
+            reloaded.test_dek_bytes(),
+            ctx.test_dek_bytes(),
+            "rotation must never change the DEK"
+        );
     }
 
     #[test]
     fn seal_open_roundtrips_and_rejects_tampering() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = create_meta(dir.path(), b"k").expect("create");
-        let (nonce, mut ct) = ctx.seal(b"payload", b"aad").expect("seal");
-        assert_eq!(ctx.open(&nonce, &ct, b"aad").as_deref(), Some(&b"payload"[..]));
-        assert!(ctx.open(&nonce, &ct, b"other aad").is_none(), "AAD is binding");
-        let last = ct.len() - 1;
-        ct[last] ^= 0xFF;
-        assert!(ctx.open(&nonce, &ct, b"aad").is_none(), "tampering must fail the tag");
+        let Sealed { nonce, mut ciphertext } = ctx.seal(b"payload", b"aad").expect("seal");
+        assert_eq!(ctx.open(&nonce, &ciphertext, b"aad").as_deref(), Some(&b"payload"[..]));
+        assert!(ctx.open(&nonce, &ciphertext, b"other aad").is_none(), "AAD is binding");
+        let last = ciphertext.len() - 1;
+        ciphertext[last] ^= 0xFF;
+        assert!(
+            ctx.open(&nonce, &ciphertext, b"aad").is_none(),
+            "tampering must fail the tag"
+        );
     }
 
     #[test]
     fn seal_uses_fresh_nonces() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = create_meta(dir.path(), b"k").expect("create");
-        let (n1, _) = ctx.seal(b"x", b"").expect("seal");
-        let (n2, _) = ctx.seal(b"x", b"").expect("seal");
+        let Sealed { nonce: n1, .. } = ctx.seal(b"x", b"").expect("seal");
+        let Sealed { nonce: n2, .. } = ctx.seal(b"x", b"").expect("seal");
         assert_ne!(n1, n2);
     }
 

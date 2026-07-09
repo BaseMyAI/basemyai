@@ -35,8 +35,14 @@ pub struct AppState {
 
 impl AppState {
     /// Construit l'état autour d'un provider de mémoire et d'une config.
+    ///
+    /// # Panics
+    /// Panique si la configuration est invalide (ex. `dev` + bind non-loopback).
     #[must_use]
     pub fn new(provider: Arc<dyn MemoryProvider>, config: Config) -> Self {
+        config
+            .validate()
+            .expect("invalid REST configuration: dev mode requires a loopback bind address");
         Self {
             pool: Arc::new(RwLock::new(HashMap::new())),
             provider,

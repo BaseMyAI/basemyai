@@ -14,6 +14,12 @@ pub struct RecallParams {
     /// Nombre maximum de souvenirs à retourner.
     #[serde(default = "default_k")]
     pub k: usize,
+    /// Inclure la couche `procedural` (défaut : `false`, ADR-035).
+    #[serde(default)]
+    pub include_procedural: bool,
+    /// Exclure les souvenirs importés (défaut : `false`, ADR-036).
+    #[serde(default)]
+    pub exclude_imported: bool,
 }
 
 fn default_k() -> usize {
@@ -31,6 +37,10 @@ pub struct RecallItem {
     pub layer: String,
     /// Similarité cosinus normalisée dans `[0, 1]` (`1` = identique).
     pub score: f32,
+    /// Tag wire de provenance (`user`, `consolidation`, `import`, …).
+    pub source: String,
+    /// Provenance typée (ADR-036).
+    pub trust: String,
 }
 
 /// Résultat de `recall`.

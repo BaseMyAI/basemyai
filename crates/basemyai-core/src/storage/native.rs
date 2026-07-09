@@ -30,6 +30,10 @@ impl NativeEngine {
     /// Returns an error if the underlying `basemyai_engine::Engine` fails to
     /// open (I/O failure, corrupt on-disk state, an encrypted store opened
     /// without its key, etc.).
+    ///
+    /// Réservé aux tests (`test-util`) : la production ouvre via
+    /// [`Self::open_encrypted`].
+    #[cfg(feature = "test-util")]
     pub fn open(path: impl AsRef<Path>) -> basemyai_engine::Result<Self> {
         let inner = Engine::open(path)?;
         Ok(Self { inner })
@@ -69,9 +73,11 @@ impl StorageEngine for NativeEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "test-util")]
     use crate::storage::EngineKind;
 
     #[test]
+    #[cfg(feature = "test-util")]
     fn native_engine_reports_honest_capabilities() {
         let dir = tempfile::tempdir().expect("tempdir for native engine test");
         let engine = NativeEngine::open(dir.path()).expect("open native engine");

@@ -25,7 +25,8 @@ pub mod temporal;
 pub use basemyai_core::Metric;
 pub use cognition::{
     ConsolidationInput, ConsolidationReport, ExtractedEntity, ExtractedRelation, Extraction, Graph, LlmInference,
-    Reached, apply_extraction, consolidate, consolidation_prompt, parse_extraction,
+    MAX_CONSOLIDATION_ENTITIES, MAX_CONSOLIDATION_FACTS, MAX_CONSOLIDATION_RELATIONS, Reached, apply_extraction,
+    consolidate, consolidation_prompt, parse_extraction, validate_extraction_bounds,
 };
 pub use error::{MemoryError, Result};
 pub use maintenance::ConsolidationTask;
@@ -33,7 +34,7 @@ pub use maintenance::ConsolidationTask;
 pub use memory::HashEmbedder;
 pub use memory::{
     AgentId, AgentStats, ImportReport, MAX_TEXT_LEN, Memory, MemoryEvent, MemoryEventKind, MemoryLayer,
-    MemorySubscription, Record,
+    MemorySubscription, RecallOptions, Record, SOURCE_CONSOLIDATION, SOURCE_IMPORT, SOURCE_USER, TrustLevel,
 };
 pub use storage::BMAI_FORMAT_VERSION;
 

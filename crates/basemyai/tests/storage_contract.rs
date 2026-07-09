@@ -45,7 +45,7 @@ async fn put_memory_then_recall_vector_roundtrips() {
     .expect("put");
 
     let got = e
-        .recall_vector(&a, &vec_for(1), 5, None, Metric::Cosine, 0)
+        .recall_vector(&a, &vec_for(1), 5, None, Metric::Cosine, 0, true)
         .await
         .expect("recall");
     assert_eq!(got.len(), 1);
@@ -81,7 +81,7 @@ async fn recall_vector_is_isolated_per_agent() {
     .expect("put b");
 
     let seen_by_b = e
-        .recall_vector(&agent("b"), &vec_for(1), 5, None, Metric::Cosine, 0)
+        .recall_vector(&agent("b"), &vec_for(1), 5, None, Metric::Cosine, 0, true)
         .await
         .expect("recall b");
     assert_eq!(seen_by_b.len(), 1);
@@ -138,7 +138,7 @@ async fn recall_vector_excludes_expired_and_not_yet_valid() {
     .expect("put live");
 
     let got = e
-        .recall_vector(&a, &vec_for(3), 10, None, Metric::Cosine, now)
+        .recall_vector(&a, &vec_for(3), 10, None, Metric::Cosine, now, true)
         .await
         .expect("recall");
     assert_eq!(got.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["live"]);
@@ -172,7 +172,15 @@ async fn recall_vector_filters_by_layer() {
     .expect("put semantic");
 
     let got = e
-        .recall_vector(&a, &vec_for(1), 10, Some(MemoryLayer::Semantic), Metric::Cosine, 0)
+        .recall_vector(
+            &a,
+            &vec_for(1),
+            10,
+            Some(MemoryLayer::Semantic),
+            Metric::Cosine,
+            0,
+            true,
+        )
         .await
         .expect("recall semantic only");
     assert_eq!(got.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["sem"]);
@@ -290,14 +298,14 @@ async fn invalidate_hides_from_recall_without_deleting() {
     e.invalidate(&a, "m1", 100).await.expect("invalidate");
 
     let got = e
-        .recall_vector(&a, &vec_for(1), 5, None, Metric::Cosine, 100)
+        .recall_vector(&a, &vec_for(1), 5, None, Metric::Cosine, 100, true)
         .await
         .expect("recall after invalidate");
     assert!(got.is_empty());
 
     // Toujours présent à un instant antérieur à l'invalidation.
     let got_before = e
-        .recall_vector(&a, &vec_for(1), 5, None, Metric::Cosine, 50)
+        .recall_vector(&a, &vec_for(1), 5, None, Metric::Cosine, 50, true)
         .await
         .expect("recall before");
     assert_eq!(got_before.len(), 1);
@@ -437,13 +445,13 @@ async fn vector_and_keyword_ranking_ids_are_isolated_and_temporal() {
     .expect("put other agent");
 
     let vec_ids = e
-        .vector_ranking_ids(&a, &vec_for(1), 10, 0)
+        .vector_ranking_ids(&a, &vec_for(1), 10, 0, true)
         .await
         .expect("vector ranking");
     assert_eq!(vec_ids, vec!["m1".to_string()]);
 
     let kw_ids = e
-        .keyword_ranking_ids(&a, "\"chat\"", 10, 0)
+        .keyword_ranking_ids(&a, "\"chat\"", 10, 0, true)
         .await
         .expect("keyword ranking");
     assert_eq!(kw_ids, vec!["m1".to_string()]);
@@ -553,17 +561,17 @@ async fn exact_fact_exists_matches_only_semantic_layer_exact_content() {
     .expect("put episode with same text");
 
     assert!(
-        e.exact_fact_exists(&a, "Alice travaille chez Acme")
+        e.exact_fact_exists(&a, "Alice travaille chez Acme", 0)
             .await
             .expect("exact match")
     );
     assert!(
-        !e.exact_fact_exists(&a, "Bob travaille chez Beta")
+        !e.exact_fact_exists(&a, "Bob travaille chez Beta", 0)
             .await
             .expect("no match")
     );
     assert!(
-        !e.exact_fact_exists(&agent("b"), "Alice travaille chez Acme")
+        !e.exact_fact_exists(&agent("b"), "Alice travaille chez Acme", 0)
             .await
             .expect("isolated by agent")
     );
