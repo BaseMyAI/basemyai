@@ -298,7 +298,7 @@ fn create_restricted_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        return std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir);
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
     }
     #[cfg(not(unix))]
     {
@@ -318,7 +318,7 @@ fn write_key_file_restricted(path: &Path, contents: &[u8]) -> std::io::Result<()
             .mode(0o600)
             .open(path)?;
         file.write_all(contents)?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(unix))]
     {
@@ -486,7 +486,6 @@ mod tests {
             .mode(0o644)
             .open(&key_path)
             .expect("open");
-        use std::io::Write;
         file.sync_all().ok();
         drop(file);
         std::fs::write(&key_path, b"secret\n").expect("write");

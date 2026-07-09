@@ -62,6 +62,7 @@ struct SamplingClient;
 
 impl ClientHandler for SamplingClient {
     #[allow(clippy::field_reassign_with_default)] // ClientInfo est #[non_exhaustive] : pas de struct-literal.
+    #[allow(deprecated)] // SEP-2577 : `enable_sampling` déprécié ; conservé tant qu'aucun remplaçant rmcp n'existe (ADR-017).
     fn get_info(&self) -> ClientInfo {
         let mut info = ClientInfo::default();
         info.capabilities = ClientCapabilities::builder().enable_sampling().build();

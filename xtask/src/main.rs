@@ -220,8 +220,8 @@ const TEST: &[&[&str]] = &[
 
 /// Job `embed` (compile Candle — lourd ; les tests réels sont `#[ignore]`).
 const TEST_EMBED: &[&[&str]] = &[
-    &["test", "-p", "basemyai-core", "--features", "embed"],
-    &["test", "-p", "basemyai", "--features", "embed"],
+    &["test", "-p", "basemyai-core", "--features", "embed,test-util"],
+    &["test", "-p", "basemyai", "--features", "embed,test-util"],
 ];
 
 /// `format.lock` anti-drift check (ADR-025, `docs/PLAN-NATIVE-ENGINE.md`

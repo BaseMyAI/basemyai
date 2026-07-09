@@ -130,7 +130,7 @@ pub struct NativeMemoryStore {
     inner: Arc<RwLock<NativeInner>>,
     /// Garde de vie du répertoire temporaire d'[`Self::open_ephemeral`] —
     /// supprimé au drop du store (store éphémère test-only).
-    #[cfg(feature = "test-util")]
+    #[cfg(any(test, feature = "test-util"))]
     _tempdir: Option<tempfile::TempDir>,
 }
 
@@ -172,7 +172,7 @@ impl NativeMemoryStore {
     ///
     /// # Errors
     /// Erreur de stockage si le moteur ou l'un de ses index ne s'ouvre pas.
-    #[cfg(feature = "test-util")]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::from_engine(Engine::open(path).map_err(map_engine_error)?)
     }
@@ -203,7 +203,7 @@ impl NativeMemoryStore {
                 graph: PersistentGraph::new(),
                 fts: PersistentFts::new(),
             })),
-            #[cfg(feature = "test-util")]
+            #[cfg(any(test, feature = "test-util"))]
             _tempdir: None,
         })
     }
@@ -230,7 +230,7 @@ impl NativeMemoryStore {
     /// # Errors
     /// Erreur de stockage si le répertoire temporaire ou le store ne se
     /// crée pas.
-    #[cfg(feature = "test-util")]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn open_ephemeral() -> Result<Self> {
         let dir = tempfile::tempdir().map_err(storage)?;
         let mut store = Self::open(dir.path())?;
@@ -246,7 +246,7 @@ impl NativeMemoryStore {
     /// # Errors
     /// Erreur de stockage si le répertoire temporaire ou le store ne se
     /// crée pas.
-    #[cfg(feature = "test-util")]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn open_ephemeral_encrypted(key: &str) -> Result<Self> {
         let dir = tempfile::tempdir().map_err(storage)?;
         let mut store = Self::open_encrypted(dir.path(), key)?;

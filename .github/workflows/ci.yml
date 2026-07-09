@@ -116,14 +116,23 @@ jobs:
           key: zero-network
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Récupère toutes les dépendances (registre + build) AVANT de bloquer le
+      # réseau sortant : le cache `rust-cache` n'est réchauffé que sur `main`
+      # (save-if ci-dessus), donc une PR peut restaurer un cache obsolète —
+      # sans ce fetch, `cargo test` tenterait de compléter le registre une
+      # fois le proxy bloqué et échouerait sur une erreur réseau sans rapport
+      # avec le test "zéro réseau" lui-même.
+      - name: Fetch dependencies (network still open)
+        run: cargo fetch --locked
+
       - name: Memory ops with outbound proxy blocked
         env:
           HTTP_PROXY: http://127.0.0.1:9
           HTTPS_PROXY: http://127.0.0.1:9
         run: |
           set -euxo pipefail
-          cargo test -p basemyai --features test-util --test zero_network_recall
-          cargo test -p basemyai --features test-util provision_without_consent_fails_when_model_absent
+          cargo test -p basemyai --features test-util --test zero_network_recall --offline
+          cargo test -p basemyai --features test-util provision_without_consent_fails_when_model_absent --offline
 
   # ── Feature `embed` : Candle ML (compile + tests réels #[ignore]) ────────────
 
@@ -147,8 +156,8 @@ jobs:
       - name: Build + test (embed)
         run: |
           set -euxo pipefail
-          cargo test -p basemyai-core --features embed
-          cargo test -p basemyai --features embed
+          cargo test -p basemyai-core --features embed,test-util
+          cargo test -p basemyai --features embed,test-util
 
   # ── `basemyai-engine` crash-consistency harness (N2, TODO-NATIVE-ENGINE.md) ─
   # Kill/reopen/verify loop: spawns `crash_writer`, force-kills it mid-write

@@ -51,6 +51,14 @@ sha2 = { workspace = true }
 [dev-dependencies]
 # Accès direct aux types du core dans les tests d'intégration (fakes pour la DI).
 basemyai-core = { path = "../basemyai-core" }
+# `test-util` toujours actif en dev-dependency : les tests unitaires internes
+# (`#[cfg(test)] mod tests`) appellent `NativeMemoryStore::open`/`open_ephemeral`
+# (gardés `cfg(any(test, feature = "test-util"))`) quelles que soient les
+# `--features` passées à `cargo test -p basemyai` (ex. job CI `embed`, qui ne
+# passe pas `test-util`) — sans ceci, `Engine::open` (basemyai-engine) reste
+# invisible puisque ce crate n'est ni en `cfg(test)` ni construit avec sa
+# propre feature `test-util`.
+basemyai-engine = { path = "../basemyai-engine", features = ["test-util"] }
 tempfile.workspace = true
 
 [lints]
