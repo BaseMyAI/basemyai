@@ -121,9 +121,11 @@ jobs:
       # (save-if ci-dessus), donc une PR peut restaurer un cache obsolète —
       # sans ce fetch, `cargo test` tenterait de compléter le registre une
       # fois le proxy bloqué et échouerait sur une erreur réseau sans rapport
-      # avec le test "zéro réseau" lui-même.
+      # avec le test "zéro réseau" lui-même. Pas de `--locked` : `Cargo.lock`
+      # n'est pas versionné dans ce repo (lib workspace), donc rien à locker
+      # sur un checkout neuf — `cargo fetch` le génère ici, réseau encore ouvert.
       - name: Fetch dependencies (network still open)
-        run: cargo fetch --locked
+        run: cargo fetch
 
       - name: Memory ops with outbound proxy blocked
         env:
