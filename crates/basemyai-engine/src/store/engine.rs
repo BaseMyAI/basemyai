@@ -117,11 +117,16 @@ impl Engine {
     /// Besides I/O and corruption: [`EngineError::MissingEncryptionKey`] if
     /// the store at `path` is encrypted (`crypto.meta` present) — use
     /// [`Engine::open_encrypted`] for it.
+    ///
+    /// Réservé aux tests (`test-util`) : la production ouvre toujours via
+    /// [`Engine::open_encrypted`] (ADR-030/033).
+    #[cfg(any(test, feature = "test-util"))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_options(path, EngineOptions::default())
     }
 
     /// Same as [`Engine::open`] with explicit tunables.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn open_with_options(path: impl AsRef<Path>, options: EngineOptions) -> Result<Self> {
         Self::open_inner(path.as_ref(), options, None)
     }
@@ -174,7 +179,7 @@ impl Engine {
         let next_sst_id = ssts.iter().map(|s| s.id + 1).max().unwrap_or(0);
 
         let wal_path = dir.join("wal.log");
-        let wal = Wal::open_for_append(wal_path, crypto.clone())?;
+        let mut wal = Wal::open_for_append(wal_path, crypto.clone())?;
         let mut memtable = Memtable::new();
         for record in wal.replay()? {
             match record.op {
@@ -497,6 +502,26 @@ mod tests {
             panic!("plaintext open of an encrypted store must fail")
         };
         assert!(matches!(err, EngineError::MissingEncryptionKey { .. }));
+    }
+
+    #[test]
+    fn encrypted_reopen_rejects_short_plaintext_wal_without_truncating() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            Engine::open_encrypted(dir.path(), KEY).expect("create encrypted meta");
+        }
+        let wal_path = dir.path().join("wal.log");
+        let plaintext = crate::format::wal::encode(crate::format::wal::WalOp::Put, b"a", Some(b"1"));
+        std::fs::write(&wal_path, &plaintext).expect("write plaintext wal");
+
+        let Err(err) = Engine::open_encrypted(dir.path(), KEY) else {
+            panic!("plaintext wal must be corrupt in encrypted mode")
+        };
+        assert!(matches!(err, EngineError::CorruptWal { .. }));
+        assert_eq!(
+            std::fs::metadata(&wal_path).expect("wal metadata").len(),
+            plaintext.len() as u64
+        );
     }
 
     #[test]

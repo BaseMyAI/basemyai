@@ -36,13 +36,13 @@ pip install -r requirements.txt
 docker compose -f docker-compose.qdrant.yml up -d
 ```
 
-BaseMyAI requires a local model directory and an encryption key:
+BaseMyAI requires a local model directory and an encryption passphrase (ADR-034):
 
 ```bash
 export BASEMYAI_BENCH_DB=./basemyai-bench.bmai
 export BASEMYAI_BENCH_AGENT=bench-agent
 export BASEMYAI_BENCH_MODEL_DIR=/path/to/all-MiniLM-L6-v2
-export BASEMYAI_BENCH_KEY='dev-benchmark-key'
+export BASEMYAI_BENCH_KEY='dev-benchmark-key'   # or BASEMYAI_DB_KEY / ~/.basemyai/key
 ```
 
 Mem0 + Qdrant requires a provider configuration accepted by Mem0. The default

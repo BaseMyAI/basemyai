@@ -9,7 +9,7 @@ use napi_derive::napi;
 pub struct MemoryOpenOptions {
     pub path: String,
     pub agent_id: String,
-    pub encryption_key: String,
+    pub encryption_key: Option<String>,
     pub model_path: Option<String>,
     pub allow_model_download: Option<bool>,
 }
@@ -23,16 +23,41 @@ pub struct Record {
     pub layer: String,
     /// Similarité cosinus normalisée dans `[0, 1]` (`1` = identique).
     pub score: f64,
+    /// Tag wire de provenance.
+    pub source: String,
+    /// Provenance typée (ADR-036).
+    pub trust: String,
 }
 
 impl From<basemyai::Record> for Record {
     fn from(r: basemyai::Record) -> Self {
+        Self::from_vector(r)
+    }
+}
+
+impl Record {
+    pub(crate) fn from_vector(r: basemyai::Record) -> Self {
         let score = f64::from(r.similarity());
+        let trust = r.trust().as_str().to_string();
         Self {
             id: r.id,
             text: r.text,
             layer: r.layer.table().to_string(),
             score,
+            source: r.source,
+            trust,
+        }
+    }
+
+    pub(crate) fn from_hybrid(r: basemyai::Record) -> Self {
+        let trust = r.trust().as_str().to_string();
+        Self {
+            id: r.id,
+            text: r.text,
+            layer: r.layer.table().to_string(),
+            score: f64::from(r.score),
+            source: r.source,
+            trust,
         }
     }
 }

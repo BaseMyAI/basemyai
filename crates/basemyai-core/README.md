@@ -127,6 +127,7 @@ The storage backend is the home-grown BaseMyAI engine ([ADR-024](https://github.
 - Native full-text search (BM25)
 - Native graph storage (prefix-scoped KV layout)
 - Encryption at rest ([ADR-030](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-030-native-encryption-at-rest.md))
+- User passphrase resolution ([ADR-034](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-034-user-key-resolution.md)) — `EncryptionKey::resolve` / `resolve_with_source`
 
 `basemyai-engine` is an internal, unpublished crate. You interact with it through `NativeEngine` and `StorageEngine` in this crate.
 
@@ -138,6 +139,7 @@ The `Embedder` **never downloads** and **never detects hardware**. It receives a
 
 - [docs.rs](https://docs.rs/basemyai-core)
 - [Main README](https://github.com/basemyai/basemyai)
+- [Key resolution (ADR-034)](https://github.com/basemyai/basemyai/blob/main/docs/security/key-resolution.md)
 - [Architecture decisions (ADR)](https://github.com/basemyai/basemyai/blob/main/docs/ADR.md)
 - [ADR-001 — Two-crate split](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-001-two-crates-split.md)
 

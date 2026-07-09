@@ -126,7 +126,7 @@ forgetting, and encryption are part of the product contract. See
 - [x] Adaptive forgetting — hyperbolic importance × recency, capacity-bounded GC
 - [x] Episode-to-fact consolidation via injected LLM (any local runner, no hard dependency)
 - [x] Hardware-aware provisioning — no silent model downloads, explicit setup command
-- [x] Encryption at rest via native envelope (ADR-030), key never stored/sent
+- [x] Encryption at rest via native envelope (ADR-030); centralized passphrase resolution (ADR-034)
 - [x] Per-agent isolation enforced structurally by key layout — cross-agent leakage is a security invariant
 - [x] MCP server (stdio + HTTP), CLI (`basemyai`), REST sidecar (axum), Python SDK (PyO3), Node SDK (NAPI-RS), native Rust crate
 
@@ -251,7 +251,20 @@ A `.bmai` file is a native engine container (WAL + SST + metadata). It is **not*
 
 <h2><img height="20" src="./basemyai-branding/icons/security.svg">&nbsp;&nbsp;Encryption at rest</h2>
 
-`basemyai` requires encryption at rest via the native envelope scheme (ADR-030, XChaCha20-Poly1305). The store is instantiated with an `encryption_key`; data on disk is unreadable without it. The key is supplied at open time and never stored, never transmitted.
+`basemyai` requires encryption at rest via the native envelope scheme (ADR-030, XChaCha20-Poly1305). The passphrase is supplied at open time and **never** stored by the engine, never logged, never written to `config.toml`.
+
+**User key resolution (ADR-034)** — CLI, REST, MCP, and SDK bindings resolve the passphrase from the same ordered sources:
+
+| Priority | Source |
+|---|---|
+| 1 | Explicit argument (`encryption_key` / `EncryptionKey::new`) |
+| 2 | `BASEMYAI_DB_KEY` |
+| 3 | `BASEMYAI_ENCRYPTION_KEY` (legacy alias) |
+| 4 | `BASEMYAI_DB_KEY_FILE` |
+| 5 | `/run/secrets/basemyai_db_key` (Docker secrets) |
+| 6 | `~/.basemyai/key` (`basemyai config key generate`) |
+
+Full operator guide: [`docs/security/key-resolution.md`](docs/security/key-resolution.md).
 
 <p align="center">
   <img width="75%" src="./basemyai-branding/img/basemyai-database-plugin.png" alt="Database plugin architecture" />
@@ -259,7 +272,13 @@ A `.bmai` file is a native engine container (WAL + SST + metadata). It is **not*
 
 <h2><img height="20" src="./basemyai-branding/icons/gettingstarted.svg">&nbsp;&nbsp;Getting started</h2>
 
-Getting started with BaseMyAI takes two steps: run `basemyai setup` once to provision the embedding model for your hardware, then open a `Memory` from your language of choice.
+Getting started with BaseMyAI takes three steps: provision a local encryption passphrase, run `basemyai setup` once for the embedding model, then open a `Memory` from your language of choice.
+
+```bash
+basemyai config key generate   # creates ~/.basemyai/key — value never printed; back it up
+basemyai config key check      # verify a passphrase source is available
+basemyai setup --fetch         # download + verify the baseline embedder (explicit consent)
+```
 
 **Python**
 
@@ -269,7 +288,7 @@ from basemyai import Memory
 mem = await Memory.open(
     path="./agent.bmai",
     agent_id="assistant-42",
-    encryption_key="…",
+    # encryption_key optional — ADR-034 resolves env / ~/.basemyai/key / BASEMYAI_DB_KEY_FILE
     model_dir="~/.basemyai/models/all-MiniLM-L6-v2",
 )
 
@@ -298,7 +317,7 @@ import { Memory } from "basemyai";
 const mem = await Memory.open({
     path: "./agent.bmai",
     agentId: "assistant-42",
-    encryptionKey: "…",
+    // encryptionKey optional — ADR-034 resolves env / ~/.basemyai/key / BASEMYAI_DB_KEY_FILE
     modelPath: "~/.basemyai/models/all-MiniLM-L6-v2",
 });
 
@@ -323,7 +342,7 @@ part of the documented production SDK surface. Production code should use
 use basemyai::{AgentId, Memory, MemoryLayer};
 use basemyai_core::{CandleEmbedder, Device, EncryptionKey, Embedder};
 
-let key = EncryptionKey::new("…");
+let key = EncryptionKey::resolve(None)?; // or EncryptionKey::new("…") to pass explicitly
 let agent = AgentId::new("agent-42").unwrap();
 let model_path = dirs::home_dir().unwrap().join(".basemyai/models/all-MiniLM-L6-v2");
 let embedder: Box<dyn Embedder> =
@@ -366,11 +385,34 @@ basemyai-core = "0.1"
 
 <h4><img width="20" src="./basemyai-branding/icons/docker.svg">&nbsp;&nbsp;Docker (REST sidecar)</h4>
 
+Prefer a **Docker secret file** over inline env vars (ADR-034). See
+[`docs/security/key-resolution.md`](docs/security/key-resolution.md).
+
+```yaml
+# docker-compose.yml (excerpt)
+services:
+  basemyai-rest:
+    image: basemyai/basemyai-rest:latest
+    secrets:
+      - basemyai_db_key
+    environment:
+      BASEMYAI_DB_KEY_FILE: /run/secrets/basemyai_db_key
+      BASEMYAI_REST_DB_PATH: /data/memory.bmai
+    volumes:
+      - ./data:/data
+    ports:
+      - "7743:7743"
+
+secrets:
+  basemyai_db_key:
+    file: ./secrets/basemyai_db_key.txt
+```
+
 ```bash
-docker run --rm -p 8080:8080 \
-  -e BASEMYAI_ENCRYPTION_KEY="…" \
-  -v ./data:/data \
-  basemyai/basemyai:latest
+mkdir -p secrets && chmod 700 secrets
+openssl rand -hex 32 > secrets/basemyai_db_key.txt
+chmod 600 secrets/basemyai_db_key.txt
+docker compose up basemyai-rest
 ```
 
 <h4><img width="20" src="./basemyai-branding/icons/linux.svg">&nbsp;&nbsp;Install on Linux</h4>
@@ -403,13 +445,17 @@ basemyai setup
 
 There is **no silent download at first run**. The fetch happens only here, with your explicit consent. The embedder then receives an already-resolved model path and device — it never decides or downloads anything itself.
 
+Copy [`.env.example`](.env.example) to `.env` for local env vars (placeholders only — never commit real secrets).
+
 <h4>Developer CLI</h4>
 
 The `basemyai` binary wraps the engine for scripting and inspection. Every
-command that opens a `.bmai` container requires the encryption key via the
-`BASEMYAI_DB_KEY` environment variable — no command ever opens a file in clear.
+command that opens a `.bmai` container needs an encryption passphrase (ADR-034).
+There is no CLI flag for the key and no plaintext open.
 
 ```bash
+basemyai config key generate  # local dev: ~/.basemyai/key (chmod 600 on Unix)
+basemyai config key check     # verify resolution before scripting
 basemyai setup --fetch        # provision the baseline embedder (explicit consent)
 basemyai status               # detected hardware + persisted provisioning config
 basemyai init ./agent.bmai    # create an encrypted .bmai container
@@ -437,9 +483,11 @@ basemyai llm detect           # discover local LLM servers + best model
 basemyai llm suggest          # installable models matched to your hardware
 ```
 
-Set `BASEMYAI_DB_KEY`, `BASEMYAI_DB_PATH`, and `BASEMYAI_AGENT` (or use `--db` /
-`--agent` flags) so commands resolve the container and agent without repeating
-paths. Full reference: [docs/cli.md](docs/cli.md).
+Set `BASEMYAI_DB_PATH` and `BASEMYAI_AGENT` (or use `--db` / `--agent` flags).
+For the passphrase, prefer `basemyai config key generate` locally, or set
+`BASEMYAI_DB_KEY` / `BASEMYAI_DB_KEY_FILE` in CI and Docker — see
+[`docs/security/key-resolution.md`](docs/security/key-resolution.md).
+Full CLI reference: [docs/cli.md](docs/cli.md).
 
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;Quick look</h2>
 
@@ -544,10 +592,10 @@ For security issues, kindly email us at [security@basemyai.com](mailto:security@
 
 - **100 % local** — no data leaves your machine, no telemetry by default
 - **Per-agent isolation** — every access is scoped structurally by `agent_id`; cross-agent leakage is a security invariant, not a config option
-- **Encrypted at rest** — native envelope (ADR-030), key never stored
+- **Encrypted at rest** — native envelope (ADR-030); passphrase resolved per ADR-034, never stored in config
 - **No silent network** — the embedder receives a local model path and never auto-downloads
 
-See [SECURITY.md](SECURITY.md) for the full threat model and vulnerability reporting process.
+See [SECURITY.md](SECURITY.md) and [docs/security/key-resolution.md](docs/security/key-resolution.md) for the threat model, key custody, and vulnerability reporting.
 
 <h2><img height="20" src="./basemyai-branding/icons/license.svg">&nbsp;&nbsp;License</h2>
 

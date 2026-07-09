@@ -43,6 +43,8 @@ enum ExportLine {
         id: String,
         layer: String,
         content: String,
+        #[serde(default = "default_source")]
+        source: String,
         valid_from: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         valid_until: Option<i64>,
@@ -75,6 +77,10 @@ enum ExportLine {
 
 fn default_weight() -> f64 {
     1.0
+}
+
+fn default_source() -> String {
+    super::trust::SOURCE_USER.to_string()
 }
 
 /// Bilan d'un [`Memory::import_jsonl`] : lignes insérées vs déjà présentes
@@ -128,6 +134,7 @@ impl Memory {
                     id,
                     layer: record.layer,
                     content: record.content,
+                    source: record.source,
                     valid_from: record.valid_from,
                     valid_until: record.valid_until,
                     importance: record.importance,
@@ -181,6 +188,18 @@ impl Memory {
     /// malformée ; [`MemoryError::UnknownLayer`] si une couche est inconnue ;
     /// propage les erreurs d'embedding/stockage.
     pub async fn import_jsonl(&self, jsonl: &str) -> Result<ImportReport> {
+        self.import_jsonl_with_options(jsonl, false).await
+    }
+
+    /// Importe un export JSONL avec options de confiance.
+    ///
+    /// Les lignes `procedural` sont refusées sauf si `trusted` est `true`
+    /// (audit memory poisoning).
+    ///
+    /// # Errors
+    /// [`MemoryError::Porting`] si l'en-tête manque/diverge, si une ligne est
+    /// malformée, ou si une couche `procedural` est importée sans confiance.
+    pub async fn import_jsonl_with_options(&self, jsonl: &str, trusted: bool) -> Result<ImportReport> {
         // ── Parse + validation, AVANT toute écriture (fail fast) ──────────────
         let mut header_seen = false;
         let mut memories = Vec::new();
@@ -219,6 +238,7 @@ impl Memory {
                     id,
                     layer,
                     content,
+                    source,
                     valid_from,
                     valid_until,
                     importance,
@@ -226,7 +246,21 @@ impl Memory {
                 } => {
                     // Valide la couche maintenant : aucune écriture partielle possible.
                     let layer = MemoryLayer::from_table(&layer)?;
-                    memories.push((id, layer, content, valid_from, valid_until, importance, last_access));
+                    if layer == MemoryLayer::Procedural && !trusted {
+                        return Err(MemoryError::Porting(
+                            "import procedural refusé sans confiance explicite (flag --trusted)".into(),
+                        ));
+                    }
+                    memories.push((
+                        id,
+                        layer,
+                        content,
+                        source,
+                        valid_from,
+                        valid_until,
+                        importance,
+                        last_access,
+                    ));
                 }
                 ExportLine::Entity {
                     id,
@@ -263,16 +297,18 @@ impl Memory {
             .into_iter()
             .zip(vectors)
             .map(
-                |((id, layer, content, valid_from, valid_until, importance, last_access), vector)| NativeImportMemory {
-                    id,
-                    layer,
-                    content,
-                    source: super::SOURCE_USER.to_string(),
-                    valid_from,
-                    valid_until,
-                    importance,
-                    last_access,
-                    vector,
+                |((id, layer, content, _source, valid_from, valid_until, importance, last_access), vector)| {
+                    NativeImportMemory {
+                        id,
+                        layer,
+                        content,
+                        source: super::trust::SOURCE_IMPORT.to_string(),
+                        valid_from,
+                        valid_until,
+                        importance,
+                        last_access,
+                        vector,
+                    }
                 },
             )
             .collect();

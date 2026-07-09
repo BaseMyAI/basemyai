@@ -10,7 +10,7 @@ Example
 ...     mem = await basemyai.Memory.open(
 ...         path="./agent.bmai",
 ...         agent_id="agent-1",
-...         encryption_key="change-me",
+...         # encryption_key optional — uses ADR-034 resolution (env or ~/.basemyai/key)
 ...         model_dir="~/.basemyai/models/all-MiniLM-L6-v2",
 ...     )
 ...     return mem.agent()

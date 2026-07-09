@@ -8,7 +8,7 @@
 //! doc comment together whenever a layout changes — never silently.
 
 pub(crate) mod checksum;
-pub mod crypto;
+pub(crate) mod crypto;
 pub mod lock;
 pub mod sst;
 pub mod wal;

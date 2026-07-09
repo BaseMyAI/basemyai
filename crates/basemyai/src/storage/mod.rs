@@ -52,6 +52,7 @@ pub struct HydratedRecord {
     pub id: String,
     pub text: String,
     pub layer: MemoryLayer,
+    pub source: String,
 }
 
 /// Contrat d'opérations mémoire : tout ce que `basemyai` a besoin de demander
@@ -82,6 +83,7 @@ pub trait MemoryStore: Send + Sync {
 
     /// KNN vectoriel, borné à `agent` + validité temporelle, filtré sur une
     /// couche optionnelle. Hydrate et marque `last_access` sur les résultats.
+    #[allow(clippy::too_many_arguments)]
     async fn recall_vector(
         &self,
         agent: &AgentId,
@@ -90,18 +92,40 @@ pub trait MemoryStore: Send + Sync {
         layer: Option<MemoryLayer>,
         metric: Metric,
         now: i64,
+        include_procedural: bool,
     ) -> Result<Vec<Record>>;
 
     /// KNN vectoriel filtré aux souvenirs mentionnant une entité du graphe.
-    async fn recall_graph_filtered(&self, agent: &AgentId, query: &[f32], k: usize, now: i64) -> Result<Vec<Record>>;
+    async fn recall_graph_filtered(
+        &self,
+        agent: &AgentId,
+        query: &[f32],
+        k: usize,
+        now: i64,
+        include_procedural: bool,
+    ) -> Result<Vec<Record>>;
 
     /// Classement vectoriel (ids seuls), sans hydratation ni `last_access` —
     /// brique du recall hybride (RRF).
-    async fn vector_ranking_ids(&self, agent: &AgentId, query: &[f32], k: usize, now: i64) -> Result<Vec<String>>;
+    async fn vector_ranking_ids(
+        &self,
+        agent: &AgentId,
+        query: &[f32],
+        k: usize,
+        now: i64,
+        include_procedural: bool,
+    ) -> Result<Vec<String>>;
 
     /// Classement BM25 (ids seuls) via FTS5 — brique du recall hybride (RRF).
     /// `match_expr` est déjà construit (tokenisé, cité) par l'appelant.
-    async fn keyword_ranking_ids(&self, agent: &AgentId, match_expr: &str, k: usize, now: i64) -> Result<Vec<String>>;
+    async fn keyword_ranking_ids(
+        &self,
+        agent: &AgentId,
+        match_expr: &str,
+        k: usize,
+        now: i64,
+        include_procedural: bool,
+    ) -> Result<Vec<String>>;
 
     /// Hydrate des ids en `(contenu, couche)` pour `agent` et marque
     /// `last_access`. Ordre préservé ; un id absent (ou appartenant à un autre
@@ -151,7 +175,7 @@ pub trait MemoryStore: Send + Sync {
     /// `true` si un fait sémantique au contenu **exactement** identique existe
     /// déjà pour `agent` — brique de la déduplication de consolidation (le
     /// volet similarité sémantique reste côté `Memory::recall_by_layer`).
-    async fn exact_fact_exists(&self, agent: &AgentId, content: &str) -> Result<bool>;
+    async fn exact_fact_exists(&self, agent: &AgentId, content: &str, at: i64) -> Result<bool>;
 
     /// Couche d'un souvenir par id, borné à `agent` — `None` si absent (ou
     /// appartenant à un autre agent). Brique de l'étiquetage des événements

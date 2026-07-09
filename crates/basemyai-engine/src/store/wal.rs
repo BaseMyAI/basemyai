@@ -51,8 +51,9 @@ impl Wal {
     /// file, expanding any `Batch` record into its individual `Put`/`Delete`
     /// sub-operations in order. Stops silently (does not error) at the first
     /// *outer* record that isn't fully present — the expected shape of a
-    /// torn trailing write left by a crash mid-append. Because a batch is
-    /// always written as one outer record (see the "Batch records" section
+    /// torn trailing write left by a crash mid-append — and truncates that
+    /// torn suffix before the handle is reused for appends. Because a batch
+    /// is always written as one outer record (see the "Batch records" section
     /// of `format::wal`), a torn batch is dropped in its entirety here: its
     /// outer record never decodes as `Some`, so none of its sub-operations
     /// are ever pushed — all-or-nothing falls out of this loop for free,
@@ -60,10 +61,13 @@ impl Wal {
     /// checksum, or a fully-buffered `Batch` record with a structurally
     /// malformed nested payload, is a genuine error (see [`wal::decode`] /
     /// [`wal::decode_batch`]).
-    pub(crate) fn replay(&self) -> Result<Vec<WalRecord>> {
+    pub(crate) fn replay(&mut self) -> Result<Vec<WalRecord>> {
         let mut buf = Vec::new();
-        let mut file = File::open(&self.path).map_err(|e| EngineError::io(self.path.clone(), e))?;
-        file.read_to_end(&mut buf)
+        self.file
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| EngineError::io(self.path.clone(), e))?;
+        self.file
+            .read_to_end(&mut buf)
             .map_err(|e| EngineError::io(self.path.clone(), e))?;
 
         let mut records = Vec::new();
@@ -96,6 +100,9 @@ impl Wal {
                     break;
                 }
             }
+        }
+        if offset != buf.len() {
+            self.truncate_to(offset as u64)?;
         }
         Ok(records)
     }
@@ -145,6 +152,12 @@ impl Wal {
     /// never made it) or every sub-operation present (record fully synced)
     /// — never a partial subset.
     pub(crate) fn append_batch(&mut self, ops: &[BatchOp]) -> Result<()> {
+        if ops.len() > wal::MAX_BATCH_OPS {
+            return Err(EngineError::WalBatchTooLarge {
+                len: ops.len(),
+                max: wal::MAX_BATCH_OPS,
+            });
+        }
         let payload = wal::encode_batch(ops);
         let record = wal::encode(WalOp::Batch, &[], Some(&payload));
         self.write_record(&record)
@@ -154,8 +167,8 @@ impl Wal {
         let sealed;
         let on_disk: &[u8] = match &self.crypto {
             Some(crypto) => {
-                let (nonce, ciphertext) = crypto.seal(record, &envelope::wal_envelope_aad())?;
-                sealed = envelope::encode_wal_envelope(&nonce, &ciphertext);
+                let encrypted = crypto.seal(record, &envelope::wal_envelope_aad())?;
+                sealed = envelope::encode_wal_envelope(&encrypted.nonce, &encrypted.ciphertext);
                 &sealed
             }
             None => record,
@@ -176,11 +189,15 @@ impl Wal {
     /// *after* the corresponding SST has been fsynced and durably renamed
     /// into place — never before (ADR-025 ordering rule).
     pub(crate) fn reset(&mut self) -> Result<()> {
+        self.truncate_to(0)
+    }
+
+    fn truncate_to(&mut self, len: u64) -> Result<()> {
         self.file
-            .set_len(0)
+            .set_len(len)
             .map_err(|e| EngineError::io(self.path.clone(), e))?;
         self.file
-            .seek(SeekFrom::Start(0))
+            .seek(SeekFrom::Start(len))
             .map_err(|e| EngineError::io(self.path.clone(), e))?;
         self.file
             .sync_all()
@@ -242,10 +259,19 @@ mod tests {
             file.seek(SeekFrom::End(0)).expect("seek to end");
             file.write_all(&[0xAA, 0xBB, 0xCC]).expect("write garbage");
         }
-        let wal = Wal::open_for_append(&path, None).expect("reopen");
+        let mut wal = Wal::open_for_append(&path, None).expect("reopen");
         let records = wal.replay().expect("replay tolerates torn tail");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].key, b"a");
+
+        wal.append(WalOp::Put, b"b", Some(b"2")).expect("append after recovery");
+        drop(wal);
+
+        let mut wal = Wal::open_for_append(&path, None).expect("second reopen");
+        let records = wal.replay().expect("replay after recovered append");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].key, b"a");
+        assert_eq!(records[1].key, b"b");
     }
 
     #[test]
@@ -280,6 +306,27 @@ mod tests {
     }
 
     #[test]
+    fn append_batch_rejects_batches_larger_than_replay_accepts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("wal.log");
+        let mut wal = Wal::open_for_append(&path, None).expect("open");
+        let ops = vec![
+            BatchOp {
+                op: WalOp::Put,
+                key: b"k".to_vec(),
+                value: Some(b"v".to_vec()),
+            };
+            wal::MAX_BATCH_OPS + 1
+        ];
+
+        let err = wal
+            .append_batch(&ops)
+            .expect_err("oversized batch refused before writing");
+        assert!(matches!(err, EngineError::WalBatchTooLarge { .. }));
+        assert!(wal.replay().expect("empty wal remains readable").is_empty());
+    }
+
+    #[test]
     fn encrypted_replay_tolerates_torn_trailing_envelope() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("wal.log");
@@ -293,11 +340,16 @@ mod tests {
         let full = std::fs::read(&path).expect("read");
         std::fs::write(&path, &full[..full.len() - 3]).expect("truncate");
         {
-            let mut wal = Wal::open_for_append(&path, Some(crypto)).expect("reopen");
+            let mut wal = Wal::open_for_append(&path, Some(crypto.clone())).expect("reopen");
             assert!(wal.replay().expect("torn tail tolerated").is_empty());
             // The store keeps working after the torn tail.
             wal.append(WalOp::Put, b"b", Some(b"2")).expect("append after torn");
         }
+        let mut wal = Wal::open_for_append(&path, Some(crypto)).expect("second reopen");
+        let records = wal.replay().expect("replay after recovered append");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key, b"b");
+        assert_eq!(records[0].value.as_deref(), Some(&b"2"[..]));
     }
 
     #[test]
@@ -315,7 +367,7 @@ mod tests {
         let last = raw.len() - 1;
         raw[last] ^= 0xFF;
         std::fs::write(&path, &raw).expect("write tampered");
-        let wal = Wal::open_for_append(&path, Some(crypto)).expect("reopen");
+        let mut wal = Wal::open_for_append(&path, Some(crypto)).expect("reopen");
         let err = wal.replay().expect_err("tampered envelope must fail");
         assert!(matches!(err, EngineError::CorruptWal { .. }));
     }

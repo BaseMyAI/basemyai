@@ -23,6 +23,15 @@ use crate::{Memory, MemoryError, MemoryLayer, Result, now_unix};
 /// Borne le nombre d'épisodes envoyés au LLM en une passe (taille de prompt).
 const MAX_EPISODES: usize = 50;
 
+/// Nombre maximal de faits acceptés par `apply_extraction` / `consolidate_apply`.
+pub const MAX_CONSOLIDATION_FACTS: usize = 100;
+
+/// Nombre maximal d'entités acceptées par `apply_extraction` / `consolidate_apply`.
+pub const MAX_CONSOLIDATION_ENTITIES: usize = 200;
+
+/// Nombre maximal de relations acceptées par `apply_extraction` / `consolidate_apply`.
+pub const MAX_CONSOLIDATION_RELATIONS: usize = 500;
+
 /// Compte-rendu d'une passe de consolidation (observabilité / tests).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ConsolidationReport {
@@ -118,6 +127,71 @@ pub fn parse_extraction(raw: &str) -> Result<Extraction> {
         .map_err(|e| MemoryError::Extraction(format!("JSON d'extraction invalide : {e}")))
 }
 
+/// Vérifie les bornes d'une extraction avant persistance (`consolidate_apply`,
+/// MCP). Rejette les payloads massifs sans panic.
+///
+/// # Errors
+/// [`MemoryError::Extraction`] si une limite est dépassée ou un champ trop long.
+pub fn validate_extraction_bounds(extraction: &Extraction) -> Result<()> {
+    use crate::MAX_TEXT_LEN;
+
+    if extraction.facts.len() > MAX_CONSOLIDATION_FACTS {
+        return Err(MemoryError::Extraction(format!(
+            "trop de faits : {} (max {MAX_CONSOLIDATION_FACTS})",
+            extraction.facts.len()
+        )));
+    }
+    if extraction.entities.len() > MAX_CONSOLIDATION_ENTITIES {
+        return Err(MemoryError::Extraction(format!(
+            "trop d'entités : {} (max {MAX_CONSOLIDATION_ENTITIES})",
+            extraction.entities.len()
+        )));
+    }
+    if extraction.relations.len() > MAX_CONSOLIDATION_RELATIONS {
+        return Err(MemoryError::Extraction(format!(
+            "trop de relations : {} (max {MAX_CONSOLIDATION_RELATIONS})",
+            extraction.relations.len()
+        )));
+    }
+    for (i, fact) in extraction.facts.iter().enumerate() {
+        if fact.len() > MAX_TEXT_LEN {
+            return Err(MemoryError::Extraction(format!(
+                "fait {i} trop long : {} octets (max {MAX_TEXT_LEN})",
+                fact.len()
+            )));
+        }
+    }
+    for (i, e) in extraction.entities.iter().enumerate() {
+        for (field, value) in [
+            ("id", e.id.as_str()),
+            ("kind", e.kind.as_str()),
+            ("label", e.label.as_str()),
+        ] {
+            if value.len() > MAX_TEXT_LEN {
+                return Err(MemoryError::Extraction(format!(
+                    "entité {i} champ `{field}` trop long : {} octets (max {MAX_TEXT_LEN})",
+                    value.len()
+                )));
+            }
+        }
+    }
+    for (i, r) in extraction.relations.iter().enumerate() {
+        for (field, value) in [
+            ("src", r.src.as_str()),
+            ("relation", r.relation.as_str()),
+            ("dst", r.dst.as_str()),
+        ] {
+            if value.len() > MAX_TEXT_LEN {
+                return Err(MemoryError::Extraction(format!(
+                    "relation {i} champ `{field}` trop long : {} octets (max {MAX_TEXT_LEN})",
+                    value.len()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Provenance des faits promus par consolidation (vs `"user"` pour un
 /// souvenir mémorisé directement, cf. ADR-018 / audit sécurité). Trace
 /// l'escalade de confiance `episodic → semantic` qui passe par une inférence
@@ -139,6 +213,7 @@ use crate::memory::SOURCE_CONSOLIDATION;
 /// # Errors
 /// [`MemoryError::Core`] en cas d'échec de stockage/embedding.
 pub async fn apply_extraction(memory: &Memory, extraction: &Extraction) -> Result<ConsolidationReport> {
+    validate_extraction_bounds(extraction)?;
     // Graphe : upserts idempotents (ON CONFLICT) — relancer ne duplique pas.
     let graph = memory.graph();
     for e in &extraction.entities {
@@ -227,7 +302,8 @@ const SEMANTIC_DEDUP_THRESHOLD: f32 = 0.95;
 /// laisserait passer une reformulation légère (ou une variante injectée) du
 /// même fait — audit sécurité, memory poisoning.
 async fn fact_already_known(memory: &Memory, fact: &str) -> Result<bool> {
-    if memory.engine().exact_fact_exists(memory.agent(), fact).await? {
+    let now = now_unix();
+    if memory.engine().exact_fact_exists(memory.agent(), fact, now).await? {
         return Ok(true);
     }
 
@@ -352,5 +428,18 @@ mod tests {
             prompt.contains(&malicious),
             "le contenu de l'épisode est préservé tel quel, comme donnée"
         );
+    }
+
+    #[test]
+    fn validate_extraction_bounds_rejects_oversized_payload() {
+        use super::{Extraction, validate_extraction_bounds};
+        use crate::MAX_CONSOLIDATION_FACTS;
+
+        let extraction = Extraction {
+            facts: vec!["x".to_string(); MAX_CONSOLIDATION_FACTS + 1],
+            ..Extraction::default()
+        };
+        let err = validate_extraction_bounds(&extraction).expect_err("trop de faits");
+        assert!(err.to_string().contains("trop de faits"), "message explicite : {err}");
     }
 }

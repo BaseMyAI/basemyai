@@ -253,7 +253,13 @@ pub(crate) async fn export(path: &Path, agent: &str, out: Option<String>, format
     Ok(())
 }
 
-pub(crate) async fn import(path: &Path, agent: &str, file: &str, format: Format) -> Result<(), CliError> {
+pub(crate) async fn import(
+    path: &Path,
+    agent: &str,
+    file: &str,
+    trusted: bool,
+    format: Format,
+) -> Result<(), CliError> {
     let memory = open_memory(path, agent).await?;
     let jsonl = read_input(file)?;
     let spinner = if format.is_text() {
@@ -261,7 +267,7 @@ pub(crate) async fn import(path: &Path, agent: &str, file: &str, format: Format)
     } else {
         crate::ui::progress::Spinner::Disabled
     };
-    let report = memory.import_jsonl(&jsonl).await?;
+    let report = memory.import_jsonl_with_options(&jsonl, trusted).await?;
     spinner.finish_and_clear();
     format.print(
         || {

@@ -20,9 +20,13 @@ use crate::exit;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub(crate) enum CliError {
-    /// `BASEMYAI_DB_KEY` absente (chiffrement obligatoire, ADR-007).
-    #[error("BASEMYAI_DB_KEY is required (encryption at rest is mandatory)")]
-    MissingKey,
+    /// Passphrase de chiffrement introuvable (ADR-034).
+    #[error("{0}")]
+    MissingKey(String),
+
+    /// Fichier de clé invalide ou permissions Unix trop ouvertes.
+    #[error("{0}")]
+    KeyResolution(String),
 
     /// `--db`/`--agent` non résolvable (flag, env, et config tous absents).
     #[error("{0}")]
@@ -79,7 +83,8 @@ impl CliError {
     /// dans `docs/cli.md` — ne renomme jamais une valeur existante.
     pub(crate) fn code(&self) -> &'static str {
         match self {
-            Self::MissingKey => "KEY_REQUIRED",
+            Self::MissingKey(_) => "KEY_REQUIRED",
+            Self::KeyResolution(_) => "KEY_INSECURE",
             Self::NotConfigured(_) => "NOT_CONFIGURED",
             Self::InvalidAgent => "INVALID_AGENT",
             Self::AlreadyExists(_) => "ALREADY_EXISTS",
@@ -98,7 +103,8 @@ impl CliError {
     /// Exit code du process pour cette erreur (voir `exit.rs`).
     pub(crate) fn exit_code(&self) -> u8 {
         match self {
-            Self::MissingKey => exit::KEY_ERROR,
+            Self::MissingKey(_) => exit::KEY_ERROR,
+            Self::KeyResolution(_) => exit::KEY_ERROR,
             Self::NotConfigured(_) => exit::NOT_CONFIGURED,
             Self::InvalidAgent => exit::VALIDATION,
             Self::AlreadyExists(_) => exit::ALREADY_EXISTS,
@@ -138,7 +144,11 @@ fn memory_error_exit(e: &MemoryError) -> u8 {
 
 fn core_error_code(e: &CoreError) -> &'static str {
     match e {
-        CoreError::Encryption => "KEY_ERROR",
+        CoreError::EncryptionKeyRequired => "ENCRYPTION_KEY_REQUIRED",
+        CoreError::WrongEncryptionKey => "WRONG_ENCRYPTION_KEY",
+        CoreError::CorruptEncryptionMetadata => "CORRUPT_ENCRYPTION_METADATA",
+        CoreError::Encryption => "ENCRYPTION_ERROR",
+        CoreError::PlaintextStoreEncryptedKeySupplied => "ENCRYPTION_REQUIRED",
         CoreError::ModelNotProvisioned(_) => "MODEL_NOT_PROVISIONED",
         CoreError::Storage(_) | CoreError::Vector(_) => "STORAGE_ERROR",
         CoreError::Embed(_) => "EMBED_ERROR",
@@ -148,7 +158,11 @@ fn core_error_code(e: &CoreError) -> &'static str {
 
 fn core_error_exit(e: &CoreError) -> u8 {
     match e {
-        CoreError::Encryption => exit::KEY_ERROR,
+        CoreError::Encryption
+        | CoreError::EncryptionKeyRequired
+        | CoreError::WrongEncryptionKey
+        | CoreError::CorruptEncryptionMetadata
+        | CoreError::PlaintextStoreEncryptedKeySupplied => exit::KEY_ERROR,
         CoreError::ModelNotProvisioned(_) => exit::MODEL_NOT_PROVISIONED,
         _ => exit::GENERIC,
     }

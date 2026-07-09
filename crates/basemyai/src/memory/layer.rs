@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 //! Les 4 couches mémoire (ADR-004) et les types de données associés.
 
+use super::trust::TrustLevel;
 use crate::{MemoryError, Result};
 
 /// Les 4 couches mémoire (ADR-004). Chacune a son mode d'accès et sa durée de vie.
@@ -58,9 +59,17 @@ pub struct Record {
     pub text: String,
     pub layer: MemoryLayer,
     pub score: f32,
+    /// Provenance wire du souvenir (`user`, `consolidation`, `import`, …).
+    pub source: String,
 }
 
 impl Record {
+    /// Provenance typée dérivée de [`Self::source`] (ADR-036).
+    #[must_use]
+    pub fn trust(&self) -> TrustLevel {
+        TrustLevel::from_source(&self.source)
+    }
+
     /// Similarité cosinus normalisée dans `[0, 1]` (`1` = identique), dérivée de
     /// la distance brute. C'est la forme exposée par les SDK et le sidecar REST.
     #[must_use]

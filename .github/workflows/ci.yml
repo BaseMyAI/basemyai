@@ -67,11 +67,14 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Doc drift (ADR-033)
+        run: cargo run --quiet --manifest-path xtask/Cargo.toml -- doc-drift
+
       - name: Clippy (-D warnings)
         run: |
           set -euxo pipefail
-          cargo clippy -p basemyai-core --all-targets -- -D warnings
-          cargo clippy -p basemyai-engine --all-targets -- -D warnings
+          cargo clippy -p basemyai-core --all-targets --features test-util -- -D warnings
+          cargo clippy -p basemyai-engine --all-targets --features test-util -- -D warnings
           cargo clippy -p basemyai --features test-util --all-targets -- -D warnings
           cargo clippy -p basemyai-mcp --no-default-features --features stdio,http,test-util --all-targets -- -D warnings
           cargo clippy -p basemyai-rest --no-default-features --features test-util --all-targets -- -D warnings
@@ -82,22 +85,45 @@ jobs:
       - name: Test
         run: |
           set -euxo pipefail
-          cargo test -p basemyai-core
+          cargo test -p basemyai-core --features test-util
           # --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test format_lock :
           # tests du moteur natif + harnais recall + persistance KV + churn
           # insert/delete (tombstones + consolidation FreshDiskANN, recall APRÈS
           # churn — ADR-026 §6) de l'index vectoriel (N3) + parité du graphe natif
           # (N4, scénarios de crates/basemyai/tests/graph.rs portés contre RAM et
           # persistant), SANS crash_consistency (kill-loop lent, job dédié ci-dessous)
-          cargo test -p basemyai-engine --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test format_lock
+          cargo test -p basemyai-engine --features test-util --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test malformed_open --test format_lock
           cargo test -p basemyai --features test-util
           # --test memory_tests : runner déclaratif du contrat MemoryStore sur
           # le backend natif (clair + chiffré), zéro divergence tolérée.
           cargo test -p basemyai --features test-util --test memory_tests
           cargo test -p basemyai --features test-util --test p1_isolation_adversarial
+          cargo test -p basemyai --features test-util --test poisoning_procedural_recall --test provenance_trust --test plaintext_open_forbidden --test temporal_replacement_ci --test temporal_dedup_consolidation --test export_isolation_adversarial --test isolation_recall_graph_adversarial
           cargo test -p basemyai-mcp --no-default-features --features stdio,http,test-util
           cargo test -p basemyai-rest --no-default-features --features test-util
           cargo test -p basemyai-cli
+
+  # ── Zero network : mémoire locale sans socket (proxy invalide) ───────────────
+
+  zero-network-after-setup:
+    name: zero-network-after-setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: zero-network
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Memory ops with outbound proxy blocked
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+        run: |
+          set -euxo pipefail
+          cargo test -p basemyai --features test-util --test zero_network_recall
+          cargo test -p basemyai --features test-util provision_without_consent_fails_when_model_absent
 
   # ── Feature `embed` : Candle ML (compile + tests réels #[ignore]) ────────────
 
@@ -149,7 +175,7 @@ jobs:
       - name: Kill/reopen/verify loop (basemyai-engine)
         run: |
           set -euxo pipefail
-          cargo test -p basemyai-engine --test crash_consistency -- --nocapture
+          cargo test -p basemyai-engine --features test-util --test crash_consistency -- --nocapture
 
   # ── Required checks gate ─────────────────────────────────────────────────────
   # Single job used as the branch-protection rule target.
@@ -162,6 +188,7 @@ jobs:
     needs:
       - format
       - gate
+      - zero-network-after-setup
       - embed
       - crash-consistency
     steps:
@@ -170,6 +197,7 @@ jobs:
           results=(
             "${{ needs.format.result }}"
             "${{ needs.gate.result }}"
+            "${{ needs.zero-network-after-setup.result }}"
             "${{ needs.embed.result }}"
             "${{ needs.crash-consistency.result }}"
           )

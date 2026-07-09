@@ -72,7 +72,13 @@ impl Config {
                 cfg.port = p;
             }
             if file.mcp.api_key.is_some() {
-                cfg.api_key = file.mcp.api_key;
+                eprintln!(
+                    "warning: [mcp].api_key in {} is ignored — set BASEMYAI_MCP_API_KEY \
+                     (TODO P1: remove [mcp].api_key from config schema)",
+                    Config::default_path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "~/.basemyai/config.toml".to_string())
+                );
             }
             if let Some(t) = file.mcp.timeout_secs {
                 cfg.timeout_secs = t;

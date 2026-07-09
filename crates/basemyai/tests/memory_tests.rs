@@ -154,7 +154,7 @@ async fn native_rotate_key_preserves_data_and_invalidates_old_key() {
 
         // L'instance reste pleinement utilisable après rotation (ADR-030 §4).
         let got = store
-            .recall_vector(&agent, &vector, 5, None, Metric::Cosine, 0)
+            .recall_vector(&agent, &vector, 5, None, Metric::Cosine, 0, true)
             .await
             .expect("recall post-rotation sur la même instance");
         assert_eq!(got.len(), 1, "l'instance doit rester utilisable après rotate_key");
@@ -169,7 +169,7 @@ async fn native_rotate_key_preserves_data_and_invalidates_old_key() {
     // La nouvelle clé rouvre et retrouve le souvenir intact.
     let store = NativeMemoryStore::open_encrypted(dir.path(), "nouvelle-clé").expect("reopen nouvelle clé");
     let got = store
-        .recall_vector(&agent, &vector, 5, None, Metric::Cosine, 0)
+        .recall_vector(&agent, &vector, 5, None, Metric::Cosine, 0, true)
         .await
         .expect("recall sous la nouvelle clé");
     assert_eq!(got.len(), 1);
@@ -228,7 +228,7 @@ async fn native_concurrent_reads_are_correct_and_faster_than_sequential() {
             match i % 3 {
                 0 => {
                     let ids = store
-                        .vector_ranking_ids(&agent, &query, 10, 0)
+                        .vector_ranking_ids(&agent, &query, 10, 0, true)
                         .await
                         .expect("vector ranking");
                     assert!(
@@ -242,7 +242,7 @@ async fn native_concurrent_reads_are_correct_and_faster_than_sequential() {
                 }
                 _ => {
                     let exists = store
-                        .exact_fact_exists(&agent, "mémoire numéro 0 avec un terme0unique")
+                        .exact_fact_exists(&agent, "mémoire numéro 0 avec un terme0unique", 0)
                         .await
                         .expect("exact fact");
                     // Couche episodic, pas semantic : jamais un "fait exact" — la
@@ -262,7 +262,7 @@ async fn native_concurrent_reads_are_correct_and_faster_than_sequential() {
     let sequential_start = Instant::now();
     for _ in 0..READS {
         store
-            .vector_ranking_ids(&agent, &query, 10, 0)
+            .vector_ranking_ids(&agent, &query, 10, 0, true)
             .await
             .expect("sequential read");
     }
@@ -275,7 +275,7 @@ async fn native_concurrent_reads_are_correct_and_faster_than_sequential() {
         let agent = agent.clone();
         let query = query.clone();
         handles.push(tokio::spawn(async move {
-            store.vector_ranking_ids(&agent, &query, 10, 0).await
+            store.vector_ranking_ids(&agent, &query, 10, 0, true).await
         }));
     }
     for handle in handles {
@@ -297,4 +297,20 @@ async fn native_rotate_key_on_plaintext_store_fails() {
         store.rotate_key("peu-importe").await.is_err(),
         "rotate_key sur un store non chiffré doit échouer"
     );
+}
+
+#[test]
+fn native_wrong_encryption_key_maps_to_typed_core_error() {
+    use basemyai::storage::NativeMemoryStore;
+    use basemyai_core::CoreError;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    NativeMemoryStore::open_encrypted(dir.path(), "bonne-clé").expect("open chiffré");
+    let Err(err) = NativeMemoryStore::open_encrypted(dir.path(), "mauvaise-clé") else {
+        panic!("mauvaise clé aurait dû échouer");
+    };
+    match err {
+        basemyai::MemoryError::Core(CoreError::WrongEncryptionKey) => {}
+        other => panic!("attendu WrongEncryptionKey, reçu {other:?}"),
+    }
 }

@@ -37,9 +37,18 @@ them:
 | `--no-progress` | — | Disables spinners/progress bars for long operations. |
 | `-v`, `-vv` | — | Enables diagnostic logs on stderr (`info`/`debug`). |
 
-Encryption is mandatory (ADR-007): every command that opens a `.bmai` file
-requires the key via `BASEMYAI_DB_KEY`. There is no flag for the key and no
-way to open a file in plaintext.
+Encryption is mandatory (ADR-007/ADR-030). Every command that opens a `.bmai`
+file resolves the user passphrase via **ADR-034** (see
+[`docs/security/key-resolution.md`](security/key-resolution.md)):
+
+1. `BASEMYAI_DB_KEY` (canonical)
+2. `BASEMYAI_ENCRYPTION_KEY` (legacy alias)
+3. `BASEMYAI_DB_KEY_FILE`
+4. `/run/secrets/basemyai_db_key`
+5. `~/.basemyai/key` (from `basemyai config key generate`)
+
+There is no CLI flag for the key and no way to open a file in plaintext. The
+passphrase is **never** stored in `config.toml`.
 
 In `text` mode, `basemyai` now uses a terminal-aware presentation layer:
 tables for scanability, semantic color tokens, and progress feedback for long
@@ -58,7 +67,7 @@ free-text messages. Defined in `crates/basemyai-cli/src/exit.rs` /
 | 0 | Success. |
 | 1 | Generic/uncategorized error (storage, embedding, IO...). |
 | 2 | Invalid flag combination (e.g. `recall --hybrid --layer --graph` together), unknown `config` key. |
-| 3 | Encryption key missing or rejected (`BASEMYAI_DB_KEY`). |
+| 3 | Encryption key missing or insecure file permissions (ADR-034). |
 | 4 | `--db`/`--agent` not resolvable (no flag, no env var, no config entry). |
 | 5 | Invalid input at the business level (empty agent id, text too long...). |
 | 6 | Target already exists (`init` on an existing path). |
@@ -69,13 +78,13 @@ free-text messages. Defined in `crates/basemyai-cli/src/exit.rs` /
 
 In `--format json`, every error is also printed on stderr as a single object
 with a stable `code` string (the same categories as the table above, e.g.
-`KEY_REQUIRED`, `NOT_CONFIGURED`, `INVALID_AGENT`, `ALREADY_EXISTS`,
+`KEY_REQUIRED`, `KEY_INSECURE`, `NOT_CONFIGURED`, `INVALID_AGENT`, `ALREADY_EXISTS`,
 `CONFIRMATION_REQUIRED`, `MODEL_NOT_PROVISIONED`, `LLM_NOT_AVAILABLE`,
 `VERIFICATION_FAILED`) and a human `message` that **is not** part of the
 contract and may reword across releases:
 
 ```json
-{"error":{"code":"KEY_REQUIRED","message":"BASEMYAI_DB_KEY is required (encryption at rest is mandatory)"}}
+{"error":{"code":"KEY_REQUIRED","message":"encryption key required: …"}}
 ```
 
 In `--format text` (default), errors print as `error: <message>` on stderr.
@@ -96,9 +105,23 @@ basemyai config set agent my-agent
 basemyai config unset agent
 ```
 
-Writes `~/.basemyai/config.toml` (`[cli]` section: `db_path`, `agent`).
+Writes `~/.basemyai/config.toml` (`[cli]` section: `db_path`, `agent` only —
+**never** the encryption passphrase).
 Precedence is flag > environment variable > config file > explicit error —
 the CLI never guesses a path or agent.
+
+### Encryption key (ADR-034)
+
+```bash
+basemyai config key generate          # create ~/.basemyai/key (value never printed)
+basemyai config key generate --force  # replace an existing key file
+basemyai config key path              # show default key file path
+basemyai config key check             # verify a passphrase source is available
+```
+
+Back up `~/.basemyai/key` securely — losing it means **permanent** loss of
+access to encrypted `.bmai` containers. On Unix, permissions must be
+`chmod 700 ~/.basemyai` and `chmod 600 ~/.basemyai/key`.
 
 ## Provisioning
 

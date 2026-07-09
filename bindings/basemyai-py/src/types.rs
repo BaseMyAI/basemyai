@@ -16,16 +16,43 @@ pub struct Record {
     pub layer: String,
     /// Similarité cosinus normalisée dans `[0, 1]` (`1` = identique).
     pub score: f32,
+    /// Tag wire de provenance (`user`, `consolidation`, `import`, …).
+    pub source: String,
+    /// Provenance typée (ADR-036).
+    pub trust: String,
 }
 
 impl From<basemyai::Record> for Record {
     fn from(r: basemyai::Record) -> Self {
+        Self::from_vector(r)
+    }
+}
+
+impl Record {
+    /// Recall vectoriel : `score` = similarité cosinus normalisée.
+    pub(crate) fn from_vector(r: basemyai::Record) -> Self {
         let score = r.similarity();
+        let trust = r.trust().as_str().to_string();
         Self {
             id: r.id,
             text: r.text,
             layer: r.layer.table().to_string(),
             score,
+            source: r.source,
+            trust,
+        }
+    }
+
+    /// Recall hybride : `score` = score RRF fusionné (pas une similarité).
+    pub(crate) fn from_hybrid(r: basemyai::Record) -> Self {
+        let trust = r.trust().as_str().to_string();
+        Self {
+            id: r.id,
+            text: r.text,
+            layer: r.layer.table().to_string(),
+            score: r.score,
+            source: r.source,
+            trust,
         }
     }
 }

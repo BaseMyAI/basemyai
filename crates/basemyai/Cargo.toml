@@ -24,7 +24,7 @@ embed = ["basemyai-core/embed"]
 # `tempfile` sert `NativeMemoryStore::open_ephemeral` (l'équivalent natif
 # d'`open_in_memory` — le moteur LSM n'a pas de mode in-memory).
 # Jamais en production.
-test-util = ["dep:tempfile"]
+test-util = ["dep:tempfile", "basemyai-engine/test-util"]
 
 [dependencies]
 basemyai-core = { version = "0.1.0", path = "../basemyai-core" }

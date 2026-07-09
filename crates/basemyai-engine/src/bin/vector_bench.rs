@@ -118,6 +118,7 @@ const LATENT_DIM: usize = 16;
 /// calls directly since there is no Criterion harness here).
 const NUM_QUERIES: usize = 100;
 const K: usize = 10;
+const BENCH_CRYPTO_KEY: &[u8] = b"vector-bench-dev-key";
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -160,10 +161,11 @@ fn main() {
 
     let mut generator = LatentData::new(0xBA5E_A126_2026_0705, DIM);
 
-    let mut engine = Engine::open_with_options(&engine_dir, EngineOptions::default()).unwrap_or_else(|e| {
-        eprintln!("vector_bench: failed to open engine: {e}");
-        std::process::exit(1);
-    });
+    let mut engine = Engine::open_encrypted_with_options(&engine_dir, BENCH_CRYPTO_KEY, EngineOptions::default())
+        .unwrap_or_else(|e| {
+            eprintln!("vector_bench: failed to open engine: {e}");
+            std::process::exit(1);
+        });
     let mut index = PersistentVectorIndex::open(&mut engine, params).unwrap_or_else(|e| {
         eprintln!("vector_bench: failed to open index: {e}");
         std::process::exit(1);

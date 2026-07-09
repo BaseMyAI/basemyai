@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
 
-    use basemyai_core::{CandleEmbedder, Embedder};
+    use basemyai_core::{CandleEmbedder, Embedder, EncryptionKey, KeyResolveError};
     use basemyai_mcp::{Config, FileProvider, McpServer, run_http, run_stdio};
 
     // Logs sur STDERR uniquement : en stdio, STDOUT est le canal MCP — y écrire
@@ -48,8 +48,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Clé de chiffrement de la base (obligatoire — chiffrement au repos, ADR-007 ;
     // le backend natif chiffre sans CMake, ADR-030).
-    let db_key =
-        std::env::var("BASEMYAI_DB_KEY").map_err(|_| "BASEMYAI_DB_KEY is required (encryption is mandatory)")?;
+    let db_key = EncryptionKey::resolve(None).map_err(|e| match e {
+        KeyResolveError::Missing(msg) => msg,
+        other => other.to_string(),
+    })?;
 
     // Chemin de la base partagée : ~/.basemyai/memory.bmai (isolation par agent
     // structurelle sous préfixe de clé, ADR-006/ADR-027).
@@ -61,7 +63,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mp = basemyai::provision(consent).await?;
     let embedder: Arc<dyn Embedder> = Arc::new(CandleEmbedder::load(&mp.model_path, mp.device)?);
 
-    let provider = Arc::new(FileProvider::open(db_path, db_key, embedder).await?);
+    let provider = Arc::new(FileProvider::open(db_path, db_key.expose().to_string(), embedder).await?);
     let server = McpServer::new(provider, config.clone());
 
     match transport.as_str() {

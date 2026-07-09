@@ -35,7 +35,7 @@ cargo build --release -p basemyai-mcp --bin basemyai-mcp
 
 | Variable | Rôle | Requis |
 | --- | --- | --- |
-| `BASEMYAI_DB_KEY` | Clé de chiffrement de la base (`~/.basemyai/memory.db`). | **Oui** (chiffrement obligatoire, ADR-007) |
+| Passphrase (ADR-034) | Voir [`docs/security/key-resolution.md`](security/key-resolution.md) : `BASEMYAI_DB_KEY`, `BASEMYAI_DB_KEY_FILE`, `/run/secrets/basemyai_db_key`, ou `~/.basemyai/key` | **Oui** |
 | `BASEMYAI_FETCH` | `1` = consent au téléchargement du modèle d'embedding au 1ᵉʳ lancement. | 1ᵉʳ run seulement |
 | `BASEMYAI_MCP_TRANSPORT` | `stdio` (défaut) ou `http`. | Non |
 | `BASEMYAI_MCP_API_KEY` | Jeton Bearer — **requis** pour le transport HTTP. | HTTP seulement |
@@ -51,8 +51,23 @@ cargo build --release -p basemyai-mcp --bin basemyai-mcp
 ## 3. Claude Code (stdio)
 
 ```bash
+# Générer une passphrase locale (recommandé dev) — jamais affichée
+basemyai config key generate
+
 claude mcp add basemyai \
-  --env BASEMYAI_DB_KEY=change-me-32-bytes-min \
+  --env BASEMYAI_FETCH=1 \
+  -- /chemin/absolu/target/release/basemyai-mcp
+```
+
+Si vous préférez une variable d'environnement explicite, utilisez
+`BASEMYAI_DB_KEY` (voir [key-resolution.md](security/key-resolution.md)) —
+**ne pas** utiliser de placeholder type `change-me` en production.
+
+Exemple avec env var :
+
+```bash
+claude mcp add basemyai \
+  --env BASEMYAI_DB_KEY="$BASEMYAI_DB_KEY" \
   --env BASEMYAI_FETCH=1 \
   -- /chemin/absolu/target/release/basemyai-mcp
 ```
@@ -72,13 +87,16 @@ Ajoutez à la config MCP de l'hôte (ex. `claude_desktop_config.json`) :
     "basemyai": {
       "command": "C:\\chemin\\absolu\\target\\release\\basemyai-mcp.exe",
       "env": {
-        "BASEMYAI_DB_KEY": "change-me-32-bytes-min",
         "BASEMYAI_FETCH": "1"
       }
     }
   }
 }
 ```
+
+Après `basemyai config key generate`, la passphrase est lue depuis
+`%USERPROFILE%\\.basemyai\\key`. Sinon, définissez `BASEMYAI_DB_KEY` dans
+`env` (voir [key-resolution.md](security/key-resolution.md)).
 
 Retirez `BASEMYAI_FETCH` après le premier lancement réussi.
 

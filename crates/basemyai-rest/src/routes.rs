@@ -173,6 +173,12 @@ struct RecallRequest {
     k: usize,
     #[serde(default)]
     layer: Option<String>,
+    /// Inclure la couche `procedural` (défaut : `false`, audit memory poisoning).
+    #[serde(default)]
+    include_procedural: bool,
+    /// Exclure les souvenirs importés (défaut : `false`, ADR-036).
+    #[serde(default)]
+    exclude_imported: bool,
 }
 
 fn default_k() -> usize {
@@ -223,6 +229,8 @@ struct RecordDto {
     text: String,
     layer: String,
     score: f32,
+    source: String,
+    trust: String,
 }
 
 #[derive(Serialize)]
@@ -320,17 +328,30 @@ async fn recall(State(state): State<AppState>, Json(req): Json<RecallRequest>) -
             let layer = MemoryLayer::from_table(layer)?;
             mem.recall_by_layer(&req.query, layer, req.k).await?
         }
-        None => mem.recall(&req.query, req.k).await?,
+        None => {
+            mem.recall_with_options(
+                &req.query,
+                req.k,
+                basemyai::RecallOptions {
+                    include_procedural: req.include_procedural,
+                    exclude_imported: req.exclude_imported,
+                },
+            )
+            .await?
+        }
     };
     let items: Vec<RecordDto> = records
         .into_iter()
         .map(|r| {
+            let trust = r.trust().as_str().to_string();
             let score = r.similarity();
             RecordDto {
                 id: r.id,
                 text: r.text,
                 layer: r.layer.table().to_string(),
                 score,
+                source: r.source,
+                trust,
             }
         })
         .collect();
@@ -353,14 +374,28 @@ async fn recall_hybrid(
     let mem = state.memory_for(&req.agent_id).await?;
     // Hybride : vecteur + BM25 fusionnés (RRF). `score` porte le score RRF
     // fusionné (ADR-014).
-    let records = mem.recall_hybrid(&req.query, req.k).await?;
+    let records = mem
+        .recall_hybrid_with_options(
+            &req.query,
+            req.k,
+            basemyai::RecallOptions {
+                include_procedural: req.include_procedural,
+                exclude_imported: req.exclude_imported,
+            },
+        )
+        .await?;
     let items: Vec<RecordDto> = records
         .into_iter()
-        .map(|r| RecordDto {
-            id: r.id,
-            text: r.text,
-            layer: r.layer.table().to_string(),
-            score: r.score,
+        .map(|r| {
+            let trust = r.trust().as_str().to_string();
+            RecordDto {
+                id: r.id,
+                text: r.text,
+                layer: r.layer.table().to_string(),
+                score: r.score,
+                source: r.source,
+                trust,
+            }
         })
         .collect();
     let (results, truncated) = truncate_to_fit(items, state.config.max_result_bytes);

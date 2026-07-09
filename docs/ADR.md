@@ -41,3 +41,6 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-031](adr/ADR-031-unified-busl-license.md) | Licence BUSL-1.1 unifiée sur tout le workspace (remplace le découpage open-core) | ✅ Accepted |
 | [ADR-032](adr/ADR-032-native-engine-default.md) | Bascule du défaut libSQL→Native (compat V1 conservée) | 🔵 Superseded by ADR-033 |
 | [ADR-033](adr/ADR-033-native-only.md) | Migration 100 % moteur natif : retrait libSQL/V1/crypto/dual-backend | ✅ Accepted |
+| [ADR-034](adr/ADR-034-user-key-resolution.md) | Résolution centralisée de la passphrase utilisateur (User Key Resolution) | ✅ Accepted |
+| [ADR-035](adr/ADR-035-procedural-recall-and-temporal-dedup.md) | Recall procedural opt-in + `exact_fact_exists` temporel | ✅ Accepted |
+| [ADR-036](adr/ADR-036-trust-level-and-public-provenance.md) | `TrustLevel`, provenance publique, anti-spoofing import | ✅ Accepted |

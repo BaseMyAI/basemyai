@@ -29,6 +29,12 @@ pub enum EngineError {
     #[error("corrupt WAL record in {}: {reason}", .path.display())]
     CorruptWal { path: PathBuf, reason: String },
 
+    /// The caller attempted to commit a batch larger than the WAL recovery
+    /// decoder's anti-DoS bound. Refuse before writing, otherwise the engine
+    /// could produce a WAL it will reject on the next reopen.
+    #[error("WAL batch has {len} operations, exceeding the maximum {max}")]
+    WalBatchTooLarge { len: usize, max: usize },
+
     /// An SST file failed its checksum or is structurally malformed.
     #[error("corrupt SST file {}: {reason}", .path.display())]
     CorruptSst { path: PathBuf, reason: String },

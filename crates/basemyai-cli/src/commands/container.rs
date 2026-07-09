@@ -171,3 +171,23 @@ pub(crate) async fn verify(path: &Path, format: Format) -> Result<(), CliError> 
 
     if ok { Ok(()) } else { Err(CliError::VerificationFailed) }
 }
+
+/// Re-scelle la DEK du conteneur sous une nouvelle passphrase (ADR-030).
+pub(crate) async fn rotate_key(path: &Path, new_key: Option<String>, format: Format) -> Result<(), CliError> {
+    use basemyai_core::{EncryptionKey, KeyResolveError};
+
+    let new_key = match new_key {
+        Some(k) => EncryptionKey::new(k),
+        None => EncryptionKey::resolve(None).map_err(|e| match e {
+            KeyResolveError::Missing(msg) => CliError::MissingKey(msg),
+            other => CliError::KeyResolution(other.to_string()),
+        })?,
+    };
+    let store = open_store(path).await?;
+    store.rotate_key(new_key.expose()).await?;
+    format.print(
+        || crate::ui::render::success(&format!("encryption key rotated for {}", path.display())),
+        || serde_json::json!({ "path": path.display().to_string(), "rotated": true }),
+    );
+    Ok(())
+}

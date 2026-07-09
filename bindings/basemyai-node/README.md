@@ -17,7 +17,7 @@ BaseMyAI gives agents persistent, temporal, multi-layered memory: vector search,
 - Hybrid recall — vector similarity + BM25 full-text, fused with Reciprocal Rank Fusion
 - Knowledge graph — entities, relations, multi-hop traversal
 - Per-agent isolation enforced structurally
-- Encryption at rest (native envelope, XChaCha20-Poly1305) — key supplied at open time
+- Encryption at rest (native envelope, XChaCha20-Poly1305) — passphrase at open time ([ADR-034](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-034-user-key-resolution.md))
 - Fully async API (`Promise`-based, backed by an internal Tokio runtime)
 - TypeScript definitions included (`index.d.ts`)
 
@@ -47,13 +47,18 @@ Prebuilds are provided for:
 
 ## Quick start
 
+```bash
+# Local dev: create ~/.basemyai/key once (value never printed — back it up)
+basemyai config key generate
+```
+
 ```ts
 import { Memory } from "basemyai";
 
 const mem = await Memory.open({
   path: "./agent.bmai",
   agentId: "assistant-42",
-  encryptionKey: "your-secret-key",
+  // encryptionKey optional — resolves BASEMYAI_DB_KEY, ~/.basemyai/key, etc.
   modelPath: "~/.basemyai/models/all-MiniLM-L6-v2",
 });
 
@@ -112,7 +117,7 @@ await mem.forget(id);
 |---|---|---|
 | `path` | yes | Path to the `.bmai` container file |
 | `agentId` | yes | Tenant identifier (per-agent isolation) |
-| `encryptionKey` | yes | Encryption key (never stored or transmitted) |
+| `encryptionKey` | no | Passphrase override; if omitted, [ADR-034](https://github.com/basemyai/basemyai/blob/main/docs/security/key-resolution.md) resolution applies |
 | `modelPath` | no | Path to `all-MiniLM-L6-v2` model files |
 | `allowModelDownload` | no | Allow explicit model download if `modelPath` is omitted (default: `false`) |
 
@@ -131,6 +136,7 @@ await mem.forget(id);
 ## Documentation
 
 - [Main README](https://github.com/basemyai/basemyai)
+- [Key resolution (ADR-034)](https://github.com/basemyai/basemyai/blob/main/docs/security/key-resolution.md)
 - [CLI reference](https://github.com/basemyai/basemyai/blob/main/docs/cli.md)
 - [Architecture decisions (ADR)](https://github.com/basemyai/basemyai/blob/main/docs/ADR.md)
 

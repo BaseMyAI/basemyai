@@ -78,6 +78,8 @@ async fn remember_recall_stats_invalidate_roundtrip() {
             agent_id: "a".to_string(),
             query: "the sky is blue".to_string(),
             k: 5,
+            include_procedural: false,
+            exclude_imported: false,
         }))
         .await
         .expect("recall");
@@ -107,6 +109,8 @@ async fn remember_recall_stats_invalidate_roundtrip() {
             agent_id: "a".to_string(),
             query: "the sky is blue".to_string(),
             k: 5,
+            include_procedural: false,
+            exclude_imported: false,
         }))
         .await
         .expect("recall after invalidate");
@@ -128,6 +132,8 @@ async fn recall_hybrid_surfaces_exact_term() {
             agent_id: "a".to_string(),
             query: "ACME-42".to_string(),
             k: 5,
+            include_procedural: false,
+            exclude_imported: false,
         }))
         .await
         .expect("recall_hybrid");
@@ -149,6 +155,8 @@ async fn isolation_between_agents() {
             agent_id: "b".to_string(),
             query: "secret of agent A".to_string(),
             k: 5,
+            include_procedural: false,
+            exclude_imported: false,
         }))
         .await
         .expect("recall b");
@@ -191,6 +199,8 @@ async fn recall_k_out_of_bounds_is_rejected() {
             agent_id: "a".to_string(),
             query: "anything".to_string(),
             k: 2_000_000_000,
+            include_procedural: false,
+            exclude_imported: false,
         }))
         .await
     {
@@ -298,6 +308,39 @@ async fn consolidate_agent_id_too_long_is_rejected() {
         "agent_id trop long rejeté : {err}"
     );
     shutdown(client, server_task).await;
+}
+
+#[tokio::test]
+async fn consolidate_apply_oversized_facts_is_rejected() {
+    use basemyai::MAX_CONSOLIDATION_FACTS;
+    use basemyai_mcp::{ApplyEntity, ApplyRelation, ConsolidateApplyParams};
+
+    let s = server();
+    let err = match s
+        .consolidate_apply(Parameters(ConsolidateApplyParams {
+            agent_id: "a".to_string(),
+            facts: vec!["f".to_string(); MAX_CONSOLIDATION_FACTS + 1],
+            entities: vec![ApplyEntity {
+                id: "alice".to_string(),
+                kind: "person".to_string(),
+                label: "Alice".to_string(),
+            }],
+            relations: vec![ApplyRelation {
+                src: "alice".to_string(),
+                relation: "knows".to_string(),
+                dst: "alice".to_string(),
+            }],
+        }))
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("payload massif doit être rejeté"),
+    };
+    assert!(
+        err.message.contains("trop de faits"),
+        "rejet explicite : {}",
+        err.message
+    );
 }
 
 #[tokio::test]

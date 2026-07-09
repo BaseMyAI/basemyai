@@ -26,7 +26,7 @@ use rmcp::{tool, tool_handler, tool_router};
 use serde::Serialize;
 use tokio::sync::RwLock;
 
-use basemyai::{AgentId, Memory, MemoryEvent, MemoryEventKind, MemoryLayer};
+use basemyai::{AgentId, Memory, MemoryEvent, MemoryEventKind, MemoryLayer, RecallOptions};
 
 use crate::audit::{Outcome, emit_audit};
 use crate::config::Config;
@@ -104,19 +104,12 @@ impl McpServer {
         tools::validate_query(&p.query)?;
         tools::validate_k(p.k)?;
         let mem = self.memory_for(&p.agent_id).await?;
-        let records = mem.recall(&p.query, p.k).await?;
-        let items: Vec<RecallItem> = records
-            .into_iter()
-            .map(|r| {
-                let score = r.similarity();
-                RecallItem {
-                    id: r.id,
-                    text: r.text,
-                    layer: r.layer.table().to_string(),
-                    score,
-                }
-            })
-            .collect();
+        let options = RecallOptions {
+            include_procedural: p.include_procedural,
+            exclude_imported: p.exclude_imported,
+        };
+        let records = mem.recall_with_options(&p.query, p.k, options).await?;
+        let items: Vec<RecallItem> = records.into_iter().map(recall_item_from_record).collect();
         let (items, truncated) = tools::truncate_to_fit(items, self.config.max_result_bytes);
         Ok(RecallResult { items, truncated })
     }
@@ -126,15 +119,24 @@ impl McpServer {
         tools::validate_query(&p.query)?;
         tools::validate_k(p.k)?;
         let mem = self.memory_for(&p.agent_id).await?;
-        let records = mem.recall_hybrid(&p.query, p.k).await?;
+        let options = RecallOptions {
+            include_procedural: p.include_procedural,
+            exclude_imported: p.exclude_imported,
+        };
+        let records = mem.recall_hybrid_with_options(&p.query, p.k, options).await?;
         // Ici `score` est le score RRF fusionné (pas la similarité cosinus).
         let items: Vec<RecallItem> = records
             .into_iter()
-            .map(|r| RecallItem {
-                id: r.id,
-                text: r.text,
-                layer: r.layer.table().to_string(),
-                score: r.score,
+            .map(|r| {
+                let trust = r.trust().as_str().to_string();
+                RecallItem {
+                    id: r.id,
+                    text: r.text,
+                    layer: r.layer.table().to_string(),
+                    score: r.score,
+                    source: r.source,
+                    trust,
+                }
             })
             .collect();
         let (items, truncated) = tools::truncate_to_fit(items, self.config.max_result_bytes);
@@ -660,6 +662,19 @@ impl ServerHandler for McpServer {
             }
             other => Err(ErrorData::invalid_params(format!("unknown prompt: {other}"), None)),
         }
+    }
+}
+
+fn recall_item_from_record(r: basemyai::Record) -> RecallItem {
+    let score = r.similarity();
+    let trust = r.trust().as_str().to_string();
+    RecallItem {
+        id: r.id,
+        text: r.text,
+        layer: r.layer.table().to_string(),
+        score,
+        source: r.source,
+        trust,
     }
 }
 

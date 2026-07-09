@@ -27,7 +27,7 @@ pub struct Config {
     pub bind: IpAddr,
     /// Port d'écoute (`BASEMYAI_REST_PORT`).
     pub port: u16,
-    /// Chemin du fichier libSQL (`BASEMYAI_REST_DB_PATH` ou `BASEMYAI_DB_PATH`).
+    /// Chemin du conteneur `.bmai` natif (`BASEMYAI_REST_DB_PATH` ou `BASEMYAI_DB_PATH`).
     pub db_path: PathBuf,
     /// Clé de chiffrement au repos (`BASEMYAI_REST_DB_KEY` ou `BASEMYAI_DB_KEY`).
     pub db_key: Option<String>,
@@ -134,7 +134,11 @@ impl Config {
                 cfg.db_path = expand_home(path);
             }
             if file.rest.db_key.is_some() {
-                cfg.db_key = file.rest.db_key;
+                eprintln!(
+                    "warning: [rest].db_key in {} is ignored (ADR-034); use BASEMYAI_DB_KEY, \
+                     BASEMYAI_DB_KEY_FILE, ~/.basemyai/key, or /run/secrets/basemyai_db_key",
+                    config_file_path().display()
+                );
             }
             if let Some(path) = file.rest.model_path {
                 cfg.model_path = Some(expand_home(path));
@@ -151,7 +155,11 @@ impl Config {
                 cfg.agent_policy = AgentPolicy::Fixed(agent_id);
             }
             if file.rest.api_key.is_some() {
-                cfg.api_key = file.rest.api_key;
+                eprintln!(
+                    "warning: [rest].api_key in {} is ignored — set BASEMYAI_REST_API_KEY \
+                     (TODO P1: remove [rest].api_key from config schema)",
+                    config_file_path().display()
+                );
             }
             if let Some(dev) = file.rest.dev {
                 cfg.dev = dev;
@@ -203,6 +211,22 @@ impl Config {
         Ok(cfg)
     }
 
+    /// Refuse le mode dev hors boucle locale (audit sécurité P0).
+    ///
+    /// # Errors
+    /// [`RestError::Config`] si `dev=true` avec une adresse non-loopback.
+    pub fn validate(&self) -> Result<(), RestError> {
+        if self.dev && !self.bind.is_loopback() {
+            return Err(RestError::Config(
+                "BASEMYAI_REST_DEV=1 is only allowed with a loopback bind address \
+                 (127.0.0.1 or ::1); refusing to start without authentication on a \
+                 non-loopback interface"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Adresse socket effective.
     #[must_use]
     pub fn socket_addr(&self) -> SocketAddr {
@@ -211,10 +235,7 @@ impl Config {
 }
 
 fn load_file_config() -> Result<Option<FileConfig>, RestError> {
-    let Some(home) = dirs::home_dir() else {
-        return Ok(None);
-    };
-    let path = home.join(".basemyai").join("config.toml");
+    let path = config_file_path();
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -223,6 +244,13 @@ fn load_file_config() -> Result<Option<FileConfig>, RestError> {
     toml::from_str(&raw)
         .map(Some)
         .map_err(|e| RestError::Config(format!("invalid {}: {e}", path.display())))
+}
+
+fn config_file_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".basemyai")
+        .join("config.toml")
 }
 
 fn default_db_path() -> PathBuf {

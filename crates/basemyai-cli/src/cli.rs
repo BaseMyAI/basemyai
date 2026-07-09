@@ -130,6 +130,15 @@ pub(crate) enum Command {
         /// Fichier JSONL ou `-` pour stdin.
         #[arg(long)]
         file: String,
+        /// Autorise l'import de souvenirs `procedural` (audit memory poisoning).
+        #[arg(long)]
+        trusted: bool,
+    },
+    /// Change la clé de chiffrement du conteneur `.bmai` en place (ADR-030).
+    RotateKey {
+        /// Nouvelle passphrase (sinon `BASEMYAI_DB_KEY` / résolution ADR-034).
+        #[arg(long)]
+        new_key: Option<String>,
     },
     /// Graphe entités/relations d'un agent.
     Graph {
@@ -162,6 +171,25 @@ pub(crate) enum ConfigAction {
     Set { key: String, value: String },
     /// Retire `db-path` ou `agent` de `~/.basemyai/config.toml`.
     Unset { key: String },
+    /// Gestion de la passphrase de chiffrement (`~/.basemyai/key`, ADR-034).
+    Key {
+        #[command(subcommand)]
+        action: ConfigKeyAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ConfigKeyAction {
+    /// Génère une passphrase et l'écrit dans `~/.basemyai/key` (jamais affichée).
+    Generate {
+        /// Remplace un fichier existant.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Affiche le chemin du fichier de clé par défaut.
+    Path,
+    /// Vérifie qu'une passphrase est résolvable (sans l'afficher).
+    Check,
 }
 
 #[derive(Subcommand)]

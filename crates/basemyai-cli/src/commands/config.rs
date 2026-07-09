@@ -64,5 +64,6 @@ pub(crate) fn run(
             );
             Ok(())
         }
+        ConfigAction::Key { action } => super::config_key::run(action, format),
     }
 }

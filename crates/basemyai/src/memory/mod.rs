@@ -9,6 +9,7 @@ mod layer;
 mod porting;
 #[cfg(feature = "test-util")]
 mod testutil;
+mod trust;
 
 pub use event::{MemoryEvent, MemoryEventKind, MemorySubscription};
 pub use isolation::AgentId;
@@ -16,6 +17,7 @@ pub use layer::{AgentStats, MemoryLayer, Record};
 pub use porting::ImportReport;
 #[cfg(feature = "test-util")]
 pub use testutil::HashEmbedder;
+pub use trust::{SOURCE_CONSOLIDATION, SOURCE_IMPORT, SOURCE_USER, TrustLevel};
 
 use basemyai_core::{Embedder, Metric};
 use std::collections::HashMap;
@@ -36,16 +38,29 @@ use crate::{MemoryError, RRF_K, Ranking, Result, now_unix, rrf_fuse};
 /// Bornée à `u16::MAX` pour rester compatible avec le format des termes FTS.
 pub const MAX_TEXT_LEN: usize = 65_535;
 
-/// Provenance par défaut d'un souvenir mémorisé directement par l'agent (par
-/// opposition à `"consolidation"`, faits promus par le pipeline LLM).
-const SOURCE_USER: &str = "user";
 const META_EMBEDDING_MODEL_ID: &str = "embedding_model_id";
 const META_EMBEDDING_DIM: &str = "embedding_dim";
 
-/// Provenance des faits promus par consolidation (vs [`SOURCE_USER`]). Référence
-/// unique partagée avec `cognition::consolidation` : c'est elle qui distingue un
-/// événement [`MemoryEventKind::Consolidated`] d'un [`MemoryEventKind::Remembered`].
-pub(crate) const SOURCE_CONSOLIDATION: &str = "consolidation";
+/// Options de recall (audit sécurité — memory poisoning, ADR-035/036).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RecallOptions {
+    /// Inclure la couche `procedural` dans un recall général. Défaut : `false`
+    /// (les instructions procédurales ne remontent que via `recall_by_layer`).
+    pub include_procedural: bool,
+    /// Exclure les souvenirs importés ([`TrustLevel::Import`]) du résultat.
+    pub exclude_imported: bool,
+}
+
+/// Filtre post-recall selon [`RecallOptions`] (provenance, ADR-036).
+fn apply_recall_options(records: Vec<Record>, options: RecallOptions) -> Vec<Record> {
+    if !options.exclude_imported {
+        return records;
+    }
+    records
+        .into_iter()
+        .filter(|r| r.trust() != TrustLevel::Import)
+        .collect()
+}
 
 /// Mémoire d'un agent : moteur de stockage natif + embedder, scellés par un
 /// [`AgentId`]. Le chiffrement est obligatoire (ADR-007/ADR-030).
@@ -346,18 +361,34 @@ impl Memory {
 
     /// Recall temporel : pertinent ET valide, borné à cet agent.
     ///
-    /// L'isolation (`agent_id`) et le filtre temporel sont appliqués par le
-    /// moteur de stockage ([`MemoryStore::recall_vector`]) — `Memory` ne
-    /// connaît que le vecteur de requête et l'agent.
+    /// Par défaut, la couche `procedural` est **exclue** (audit memory poisoning) ;
+    /// passer [`RecallOptions::include_procedural`] ou utiliser [`Self::recall_by_layer`].
     ///
     /// # Errors
     /// Propage les erreurs d'embedding/recherche.
     pub async fn recall(&self, query: &str, k: usize) -> Result<Vec<Record>> {
+        self.recall_with_options(query, k, RecallOptions::default()).await
+    }
+
+    /// Recall avec options explicites (filtrage procedural, etc.).
+    ///
+    /// # Errors
+    /// Propage les erreurs d'embedding/recherche.
+    pub async fn recall_with_options(&self, query: &str, k: usize, options: RecallOptions) -> Result<Vec<Record>> {
         let qvec = self.embedder.embed(query)?;
         let now = now_unix();
         self.engine
-            .recall_vector(&self.agent, &qvec, k, None, Metric::Cosine, now)
+            .recall_vector(
+                &self.agent,
+                &qvec,
+                k,
+                None,
+                Metric::Cosine,
+                now,
+                options.include_procedural,
+            )
             .await
+            .map(|records| apply_recall_options(records, options))
     }
 
     /// Recall sémantique temporel avec **métrique explicite** ([`Metric`]).
@@ -371,11 +402,27 @@ impl Memory {
     /// # Errors
     /// Propage les erreurs d'embedding/recherche.
     pub async fn recall_with_metric(&self, query: &str, k: usize, metric: Metric) -> Result<Vec<Record>> {
+        self.recall_with_metric_options(query, k, metric, RecallOptions::default())
+            .await
+    }
+
+    /// Recall sémantique temporel avec métrique et options explicites.
+    ///
+    /// # Errors
+    /// Propage les erreurs d'embedding/recherche.
+    pub async fn recall_with_metric_options(
+        &self,
+        query: &str,
+        k: usize,
+        metric: Metric,
+        options: RecallOptions,
+    ) -> Result<Vec<Record>> {
         let qvec = self.embedder.embed(query)?;
         let now = now_unix();
         self.engine
-            .recall_vector(&self.agent, &qvec, k, None, metric, now)
+            .recall_vector(&self.agent, &qvec, k, None, metric, now, options.include_procedural)
             .await
+            .map(|records| apply_recall_options(records, options))
     }
 
     /// Recall **hybride** (ADR-014) : fusionne le classement **vectoriel** et le
@@ -391,16 +438,33 @@ impl Memory {
     /// # Errors
     /// Propage les erreurs d'embedding/recherche/stockage.
     pub async fn recall_hybrid(&self, query: &str, k: usize) -> Result<Vec<Record>> {
+        self.recall_hybrid_with_options(query, k, RecallOptions::default())
+            .await
+    }
+
+    /// Recall hybride avec options explicites.
+    ///
+    /// # Errors
+    /// Propage les erreurs d'embedding/recherche/stockage.
+    pub async fn recall_hybrid_with_options(
+        &self,
+        query: &str,
+        k: usize,
+        options: RecallOptions,
+    ) -> Result<Vec<Record>> {
         // Sur-échantillonne chaque signal pour une fusion plus riche.
         let inner = k.saturating_mul(4).max(k);
         let now = now_unix();
         let qvec = self.embedder.embed(query)?;
 
-        let vector_ids = self.engine.vector_ranking_ids(&self.agent, &qvec, inner, now).await?;
+        let vector_ids = self
+            .engine
+            .vector_ranking_ids(&self.agent, &qvec, inner, now, options.include_procedural)
+            .await?;
         let keyword_ids = match fts_match_expr(query) {
             Some(match_expr) => {
                 self.engine
-                    .keyword_ranking_ids(&self.agent, &match_expr, inner, now)
+                    .keyword_ranking_ids(&self.agent, &match_expr, inner, now, options.include_procedural)
                     .await?
             }
             None => Vec::new(),
@@ -425,7 +489,7 @@ impl Memory {
         let scores: HashMap<&str, f32> = fused.iter().take(k).map(|f| (f.id.as_str(), f.score as f32)).collect();
 
         let hydrated = self.engine.hydrate(&self.agent, &top_ids, now).await?;
-        Ok(hydrated
+        let records: Vec<Record> = hydrated
             .into_iter()
             .map(|h| {
                 let score = scores.get(h.id.as_str()).copied().unwrap_or(0.0);
@@ -434,9 +498,11 @@ impl Memory {
                     text: h.text,
                     layer: h.layer,
                     score,
+                    source: h.source,
                 }
             })
-            .collect())
+            .collect();
+        Ok(apply_recall_options(records, options))
     }
 
     /// Recall filtré sur une couche unique. Met à jour `last_access` sur chaque
@@ -448,7 +514,7 @@ impl Memory {
         let qvec = self.embedder.embed(query)?;
         let now = now_unix();
         self.engine
-            .recall_vector(&self.agent, &qvec, k, Some(layer), Metric::Cosine, now)
+            .recall_vector(&self.agent, &qvec, k, Some(layer), Metric::Cosine, now, true)
             .await
     }
 
@@ -511,7 +577,9 @@ impl Memory {
     pub async fn search_graph(&self, query: &str, k: usize) -> Result<Vec<Record>> {
         let qvec = self.embedder.embed(query)?;
         let now = now_unix();
-        self.engine.recall_graph_filtered(&self.agent, &qvec, k, now).await
+        self.engine
+            .recall_graph_filtered(&self.agent, &qvec, k, now, RecallOptions::default().include_procedural)
+            .await
     }
 
     /// Change la clé de chiffrement du store sous-jacent **en place** —
@@ -582,15 +650,9 @@ fn fts_match_expr(query: &str) -> Option<String> {
 mod tests {
     use super::*;
     use basemyai_core::Result as CoreResult;
-    use std::sync::{LazyLock, Mutex};
-
-    static TEMP_DIR_GUARDS: LazyLock<Mutex<Vec<tempfile::TempDir>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
     fn open_native_store_for_tests() -> Arc<NativeMemoryStore> {
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let store = NativeMemoryStore::open(dir.path()).expect("native store opens");
-        TEMP_DIR_GUARDS.lock().expect("tempdir guard mutex poisoned").push(dir);
-        Arc::new(store)
+        Arc::new(NativeMemoryStore::open_ephemeral().expect("open ephemeral store"))
     }
 
     struct TestEmbedder {

@@ -17,7 +17,7 @@ BaseMyAI gives agents persistent, temporal, multi-layered memory: vector search,
 - Hybrid recall — vector similarity + BM25 full-text, fused with Reciprocal Rank Fusion
 - Knowledge graph — entities, relations, multi-hop traversal
 - Per-agent isolation enforced structurally
-- Encryption at rest (native envelope, XChaCha20-Poly1305) — key supplied at open time
+- Encryption at rest (native envelope, XChaCha20-Poly1305) — passphrase at open time ([ADR-034](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-034-user-key-resolution.md))
 - Fully async API (`asyncio` coroutines backed by an internal Tokio runtime)
 
 ## Requirements
@@ -42,6 +42,11 @@ Precompiled wheels are provided for Linux, Windows, and macOS (x86_64 and Apple 
 
 ## Quick start
 
+```bash
+# Local dev: create ~/.basemyai/key once (value never printed — back it up)
+basemyai config key generate
+```
+
 ```python
 import asyncio
 from basemyai import Memory
@@ -50,7 +55,7 @@ async def main():
     mem = await Memory.open(
         path="./agent.bmai",
         agent_id="assistant-42",
-        encryption_key="your-secret-key",
+        # encryption_key optional — resolves BASEMYAI_DB_KEY, ~/.basemyai/key, etc.
         model_dir="~/.basemyai/models/all-MiniLM-L6-v2",
     )
 
@@ -110,7 +115,7 @@ asyncio.run(main())
 |---|---|---|
 | `path` | yes | Path to the `.bmai` container file |
 | `agent_id` | yes | Tenant identifier (per-agent isolation) |
-| `encryption_key` | yes | Encryption key (never stored or transmitted) |
+| `encryption_key` | no | Passphrase override; if omitted, [ADR-034](https://github.com/basemyai/basemyai/blob/main/docs/security/key-resolution.md) resolution applies (`BASEMYAI_DB_KEY`, `BASEMYAI_DB_KEY_FILE`, `~/.basemyai/key`, …) |
 | `model_dir` | no | Path to `all-MiniLM-L6-v2` model files |
 | `device` | no | `"auto"`, `"cpu"`, `"cuda"`, or `"metal"` (default: `"auto"`) |
 | `consent_to_fetch` | no | If `model_dir` is omitted, allow explicit model download (default: `false`) |
@@ -142,6 +147,7 @@ from basemyai import (
 ## Documentation
 
 - [Main README](https://github.com/basemyai/basemyai)
+- [Key resolution (ADR-034)](https://github.com/basemyai/basemyai/blob/main/docs/security/key-resolution.md)
 - [CLI reference](https://github.com/basemyai/basemyai/blob/main/docs/cli.md)
 - [Architecture decisions (ADR)](https://github.com/basemyai/basemyai/blob/main/docs/ADR.md)
 

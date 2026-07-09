@@ -157,6 +157,10 @@ pub fn encode_batch(ops: &[BatchOp]) -> Vec<u8> {
 /// add up) is genuine corruption, not a crash-mid-write artifact, and is
 /// reported as [`EngineError::CorruptWal`] rather than tolerated like a torn
 /// trailing record.
+///
+/// Nombre maximal de sous-opérations dans un batch WAL (anti-DoS).
+pub const MAX_BATCH_OPS: usize = 10_000;
+
 pub fn decode_batch(buf: &[u8], path: &Path) -> Result<Vec<BatchOp>> {
     let corrupt = |reason: &str| EngineError::CorruptWal {
         path: path.to_path_buf(),
@@ -167,6 +171,11 @@ pub fn decode_batch(buf: &[u8], path: &Path) -> Result<Vec<BatchOp>> {
         return Err(corrupt("payload shorter than the batch count field"));
     }
     let count = u32::from_le_bytes(buf[0..4].try_into().expect("slice is exactly 4 bytes")) as usize;
+    if count > MAX_BATCH_OPS {
+        return Err(corrupt(&format!(
+            "batch declares {count} sub-operations (max {MAX_BATCH_OPS})"
+        )));
+    }
 
     let mut offset = 4usize;
     let mut ops = Vec::with_capacity(count);
@@ -193,6 +202,11 @@ pub fn decode_batch(buf: &[u8], path: &Path) -> Result<Vec<BatchOp>> {
         offset += 9;
         if buf.len() < offset + key_len + val_len {
             return Err(corrupt(&format!("truncated sub-operation body at index {i}")));
+        }
+        if matches!(op, WalOp::Delete) && val_len != 0 {
+            return Err(corrupt(&format!(
+                "Delete sub-operation at index {i} declares nonzero value length {val_len}"
+            )));
         }
         let key = buf[offset..offset + key_len].to_vec();
         offset += key_len;
@@ -229,18 +243,23 @@ pub fn encode(op: WalOp, key: &[u8], value: Option<&[u8]>) -> Vec<u8> {
 /// Decodes exactly one record from the front of `buf`.
 ///
 /// Returns `Ok(Some((record, consumed_len)))` on success. Returns `Ok(None)`
-/// if `buf` doesn't yet contain a full, structurally valid record — the
+/// only if `buf` is a prefix of a record that could still be in flight — the
 /// replay loop (`store::wal::Wal::replay`) treats that as a torn trailing
 /// write from a crash mid-append and stops silently instead of failing.
-/// Returns `Err` only when a *fully-buffered* record's checksum doesn't
-/// match, i.e. corruption that is not explainable as a torn tail.
+/// Returns `Err` when a complete fixed header is structurally impossible or
+/// a fully-buffered record's checksum doesn't match.
 pub fn decode(buf: &[u8], path: &Path) -> Result<Option<(WalRecord, usize)>> {
+    let corrupt = |reason: String| EngineError::CorruptWal {
+        path: path.to_path_buf(),
+        reason,
+    };
+
     if buf.len() < HEADER_LEN {
         return Ok(None);
     }
     let magic = u32::from_le_bytes(buf[0..4].try_into().expect("slice is exactly 4 bytes"));
     if magic != WAL_MAGIC {
-        return Ok(None);
+        return Err(corrupt(format!("bad magic {magic:#x}")));
     }
     let version = u16::from_le_bytes(buf[4..6].try_into().expect("slice is exactly 2 bytes"));
     if version != WAL_RECORD_VERSION {
@@ -251,13 +270,21 @@ pub fn decode(buf: &[u8], path: &Path) -> Result<Option<(WalRecord, usize)>> {
         });
     }
     let Some(op) = WalOp::from_tag(buf[6]) else {
-        return Ok(None);
+        return Err(corrupt(format!("unrecognized op tag {}", buf[6])));
     };
     let key_len = u32::from_le_bytes(buf[7..11].try_into().expect("slice is exactly 4 bytes")) as usize;
     let val_len = u32::from_le_bytes(buf[11..15].try_into().expect("slice is exactly 4 bytes")) as usize;
     let total = HEADER_LEN + key_len + val_len + CRC_LEN;
     if buf.len() < total {
         return Ok(None);
+    }
+    if matches!(op, WalOp::Delete) && val_len != 0 {
+        return Err(corrupt(format!(
+            "Delete record declares nonzero value length {val_len}"
+        )));
+    }
+    if matches!(op, WalOp::Batch) && key_len != 0 {
+        return Err(corrupt(format!("Batch record declares nonzero key length {key_len}")));
     }
     let body_end = HEADER_LEN + key_len + val_len;
     let expected_crc = u32::from_le_bytes(
@@ -267,10 +294,9 @@ pub fn decode(buf: &[u8], path: &Path) -> Result<Option<(WalRecord, usize)>> {
     );
     let actual_crc = crc32(&buf[0..body_end]);
     if actual_crc != expected_crc {
-        return Err(EngineError::CorruptWal {
-            path: path.to_path_buf(),
-            reason: format!("checksum mismatch (expected {expected_crc:#x}, got {actual_crc:#x})"),
-        });
+        return Err(corrupt(format!(
+            "checksum mismatch (expected {expected_crc:#x}, got {actual_crc:#x})"
+        )));
     }
     let key = buf[HEADER_LEN..HEADER_LEN + key_len].to_vec();
     let value = match op {
@@ -325,6 +351,41 @@ mod tests {
         let last = bytes.len() - 1;
         bytes[last] ^= 0xFF; // corrupt the trailing crc32 byte itself
         let err = decode(&bytes, &path()).expect_err("checksum should fail");
+        assert!(matches!(err, EngineError::CorruptWal { .. }));
+    }
+
+    #[test]
+    fn complete_bad_magic_is_corrupt_error() {
+        let mut bytes = encode(WalOp::Put, b"key", Some(b"value"));
+        bytes[0] ^= 0xFF;
+        let err = decode(&bytes, &path()).expect_err("bad magic is corruption");
+        assert!(matches!(err, EngineError::CorruptWal { .. }));
+    }
+
+    #[test]
+    fn complete_unknown_op_is_corrupt_error() {
+        let mut bytes = encode(WalOp::Put, b"key", Some(b"value"));
+        bytes[6] = 0xFF;
+        let err = decode(&bytes, &path()).expect_err("unknown op is corruption");
+        assert!(matches!(err, EngineError::CorruptWal { .. }));
+    }
+
+    #[test]
+    fn delete_with_value_payload_is_corrupt_error() {
+        let bytes = encode(WalOp::Delete, b"key", Some(b"value"));
+        let err = decode(&bytes, &path()).expect_err("delete payload is structurally invalid");
+        assert!(matches!(err, EngineError::CorruptWal { .. }));
+    }
+
+    #[test]
+    fn batch_with_nonempty_outer_key_is_corrupt_error() {
+        let payload = encode_batch(&[BatchOp {
+            op: WalOp::Put,
+            key: b"k".to_vec(),
+            value: Some(b"v".to_vec()),
+        }]);
+        let bytes = encode(WalOp::Batch, b"outer-key", Some(&payload));
+        let err = decode(&bytes, &path()).expect_err("batch outer key is structurally invalid");
         assert!(matches!(err, EngineError::CorruptWal { .. }));
     }
 
@@ -432,6 +493,27 @@ mod tests {
         payload.extend_from_slice(&0u32.to_le_bytes()); // key_len
         payload.extend_from_slice(&0u32.to_le_bytes()); // val_len
         let err = decode_batch(&payload, &path()).expect_err("nested batch is rejected");
+        assert!(matches!(err, EngineError::CorruptWal { .. }));
+    }
+
+    #[test]
+    fn decode_batch_rejects_delete_with_value_payload() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+        payload.push(WalOp::Delete as u8);
+        payload.extend_from_slice(&1u32.to_le_bytes()); // key_len
+        payload.extend_from_slice(&1u32.to_le_bytes()); // val_len, invalid for Delete
+        payload.extend_from_slice(b"k");
+        payload.extend_from_slice(b"v");
+        let err = decode_batch(&payload, &path()).expect_err("delete sub-op payload is rejected");
+        assert!(matches!(err, EngineError::CorruptWal { .. }));
+    }
+
+    #[test]
+    fn decode_batch_rejects_huge_count() {
+        let mut payload = (MAX_BATCH_OPS as u32 + 1).to_le_bytes().to_vec();
+        payload.extend_from_slice(&[0u8; 8]);
+        let err = decode_batch(&payload, &path()).expect_err("huge count rejected");
         assert!(matches!(err, EngineError::CorruptWal { .. }));
     }
 }
