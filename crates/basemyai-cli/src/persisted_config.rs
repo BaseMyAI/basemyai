@@ -58,9 +58,15 @@ impl CliConfig {
     }
 
     /// Chemin standard du fichier de config (`~/.basemyai/config.toml`).
+    ///
+    /// Résout via `HOME`/`USERPROFILE` plutôt que le crate `dirs` (qui, sur
+    /// Windows, interroge l'API de profil OS et ignore un override de
+    /// process) : même mécanisme que `EncryptionKey::default_key_file_path`
+    /// (`basemyai-core`), pour que les deux résolutions `~/.basemyai/...`
+    /// restent isolables par test/sandbox (`env_clear` + `HOME`/`USERPROFILE`).
     #[must_use]
     pub(crate) fn file_path() -> Option<PathBuf> {
-        dirs::home_dir().map(|h| h.join(".basemyai").join("config.toml"))
+        home_dir().map(|h| h.join(".basemyai").join("config.toml"))
     }
 
     /// Résout le chemin du conteneur `.bmai` : flag explicite, sinon config/env.
@@ -104,6 +110,20 @@ impl CliConfig {
         }
         write_raw_table(&path, current)?;
         Ok(path)
+    }
+}
+
+/// Même stratégie que `basemyai_core`'s `key::home_dir` : `USERPROFILE` sur
+/// Windows, `HOME` ailleurs — un override de process (test, sandbox) est
+/// toujours respecté, contrairement au crate `dirs`.
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
     }
 }
 

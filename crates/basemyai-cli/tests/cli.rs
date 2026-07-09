@@ -335,13 +335,25 @@ fn maintenance_command_is_not_available() {
 #[test]
 fn no_db_path_uses_default_container_path() {
     let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .args(["config", "set", "db-path"])
+        .arg(&db)
+        .assert()
+        .success();
+    init_container(home.path(), &db);
 
     isolated(home.path())
         .env("BASEMYAI_DB_KEY", KEY)
         .args(["--format", "json", "--agent", "alice", "inspect"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"path\":\".\\\\test-agent.bmai\""));
+        .stdout(predicate::str::contains(format!(
+            "\"path\":{}",
+            serde_json::to_string(&db.display().to_string()).expect("path serializes")
+        )));
 }
 
 #[test]
