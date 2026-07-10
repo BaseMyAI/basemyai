@@ -26,7 +26,7 @@ test-util = ["basemyai/test-util", "rmcp/client"]
 
 [dependencies]
 basemyai      = { path = "../basemyai" }
-basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
+basemyai-core = { version = "0.2.0", path = "../basemyai-core" }
 
 rmcp        = { version = "1.7", features = ["server", "macros"] }
 axum        = { version = "0.8", optional = true, features = ["macros"] }

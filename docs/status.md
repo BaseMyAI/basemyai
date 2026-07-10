@@ -88,9 +88,9 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Graphe entités/relations (`add_entity`, `add_edge`, `traverse` BFS natif) | ✅ | `cognition/graph.rs` ; `tests/graph.rs` ; `basemyai-engine/src/idx/graph/` | Scopé agent + profondeur, cycle-safe. Index KV natif (plus de tables SQL). |
 | Consolidation épisodes→faits (`consolidate`) | ✅ | `cognition/consolidation.rs` ; `tests/consolidation.rs`, `tests/consolidation_e2e.rs` | Idempotente. `LlmInference` injecté. ADR-012/ADR-018. |
 | Trait `LlmInference` (object-safe, injecté) | ✅ | `cognition/inference.rs` | Modèle jamais codé en dur. |
-| Oubli adaptatif (`AdaptiveForgetting`) | ⛔ retiré CLI/worker | — | Dépendait de SQL fenêtré libSQL ; retiré ADR-033. Portage natif = chantier de suivi. |
-| GC mémoires expirées (`ExpiredMemoryGc`) | ⛔ retiré CLI/worker | — | Idem — `invalidate`/`forget`/`purge` couvrent le cycle de vie explicite. |
-| Wiring consolidation dans `MaintenanceWorker` | ✅ | `maintenance/mod.rs` (`ConsolidationTask`) ; `tests/maintenance_worker.rs` | Seule tâche de maintenance active post-ADR-033. |
+| Oubli adaptatif (`AdaptiveForgetting`) | ✅ | `maintenance/adaptive_forgetting.rs` ; CLI `forget-adaptive` ; `tests/maintenance_worker.rs` | Porté sur le moteur natif par ADR-037 (scan applicatif, sans fenêtrage SQL). Périmètre affiné : n'agit que sur les souvenirs **actifs** (les invalidés/expirés relèvent du GC temporel, ADR-038 — ensembles disjoints par construction). |
+| GC mémoires expirées (`ExpiredMemoryGc`) | ✅ | `maintenance/expired_gc.rs` ; CLI `gc` ; `tests/maintenance_worker.rs` | Porté sur le moteur natif par ADR-038 (scan applicatif paginé par curseur d'id, sans `DELETE` SQL fenêtré). Idempotent, reprennable après interruption. |
+| Wiring consolidation/oubli/GC dans `MaintenanceWorker` | ✅ | `maintenance/mod.rs` (`ConsolidationTask`, `AdaptiveForgettingTask`, `ExpiredMemoryGcTask`) ; `tests/maintenance_worker.rs` | Trois tâches de maintenance actives post-ADR-037/038, même pattern d'injection (`Arc<Memory>` auto-suffisant). |
 
 > **Note de positionnement.** La recherche stratégique 2026-06-18 (Risks) avertit
 > que « trop de LLM/consolidation en V1 peut détourner du noyau memory DB » et
@@ -137,7 +137,8 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Commandes V1 indispensables (`init`, `inspect`, `stats`, `recall`, `verify`, `migrate`) | ✅ | smoke test end-to-end : init→remember→recall(+`--hybrid`)→stats→inspect→verify ; isolation agent vérifiée ; mauvaise clé → refus | Couvre exactement les *indispensables V1* de la recherche stratégique. + `remember`. |
 | Cycle de vie mémoire complet (`list`, `forget`, `invalidate`, `purge --yes`, `export`, `import`) | ✅ | `commands/memory.rs` | `list`/`forget`/`invalidate`/`purge` passent par `basemyai::storage::MemoryStore` directement (pas de chargement Candle pour des mutations sans embedding). **Non listé dans `TODO.md` M5** — code plus avancé que le plan. |
 | Graphe (`graph add-entity`, `graph add-edge`, `graph traverse`) | ✅ | `commands/graph.rs` | Miroir CLI de `basemyai::Graph`. **Non listé dans `TODO.md` M5.** |
-| `consolidate` (commande racine) | ✅ | `commands/maintenance.rs` ; `cli.rs` (`Command::Consolidate`) | Exige un LLM local (`llm detect`). **`maintenance gc` / `maintenance forget-adaptive` retirés** (ADR-033). |
+| `consolidate` (commande racine) | ✅ | `commands/maintenance.rs` ; `cli.rs` (`Command::Consolidate`) | Exige un LLM local (`llm detect`). |
+| `forget-adaptive`, `gc` (commandes racine) | ✅ | `commands/maintenance.rs` ; `cli.rs` (`Command::ForgetAdaptive`/`Command::Gc`) ; `tests/cli.rs` | Réintroduites par ADR-037/ADR-038 (retirées en tant que `maintenance gc`/`maintenance forget-adaptive` par ADR-033, jamais rétablies sous ce sous-groupe — commandes racine, cohérent avec `consolidate`). `open_engine` (store nu) : aucun chargement Candle, testées en CI. `--dry-run` sur les deux, rapport JSON structuré. |
 | `config show/set/unset`, `completions` | ✅ | `commands/config.rs`, `persisted_config.rs` | Résolution `--db`/`--agent` : flag > env (`BASEMYAI_DB_PATH`/`BASEMYAI_AGENT`) > `~/.basemyai/config.toml` > erreur explicite. `--format json` sur toutes les commandes (agent-as-tool). |
 | `setup [--fetch]`, `status`, `llm detect`, `llm suggest` | ✅ | `commands/provision.rs` ; testé contre modèle provisionné + détection LLM locale | `setup` respecte le consentement explicite (ADR-010). Persistance via `provision.json`. |
 | Erreurs/exit codes stables (`error.rs`/`exit.rs`), JSON `{"error":{"code","message"}}` | ✅ | `error.rs`, `exit.rs`, `output.rs` | Voir `docs/cli.md` §Exit codes & error shape. |
@@ -167,7 +168,7 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Migration idempotente | ⛔ N/A | — | Plus de migrations SQL ; format natif versionné via `format.lock`. |
 | Format / metadata | ✅ | `tests/format.rs` | |
 | Encryption required (product-level) | ✅ | `tests/contracts.rs` | Enveloppe native ADR-030. |
-| Graphe / consolidation / oubli | ✅ | `tests/graph.rs`, `tests/consolidation*.rs`, `tests/maintenance_worker.rs` | GC/oubli adaptatif retirés (ADR-033) ; consolidation active. |
+| Graphe / consolidation / oubli / GC | ✅ | `tests/graph.rs`, `tests/consolidation*.rs`, `tests/maintenance_worker.rs` (18 scénarios oubli adaptatif + GC : capacité, isolation, ensembles disjoints, résilience aux interruptions, pagination, cohérence des index) | Consolidation, oubli adaptatif (ADR-037) et GC temporel (ADR-038) tous actifs et testés. |
 | Contrats `MemoryStore` | ✅ | `tests/memory_tests.rs` (19 scénarios), `tests/storage_contract.rs` | Runner déclaratif : `native` + `native_encrypted`. |
 | Contrats core | ✅ | `crates/basemyai-core/tests/contracts.rs` | |
 | Roundtrip bindings | ✅ | Node `__tests__/roundtrip.test.js`, Py `tests/test_roundtrip.py` | |
@@ -289,6 +290,7 @@ agent locale, pas une base vectorielle de plus », liés depuis `README.md`
   décision humaine séparée (§6).
 - **Reste ouvert (priorité)** : release 0.2.0. Image Docker REST écrite (build
   non vérifié, cf. §5). CUDA/NVML : détection ajoutée (feature `cuda-detect`)
-  — validation sur GPU NVIDIA réel encore à faire. (NAPI live subscriptions et
-  bench Mem0+Qdrant faits 2026-07-10 — voir §5/§11.)
+  — validation sur GPU NVIDIA réel encore à faire. (NAPI live subscriptions,
+  bench Mem0+Qdrant, oubli adaptatif natif ADR-037 et GC temporel natif
+  ADR-038 tous faits 2026-07-10 — voir §3/§5/§6/§11.)
 - **V2 reporté** : Studio, Tauri, sync P2P, multi-modèles, langage de requête.

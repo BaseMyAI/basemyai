@@ -34,7 +34,7 @@ test-util = ["dep:tempfile", "basemyai-engine/test-util"]
 cuda-detect = ["dep:nvml-wrapper"]
 
 [dependencies]
-basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
+basemyai-core = { version = "0.2.0", path = "../basemyai-core" }
 # Backend natif (ADR-024/ADR-027/ADR-032) — dépendance directe, non optionnelle
 # depuis la suppression de libSQL. Interne, non publié.
 basemyai-engine = { path = "../basemyai-engine" }

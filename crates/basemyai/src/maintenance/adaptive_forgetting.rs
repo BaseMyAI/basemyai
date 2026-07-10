@@ -3,8 +3,9 @@
 //! ADR-037 : plus de `ROW_NUMBER() OVER (PARTITION BY ...)` SQL — un scan
 //! applicatif complet de l'agent (`MemoryStore::scan_for_forgetting`), une
 //! sélection pure en Rust ([`select_victims`]), puis une éviction ligne par
-//! ligne via [`crate::Memory::forget`] (réutilise l'atomicité souvenir+FTS et
-//! l'émission d'événement déjà garanties par ce chemin).
+//! ligne (une transaction moteur par victime, jamais un `DELETE` de masse —
+//! voir [`scan_and_select`] pour pourquoi les deux points d'entrée ci-dessous
+//! partagent cette étape mais divergent sur l'éviction elle-même).
 //!
 //! Score de rétention (inchangé depuis ADR-012) :
 //!
@@ -18,13 +19,23 @@
 //! timestamps Unix réels, rendant tous les souvenirs anciens indiscernables.
 //! `H / (H + age)` reste dans `(0, 1]`, strictement décroissante en `age`,
 //! distinguable à toute échelle réelle.
+//!
+//! Deux points d'entrée, une seule sélection ([`scan_and_select`]) :
+//! - [`crate::Memory::adaptive_forget`] évince via [`crate::Memory::forget`]
+//!   (émission d'événement `Forgotten`, cf. `MemorySubscription`/ADR-022) —
+//!   le chemin programmatique/`MaintenanceTask` ([`AdaptiveForgettingTask`]).
+//! - [`run`] évince directement via [`crate::storage::MemoryStore::forget`],
+//!   sans passer par un [`crate::Memory`] complet (donc sans charger
+//!   l'embedder Candle) — le chemin CLI, qui n'a besoin d'aucun embedding
+//!   pour une opération purement temporelle/de capacité, et supporte le
+//!   dry-run (aucune éviction, juste le rapport).
 
 use std::sync::Arc;
 
 use basemyai_core::{MaintenanceTask, Result as CoreResult};
 
-use crate::Memory;
-use crate::storage::ForgetCandidate;
+use crate::storage::{ForgetCandidate, MemoryStore};
+use crate::{AgentId, Memory, Result, now_unix};
 
 /// Politique d'oubli adaptatif, enregistrée dans le `MaintenanceWorker`
 /// (une instance par agent — la tâche est auto-suffisante, ADR-032/033).
@@ -49,11 +60,22 @@ pub struct ForgettingReport {
 /// Score de rétention d'un souvenir à l'instant `now` (ADR-012 §4, formule
 /// inchangée). `half_life_secs <= 0` est traité comme `1` (une demi-vie nulle
 /// ou négative n'a pas de sens physique ; éviter une division par zéro plutôt
-/// que paniquer).
+/// que paniquer). `last_access` dans le futur (horloge système en recul,
+/// import adversarial) sature l'âge à `0` plutôt que de produire un âge
+/// négatif — un souvenir "d'avenir" est traité comme parfaitement récent,
+/// jamais comme un signal qui gonflerait artificiellement son score au-delà
+/// de `importance + 1`. `importance` non finie (`NaN`/`±inf` — non atteignable
+/// via l'API publique aujourd'hui, mais un import ADR-036 rejoue des valeurs
+/// arbitraires depuis un fichier JSONL non fiable) est ramenée à `0.0` :
+/// laisser passer un `NaN` romprait l'ordre total exigé par [`select_victims`]
+/// (`NaN.partial_cmp` renvoie toujours `None`), ce qui rendrait la sélection
+/// non déterministe pour *tous* les candidats comparés au souvenir corrompu,
+/// pas seulement pour lui.
 fn retention_score(importance: f64, half_life_secs: i64, last_access: i64, now: i64) -> f64 {
     let half_life = half_life_secs.max(1) as f64;
     #[allow(clippy::cast_precision_loss)]
     let age = now.saturating_sub(last_access).max(0) as f64;
+    let importance = if importance.is_finite() { importance } else { 0.0 };
     importance + half_life / (half_life + age)
 }
 
@@ -83,6 +105,65 @@ pub(crate) fn select_victims(
             .then_with(|| a.id.cmp(&b.id))
     });
     ranked.into_iter().skip(policy.capacity).map(|c| c.id.clone()).collect()
+}
+
+/// Scanne et sélectionne les victimes d'une passe d'oubli adaptatif, sans les
+/// évincer — l'étape partagée par [`crate::Memory::adaptive_forget`] (éviction
+/// via `Memory::forget`, événementielle) et [`run`] (éviction directe sur le
+/// store, sans `Memory`). `now` est calculé une seule fois ici et réutilisé
+/// pour le scan **et** le score : un scan et un score évalués à des instants
+/// différents pourraient exclure/inclure un souvenir de façon incohérente
+/// entre les deux passes.
+///
+/// Renvoie `(scanned, victim_ids)` — `scanned` est la population **active**
+/// vue par le scan (ADR-038 : les invalidés/expirés en sont déjà exclus par
+/// [`crate::storage::MemoryStore::scan_for_forgetting`]), jamais le total
+/// brut de la table.
+///
+/// # Errors
+/// Propage les erreurs de stockage du scan.
+pub(crate) async fn scan_and_select(
+    store: &Arc<dyn MemoryStore>,
+    agent: &AgentId,
+    policy: AdaptiveForgettingPolicy,
+) -> Result<(usize, Vec<String>)> {
+    let now = now_unix();
+    let candidates = store.scan_for_forgetting(agent, now).await?;
+    let scanned = candidates.len();
+    let victims = select_victims(&candidates, now, policy);
+    Ok((scanned, victims))
+}
+
+/// Passe d'oubli adaptatif **sans `Memory`** : opère directement sur
+/// [`MemoryStore`], donc sans charger l'embedder Candle — le chemin CLI
+/// (`basemyai forget-adaptive`), qui n'a besoin d'aucun embedding pour une
+/// opération purement temporelle/de capacité (miroir de la façon dont
+/// `list`/`forget`/`invalidate`/`purge` évitent déjà `open_memory`).
+///
+/// `dry_run = true` calcule et renvoie le rapport (ce qui **serait** évincé)
+/// sans évincer quoi que ce soit — aucune mutation, aucun appel à
+/// [`MemoryStore::forget`].
+///
+/// N'émet aucun [`crate::MemoryEvent`] (contrairement à
+/// [`crate::Memory::adaptive_forget`]) : un processus CLI one-shot n'a pas
+/// d'abonné à qui les envoyer.
+///
+/// # Errors
+/// Propage les erreurs de stockage (scan ou éviction).
+pub async fn run(
+    store: &Arc<dyn MemoryStore>,
+    agent: &AgentId,
+    policy: AdaptiveForgettingPolicy,
+    dry_run: bool,
+) -> Result<ForgettingReport> {
+    let (scanned, victims) = scan_and_select(store, agent, policy).await?;
+    let evicted = victims.len();
+    if !dry_run {
+        for id in &victims {
+            store.forget(agent, id).await?;
+        }
+    }
+    Ok(ForgettingReport { scanned, evicted })
 }
 
 /// Tâche de fond d'oubli adaptatif, injectable dans le `MaintenanceWorker`
@@ -224,5 +305,83 @@ mod tests {
         // importe peu ici, seule l'absence de panique est vérifiée.
         let evicted = select_victims(&candidates, 100, policy);
         assert_eq!(evicted.len(), 2);
+    }
+
+    #[test]
+    fn no_candidates_evicts_nothing() {
+        let policy = AdaptiveForgettingPolicy {
+            capacity: 0,
+            recency_half_life_secs: 3_600,
+        };
+        assert!(select_victims(&[], 0, policy).is_empty());
+    }
+
+    #[test]
+    fn future_last_access_does_not_panic_or_produce_negative_age() {
+        // `last_access` postérieur à `now` (horloge en recul, import
+        // adversarial) : l'âge doit saturer à 0, jamais devenir négatif
+        // (ce qui gonflerait le score au-delà de la plage attendue).
+        let future = candidate("future", 0.5, 1_000_000);
+        let present = candidate("present", 0.5, 0);
+        let policy = AdaptiveForgettingPolicy {
+            capacity: 1,
+            recency_half_life_secs: 3_600,
+        };
+        // now = 0, très antérieur à `future.last_access` : l'âge de
+        // `future` sature à 0 (score maximal), donc "present" est évincé.
+        let evicted = select_victims(&[future, present], 0, policy);
+        assert_eq!(evicted, vec!["present".to_string()]);
+    }
+
+    #[test]
+    fn non_finite_importance_does_not_break_total_order() {
+        // NaN/±inf ne sont pas atteignables via l'API publique aujourd'hui
+        // (`importance` par défaut = 1.0, ADR-037), mais un import (ADR-036)
+        // rejoue des valeurs arbitraires depuis un JSONL non fiable : la
+        // sélection doit rester déterministe et ne jamais paniquer.
+        let candidates = vec![
+            candidate("nan", f64::NAN, 0),
+            candidate("pos_inf", f64::INFINITY, 0),
+            candidate("neg_inf", f64::NEG_INFINITY, 0),
+            candidate("normal", 1.0, 0),
+        ];
+        let policy = AdaptiveForgettingPolicy {
+            capacity: 1,
+            recency_half_life_secs: 3_600,
+        };
+        // Deux appels doivent produire le même résultat (déterminisme) —
+        // un NaN qui romprait l'ordre total ferait varier le résultat d'un
+        // tri à l'autre.
+        let mut first = select_victims(&candidates, 100, policy);
+        let mut second = select_victims(&candidates, 100, policy);
+        first.sort();
+        second.sort();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 3, "capacité 1 sur 4 candidats : 3 évincés");
+        // `normal` (importance finie 1.0, la plus élevée après sanitisation
+        // des non-finies à 0.0) doit survivre.
+        assert!(!first.contains(&"normal".to_string()));
+    }
+
+    #[test]
+    fn out_of_range_importance_is_ordered_but_never_panics() {
+        // Importance négative ou très grande (hors la plage [0,1] "documentée"
+        // mais jamais validée à l'écriture) reste un simple facteur additif :
+        // pas de clamp requis, juste un ordre total stable.
+        let candidates = vec![
+            candidate("negative", -100.0, 0),
+            candidate("huge", 1e300, 0),
+            candidate("normal", 1.0, 0),
+        ];
+        let policy = AdaptiveForgettingPolicy {
+            capacity: 2,
+            recency_half_life_secs: 3_600,
+        };
+        let evicted = select_victims(&candidates, 100, policy);
+        assert_eq!(
+            evicted,
+            vec!["negative".to_string()],
+            "importance négative doit perdre face à `huge` et `normal`"
+        );
     }
 }

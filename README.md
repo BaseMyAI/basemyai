@@ -70,7 +70,7 @@
   &nbsp;
   <a href="https://dev.to/basemyai"><img height="25" src="./basemyai-branding/social/dev.svg" alt="Dev"></a>
   &nbsp;
-  <a href="https://discord.gg/basemyai"><img height="25" src="./basemyai-branding/social/discord.svg" alt="Discord"></a>
+  <a href="https://discord.gg/GQAxwkzyuU"><img height="25" src="./basemyai-branding/social/discord.svg" alt="Discord"></a>
   &nbsp;
   <a href="https://stackoverflow.com/questions/tagged/basemyai"><img height="25" src="./basemyai-branding/social/stack-overflow.svg" alt="Stack Overflow"></a>
 </p>
@@ -81,12 +81,12 @@
 
 BaseMyAI is a **local memory engine** built in Rust that gives AI agents persistent, temporal, multi-layered memory — vector search, knowledge graph, and time-aware retrieval — inside a single encrypted `.bmai` container. Zero cloud. Zero data leaks. Zero silent downloads.
 
-AI agents have no memory by default. Every session starts from zero. Worse — the few solutions that *do* add memory route your conversations and embeddings to a cloud vector database. For anything sensitive — personal assistants, internal tools, regulated industries — that is a non-starter. And almost none of them handle **time**: a fact that was true last quarter is treated identically to a fact that is true right now.
+AI agents have no memory by default. Every session starts from zero. Worse — the few solutions that _do_ add memory route your conversations and embeddings to a cloud vector database. For anything sensitive — personal assistants, internal tools, regulated industries — that is a non-starter. And almost none of them handle **time**: a fact that was true last quarter is treated identically to a fact that is true right now.
 
 BaseMyAI solves all three problems in a single Rust binary:
 
 - **Privacy-first** — everything stays on-device, in one encrypted `.bmai` container (native engine, XChaCha20-Poly1305 at rest — no CMake, no cloud)
-- **Temporal** — every memory carries `valid_from` / `valid_until`; retrieval returns only what is *currently* true
+- **Temporal** — every memory carries `valid_from` / `valid_until`; retrieval returns only what is _currently_ true
 - **Multi-signal** — vector similarity + knowledge graph + Reciprocal Rank Fusion in one query
 
 BaseMyAI uses vectors, but it is **not another vector database**. It is an
@@ -175,12 +175,12 @@ Since **[ADR-032](docs/adr/ADR-032-native-only.md)** (2026-07-08), the native en
 
 <h2><img height="20" src="./basemyai-branding/icons/features.svg">&nbsp;&nbsp;The 4 memory layers</h2>
 
-| Layer | Holds | Lifetime |
-|---|---|---|
-| `short_term` | Working context for the active session | Expires fast (TTL) |
-| `episodic` | What happened and when — events, interactions | Time-bounded |
-| `procedural` | Learned how-to: steps, workflows, skills | Long-lived |
-| `semantic` | Facts and knowledge, vector-searchable | Until explicitly invalidated |
+| Layer        | Holds                                         | Lifetime                     |
+| ------------ | --------------------------------------------- | ---------------------------- |
+| `short_term` | Working context for the active session        | Expires fast (TTL)           |
+| `episodic`   | What happened and when — events, interactions | Time-bounded                 |
+| `procedural` | Learned how-to: steps, workflows, skills      | Long-lived                   |
+| `semantic`   | Facts and knowledge, vector-searchable        | Until explicitly invalidated |
 
 Every layer carries `valid_from` / `valid_until` — memory is **temporal by construction**, not as an afterthought.
 
@@ -215,14 +215,24 @@ let fused = rrf_fuse(&[
 
 ### Adaptive forgetting
 
-A capacity-bounded GC that keeps the most *important and recent* memories. Importance decays over time using a **hyperbolic curve** `H / (H + age)` — stable at real Unix timestamps without floating-point underflow.
+A capacity-bounded GC that keeps the most _important and recent_ **active** memories. Importance decays over time using a **hyperbolic curve** `H / (H + age)` — stable at real Unix timestamps without floating-point underflow. Invalidated/expired memories are never counted toward capacity — that's the separate expired-memory GC below.
 
 ```rust
-let gc = AdaptiveForgetting {
-    capacity_per_agent:    10_000,
+let policy = AdaptiveForgettingPolicy {
+    capacity: 10_000,
     recency_half_life_secs: 7 * 24 * 3600,  // 1 week
 };
-worker.register(gc);
+worker.register(Duration::from_secs(3600), Arc::new(AdaptiveForgettingTask::new(memory.clone(), policy)));
+```
+
+### Expired-memory GC
+
+A second, disjoint mechanism: physically deletes memories whose `valid_until` has already passed (invalidated explicitly, or expired by their validity window) — paginated by cursor, idempotent, resumable after an interruption.
+
+```rust
+let report = memory.expired_gc(/* page_size */ 1_000).await?;
+// or as a background task, alongside AdaptiveForgettingTask:
+worker.register(Duration::from_secs(3600), Arc::new(ExpiredMemoryGcTask::new(memory.clone(), 1_000)));
 ```
 
 ### Episode → fact consolidation
@@ -255,14 +265,14 @@ A `.bmai` file is a native engine container (WAL + SST + metadata). It is **not*
 
 **User key resolution (ADR-034)** — CLI, REST, MCP, and SDK bindings resolve the passphrase from the same ordered sources:
 
-| Priority | Source |
-|---|---|
-| 1 | Explicit argument (`encryption_key` / `EncryptionKey::new`) |
-| 2 | `BASEMYAI_DB_KEY` |
-| 3 | `BASEMYAI_ENCRYPTION_KEY` (legacy alias) |
-| 4 | `BASEMYAI_DB_KEY_FILE` |
-| 5 | `/run/secrets/basemyai_db_key` (Docker secrets) |
-| 6 | `~/.basemyai/key` (`basemyai config key generate`) |
+| Priority | Source                                                      |
+| -------- | ----------------------------------------------------------- |
+| 1        | Explicit argument (`encryption_key` / `EncryptionKey::new`) |
+| 2        | `BASEMYAI_DB_KEY`                                           |
+| 3        | `BASEMYAI_ENCRYPTION_KEY` (legacy alias)                    |
+| 4        | `BASEMYAI_DB_KEY_FILE`                                      |
+| 5        | `/run/secrets/basemyai_db_key` (Docker secrets)             |
+| 6        | `~/.basemyai/key` (`basemyai config key generate`)          |
 
 Full operator guide: [`docs/security/key-resolution.md`](docs/security/key-resolution.md).
 
@@ -315,10 +325,10 @@ for h in hits:
 import { Memory } from "basemyai";
 
 const mem = await Memory.open({
-    path: "./agent.bmai",
-    agentId: "assistant-42",
-    // encryptionKey optional — ADR-034 resolves env / ~/.basemyai/key / BASEMYAI_DB_KEY_FILE
-    modelPath: "~/.basemyai/models/all-MiniLM-L6-v2",
+  path: "./agent.bmai",
+  agentId: "assistant-42",
+  // encryptionKey optional — ADR-034 resolves env / ~/.basemyai/key / BASEMYAI_DB_KEY_FILE
+  modelPath: "~/.basemyai/models/all-MiniLM-L6-v2",
 });
 
 await mem.remember("The user prefers dark mode.", "procedural");
@@ -475,8 +485,8 @@ basemyai graph add-entity alice person "Alice"
 basemyai graph add-edge alice works_at acme
 basemyai graph traverse alice --depth 2
 
-basemyai maintenance gc
-basemyai maintenance forget-adaptive --capacity 10000
+basemyai gc                                 # delete memories past their valid_until
+basemyai forget-adaptive --capacity 10000   # evict least-retained active memories beyond capacity
 basemyai consolidate          # episodes → facts + graph (requires local LLM)
 
 basemyai llm detect           # discover local LLM servers + best model
@@ -553,14 +563,14 @@ procedures = await mem.recall_by_layer("how do I deploy?", "procedural", k=5)
 
 The same Rust core, six ways to consume it:
 
-| Surface | For | Crate consumed | Tech |
-|---|---|---|---|
-| **MCP server** | AI agents (Claude Code, Cursor, custom MCP clients) | `basemyai` | stdio + HTTP, 8 tools — see [MCP install guide](docs/mcp-install.md) |
-| **Python SDK** | Python agent builders (LangChain, LlamaIndex, custom) | `basemyai` | PyO3 + precompiled wheel |
-| **Node SDK** | JS / TS agent builders | `basemyai` | NAPI-RS + prebuild |
-| **REST sidecar** | Go, Ruby, any HTTP client | `basemyai` | axum, `/v1` routes + SSE live subscriptions |
-| **CLI** (`basemyai`) | Scripting, ops, ad-hoc inspection, agent-as-tool (`--format json`) | `basemyai` | Single binary (clap) — see [CLI reference](docs/cli.md) |
-| **Native Rust crate** | Rust programs on the agnostic core | `basemyai-core` | Direct link, zero FFI overhead |
+| Surface               | For                                                                | Crate consumed  | Tech                                                                 |
+| --------------------- | ------------------------------------------------------------------ | --------------- | -------------------------------------------------------------------- |
+| **MCP server**        | AI agents (Claude Code, Cursor, custom MCP clients)                | `basemyai`      | stdio + HTTP, 8 tools — see [MCP install guide](docs/mcp-install.md) |
+| **Python SDK**        | Python agent builders (LangChain, LlamaIndex, custom)              | `basemyai`      | PyO3 + precompiled wheel                                             |
+| **Node SDK**          | JS / TS agent builders                                             | `basemyai`      | NAPI-RS + prebuild                                                   |
+| **REST sidecar**      | Go, Ruby, any HTTP client                                          | `basemyai`      | axum, `/v1` routes + SSE live subscriptions                          |
+| **CLI** (`basemyai`)  | Scripting, ops, ad-hoc inspection, agent-as-tool (`--format json`) | `basemyai`      | Single binary (clap) — see [CLI reference](docs/cli.md)              |
+| **Native Rust crate** | Rust programs on the agnostic core                                 | `basemyai-core` | Direct link, zero FFI overhead                                       |
 
 <h2><img height="20" src="./basemyai-branding/icons/community.svg">&nbsp;&nbsp;Community</h2>
 
