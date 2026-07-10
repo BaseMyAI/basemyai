@@ -25,6 +25,13 @@ embed = ["basemyai-core/embed"]
 # d'`open_in_memory` — le moteur LSM n'a pas de mode in-memory).
 # Jamais en production.
 test-util = ["dep:tempfile", "basemyai-engine/test-util"]
+# `cuda-detect` : détection GPU NVIDIA (nombre, VRAM/device) via NVML
+# (`nvml-wrapper`, pur binding Rust — pas de CMake). Optionnelle et hors du
+# gate CI léger (`cargo xtask check/test`) : compilation potentiellement plus
+# lourde selon la plateforme, et sans intérêt à valider sans GPU réel. Best-
+# effort : NVML/driver absent (cas normal sans GPU NVIDIA) ne panique jamais,
+# `detect_hardware()` retourne simplement `gpus: vec![]`.
+cuda-detect = ["dep:nvml-wrapper"]
 
 [dependencies]
 basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
@@ -47,6 +54,8 @@ serde_json = { workspace = true }
 # Client HTTP async — détection des serveurs LLM locaux (Ollama, llama.cpp).
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+# Détection GPU NVIDIA (NVML) — optionnelle, feature `cuda-detect`.
+nvml-wrapper = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Accès direct aux types du core dans les tests d'intégration (fakes pour la DI).

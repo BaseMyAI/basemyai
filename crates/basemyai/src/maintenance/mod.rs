@@ -2,13 +2,19 @@
 //! Tâches de maintenance **sémantiques**, injectées dans le worker agnostique
 //! du core (`basemyai_core::MaintenanceWorker`).
 //!
-//! GC temporel (`valid_until`) et oubli adaptatif (ADR-005/ADR-008, VISION
-//! §5.2) reposaient sur du SQL de fenêtrage (`ROW_NUMBER() OVER (PARTITION
-//! BY ...)`) spécifique au backend libSQL, retiré du workspace par ADR-032 —
-//! supprimés avec lui plutôt que portés en passant sur le moteur natif (un
-//! portage mérite son propre design/tests). `ConsolidationTask` survit :
-//! elle ne dépendait déjà d'aucun store partagé (auto-suffisante via
-//! `Arc<Memory>`).
+//! GC temporel (`valid_until`) reposait sur du SQL spécifique au backend
+//! libSQL, retiré du workspace par ADR-033 — supprimé avec lui (item de
+//! suivi séparé, hors scope). L'oubli adaptatif (ADR-012 §4), qui reposait
+//! lui aussi sur du SQL de fenêtrage (`ROW_NUMBER() OVER (PARTITION BY
+//! ...)`), a été **porté** sur le moteur natif par ADR-037 :
+//! [`adaptive_forgetting`], scan applicatif + sélection pure au lieu d'une
+//! requête fenêtrée. `ConsolidationTask` et `AdaptiveForgettingTask`
+//! partagent le même pattern : auto-suffisantes via `Arc<Memory>`, aucun
+//! store partagé injecté par le worker.
+
+pub(crate) mod adaptive_forgetting;
+
+pub use adaptive_forgetting::{AdaptiveForgettingPolicy, AdaptiveForgettingTask, ForgettingReport};
 
 use std::sync::Arc;
 

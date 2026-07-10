@@ -312,13 +312,16 @@ fn fmt_check() {
     }
 }
 
-/// Refuse les mentions actives de libSQL/SQLCipher dans le code produit (ADR-033).
+/// Refuse les mentions actives de libSQL/SQLCipher dans le code produit
+/// (ADR-033). `"adaptive forgetting"` faisait partie de cette liste comme
+/// garde-fou anti-réintroduction silencieuse (le mécanisme avait été retiré
+/// sans portage, ADR-033) ; retiré depuis que ADR-037 documente son portage
+/// natif en bonne et due forme — le garde-fou a fait son travail.
 fn doc_drift_check() {
     let root = workspace_root();
     let patterns = [
         "libsqlmemorystore",
         "sqlcipher",
-        "adaptive forgetting",
         "libsql's built-in",
         "feature `crypto`",
     ];

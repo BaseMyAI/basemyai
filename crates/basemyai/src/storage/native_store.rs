@@ -707,6 +707,25 @@ impl MemoryStore for NativeMemoryStore {
         .await
     }
 
+    async fn scan_for_forgetting(&self, agent: &AgentId) -> Result<Vec<super::ForgetCandidate>> {
+        let agent = agent.clone();
+        // Lecture pure — verrou de lecture partagé (N5.5). Aucun tri ici :
+        // c'est la politique (`crate::maintenance`) qui décide de l'ordre.
+        self.with_inner_read(move |inner| {
+            let NativeInner { engine, memory, .. } = inner;
+            let records = memory.scan_agent(engine, agent.as_str()).map_err(storage)?;
+            Ok(records
+                .into_iter()
+                .map(|(id, record)| super::ForgetCandidate {
+                    id,
+                    importance: record.importance,
+                    last_access: record.last_access,
+                })
+                .collect())
+        })
+        .await
+    }
+
     async fn put_memory(
         &self,
         id: &str,

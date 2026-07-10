@@ -1,0 +1,35 @@
+# Docker build context exclusions (workspace root — see crates/basemyai-rest/Dockerfile).
+/target/
+**/target/
+.git/
+.claude/
+.codex/
+.vscode/
+.tmp-cli-smoke/
+
+# Bases de données natives / libSQL legacy — jamais dans l'image.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.bmai
+
+# Modèles ML — trop lourds pour l'image ; fournis via volume (BASEMYAI_MODEL_PATH).
+*.gguf
+*.ggml
+*.safetensors
+*.bin
+*.pt
+*.onnx
+models/
+.models/
+.cache/
+
+# Docs / branding — inutiles au build, allègent le contexte.
+docs/
+basemyai-branding/
+benchmarks/
+examples/
+*.md
+!README.md

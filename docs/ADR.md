@@ -44,3 +44,4 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-034](adr/ADR-034-user-key-resolution.md) | Résolution centralisée de la passphrase utilisateur (User Key Resolution) | ✅ Accepted |
 | [ADR-035](adr/ADR-035-procedural-recall-and-temporal-dedup.md) | Recall procedural opt-in + `exact_fact_exists` temporel | ✅ Accepted |
 | [ADR-036](adr/ADR-036-trust-level-and-public-provenance.md) | `TrustLevel`, provenance publique, anti-spoofing import | ✅ Accepted |
+| [ADR-037](adr/ADR-037-native-adaptive-forgetting.md) | Oubli adaptatif porté sur le moteur natif (scan applicatif, sans fenêtrage SQL) | ✅ Accepted |

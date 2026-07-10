@@ -29,7 +29,7 @@ pub use cognition::{
     consolidate, consolidation_prompt, parse_extraction, validate_extraction_bounds,
 };
 pub use error::{MemoryError, Result};
-pub use maintenance::ConsolidationTask;
+pub use maintenance::{AdaptiveForgettingPolicy, AdaptiveForgettingTask, ConsolidationTask, ForgettingReport};
 #[cfg(feature = "test-util")]
 pub use memory::HashEmbedder;
 pub use memory::{
@@ -42,9 +42,10 @@ pub use storage::BMAI_FORMAT_VERSION;
 /// en V1 (CLAUDE.md).
 pub const EMBEDDING_DIM: usize = 384;
 pub use provision::{
-    AnythingLlmBackend, BASELINE_DIM, BASELINE_MODEL_ID, BackendKind, HardwareProfile, KNOWN_MODELS, KnownModel,
-    LlmOption, LlmProvision, ModelProvision, OllamaBackend, OpenAiCompatBackend, anythingllm_from_env, best_llm_option,
-    choose_llm, detect_hardware, detect_llm_options, propose_models_to_install, provision, provision_with_progress,
+    AnythingLlmBackend, BASELINE_DIM, BASELINE_MODEL_ID, BackendKind, GpuInfo, HardwareProfile, KNOWN_MODELS,
+    KnownModel, LlmOption, LlmProvision, ModelProvision, OllamaBackend, OpenAiCompatBackend, anythingllm_from_env,
+    best_llm_option, choose_llm, detect_hardware, detect_llm_options, propose_models_to_install, provision,
+    provision_with_progress,
 };
 pub use retrieval::{Fused, RRF_K, Ranking, rrf_fuse};
 pub use temporal::Validity;

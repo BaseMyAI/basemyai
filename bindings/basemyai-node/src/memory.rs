@@ -6,8 +6,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{Error, Result, Status};
 use napi_derive::napi;
+use tokio::sync::oneshot;
 
 use basemyai::MemoryLayer;
 #[cfg(feature = "embed")]
@@ -16,7 +18,7 @@ use basemyai_core::EncryptionKey;
 use basemyai_core::{CandleEmbedder, Device};
 
 use crate::errors::to_napi;
-use crate::types::{AgentStats, Entity, MemoryOpenOptions, Record};
+use crate::types::{AgentStats, Entity, MemoryEventPayload, MemoryOpenOptions, Record};
 
 /// Mémoire d'un agent (tenant). Ouverte par une fabrique asynchrone, puis
 /// interrogée par `remember`/`recall`/... (toutes des `Promise`).
@@ -149,6 +151,93 @@ impl Memory {
             .await
             .map_err(to_napi)?;
         Ok(reached.into_iter().map(Entity::from).collect())
+    }
+
+    /// S'abonne en direct aux événements mémoire de `agent_id` (et, si fourni,
+    /// à une seule couche) — équivalent binding natif du `watch` MCP/REST
+    /// (ADR-022). `callback` est invoqué avec un [`MemoryEventPayload`] pour
+    /// chaque événement qui passe le filtre d'isolation.
+    ///
+    /// L'isolation est appliquée **côté** `basemyai::MemorySubscription::recv`,
+    /// jamais déléguée à l'appelant : un `agent_id` qui ne correspond pas à
+    /// l'agent réellement propriétaire de l'événement ne délivre jamais rien,
+    /// quel que soit le filtre demandé ici (défense en profondeur — voir
+    /// `watch_isolates_events_from_other_agents` côté REST/MCP).
+    ///
+    /// Résout immédiatement vers un [`WatchHandle`] : appeler `close()` dessus
+    /// (ou le laisser être garbage-collecté côté JS) arrête le relais et
+    /// libère la tâche tokio de fond — aucune tâche ne survit indéfiniment
+    /// sans abonné vivant.
+    #[napi]
+    pub async fn watch(
+        &self,
+        agent_id: String,
+        layer: Option<String>,
+        callback: ThreadsafeFunction<MemoryEventPayload, (), MemoryEventPayload, Status, false>,
+    ) -> Result<WatchHandle> {
+        let layer = layer
+            .as_deref()
+            .map(MemoryLayer::from_table)
+            .transpose()
+            .map_err(to_napi)?;
+        let mem = Arc::clone(&self.inner);
+        let mut subscription = mem.watch(&agent_id, layer);
+        let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            // `mem` reste vivant pour la durée de l'abonnement : le canal
+            // `broadcast` d'événements de `Memory` ne disparaît pas tant qu'un
+            // abonné actif (ici, cette tâche) le garde en vie.
+            let _mem = mem;
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    event = subscription.recv() => {
+                        match event {
+                            Some(ev) => {
+                                let payload = MemoryEventPayload::from(&ev);
+                                callback.call(payload, ThreadsafeFunctionCallMode::NonBlocking);
+                            }
+                            // Canal fermé (plus aucun `Sender` : `Memory` source détruite).
+                            None => break,
+                        }
+                    }
+                }
+            }
+        });
+        Ok(WatchHandle { stop: Some(stop_tx) })
+    }
+}
+
+/// Poignée d'abonnement renvoyée par [`Memory::watch`]. Tant qu'elle est
+/// vivante (ou jusqu'à `close()`), la tâche de relais tourne en tâche de fond
+/// et invoque le callback JS à chaque événement. `close()` est idempotent ;
+/// elle est aussi appelée implicitement quand l'objet JS est garbage-collecté
+/// (via `Drop`), pour ne jamais fuir de tâche tokio.
+#[napi]
+pub struct WatchHandle {
+    stop: Option<oneshot::Sender<()>>,
+}
+
+#[napi]
+impl WatchHandle {
+    /// Arrête l'abonnement : le callback ne sera plus jamais invoqué après cet
+    /// appel. Idempotent — un second appel est un no-op.
+    #[napi]
+    pub fn close(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            // Le récepteur peut déjà avoir disparu (tâche déjà terminée,
+            // p. ex. canal source fermé) : `send` échoue silencieusement,
+            // c'est attendu.
+            let _ = stop.send(());
+        }
+    }
+}
+
+impl Drop for WatchHandle {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
     }
 }
 

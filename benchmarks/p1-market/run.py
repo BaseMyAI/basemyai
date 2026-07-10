@@ -108,7 +108,7 @@ async def run_basemyai(corpus: list[dict[str, str]], k: int, out: Path, resume: 
     mem = await basemyai.Memory.open(
         db_path,
         agent,
-        key,
+        encryption_key=key,
         model_dir=model_dir,
         consent_to_fetch=False,
     )
@@ -173,6 +173,14 @@ async def run_mem0_qdrant(corpus: list[dict[str, str]], k: int, infer: bool, out
     # (embed + vector search against the growing collection) gets slower as the
     # collection grows, so a long run needs real headroom here.
     qdrant_timeout = float(os.environ.get("MEM0_QDRANT_TIMEOUT", "120"))
+    # N6 (2026-07): no Docker available in this environment to run a real
+    # Qdrant server. qdrant-client ships an embedded "local mode" (on-disk,
+    # in-process, no server/REST) that mem0 accepts via a pre-built `client`
+    # object — this is still the real Qdrant engine (same HNSW/vector code),
+    # just without the REST hop. Set MEM0_QDRANT_LOCAL_PATH to use it instead
+    # of host/port; this is a documented, honest protocol deviation from the
+    # 2026-06-21 Docker-based run, not a fake/mocked backend.
+    local_path = os.environ.get("MEM0_QDRANT_LOCAL_PATH")
 
     llm_provider = os.environ.get("MEM0_LLM_PROVIDER", "ollama")
     llm_model = os.environ.get("MEM0_LLM_MODEL", "llama3.2:1b")
@@ -180,17 +188,26 @@ async def run_mem0_qdrant(corpus: list[dict[str, str]], k: int, infer: bool, out
     embedder_model = os.environ.get("MEM0_EMBEDDER_MODEL", "all-minilm")
     embedder_dims = int(os.environ.get("MEM0_EMBEDDER_DIMS", "384"))
 
-    client = QdrantClient(host=host, port=port, timeout=qdrant_timeout)
+    if local_path:
+        client = QdrantClient(path=local_path)
+        vector_store_config = {
+            "collection_name": collection,
+            "embedding_model_dims": embedder_dims,
+            "client": client,
+        }
+    else:
+        client = QdrantClient(host=host, port=port, timeout=qdrant_timeout)
+        vector_store_config = {
+            "collection_name": collection,
+            "host": host,
+            "port": port,
+            "embedding_model_dims": embedder_dims,
+            "client": client,
+        }
     config = {
         "vector_store": {
             "provider": "qdrant",
-            "config": {
-                "collection_name": collection,
-                "host": host,
-                "port": port,
-                "embedding_model_dims": embedder_dims,
-                "client": client,
-            },
+            "config": vector_store_config,
         },
         "llm": {"provider": llm_provider, "config": {"model": llm_model}},
         "embedder": {

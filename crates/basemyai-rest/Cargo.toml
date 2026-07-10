@@ -16,6 +16,12 @@ path = "src/lib.rs"
 name = "basemyai-rest"
 path = "src/main.rs"
 
+# Not distributed via `cargo-dist` (see root `dist-workspace.toml`): the REST
+# sidecar ships as a Docker image (`Dockerfile` in this crate), not a
+# standalone precompiled binary. Only `basemyai-cli` opts into `dist`.
+[package.metadata.dist]
+dist = false
+
 [features]
 default = ["embed"]
 embed   = ["basemyai/embed"]

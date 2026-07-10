@@ -55,6 +55,19 @@ pub struct HydratedRecord {
     pub source: String,
 }
 
+/// Un candidat à l'oubli adaptatif (VISION §5.2, ADR-012, portée sur le
+/// moteur natif par ADR-037) : seulement les colonnes nécessaires au score de
+/// rétention, jamais le contenu (le scan n'a pas besoin de le charger).
+/// Inclut les souvenirs déjà invalidés — parité avec le comportement V1, où
+/// l'oubli adaptatif et le GC temporel (`valid_until`) étaient deux
+/// mécanismes indépendants opérant tous deux sur toute la table `memory`.
+#[derive(Debug, Clone)]
+pub struct ForgetCandidate {
+    pub id: String,
+    pub importance: f64,
+    pub last_access: i64,
+}
+
 /// Contrat d'opérations mémoire : tout ce que `basemyai` a besoin de demander
 /// à un moteur de stockage, en langage métier (agent, couche, graphe) — jamais
 /// en SQL. Object-safe (`#[async_trait]`), même convention que
@@ -197,4 +210,11 @@ pub trait MemoryStore: Send + Sync {
         include_invalid: bool,
         now: i64,
     ) -> Result<Vec<ListedRecord>>;
+
+    /// Tout ce qu'il faut pour scorer l'oubli adaptatif de `agent` :
+    /// `importance`/`last_access` par souvenir, scan applicatif complet (pas
+    /// de fenêtrage SQL — ADR-037). Volontairement pas de tri ni de limite
+    /// ici : c'est la brique brute, la politique (capacité, demi-vie) vit
+    /// côté [`crate::maintenance`].
+    async fn scan_for_forgetting(&self, agent: &AgentId) -> Result<Vec<ForgetCandidate>>;
 }

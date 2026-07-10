@@ -342,4 +342,33 @@ mod tests {
         let err = encode(&doc).expect_err("term beyond u16 must not silently truncate");
         assert!(matches!(err, EngineError::CorruptFtsDocTerms { .. }));
     }
+
+    /// `term_len` bounds *bytes*, not chars — a multi-byte term with fewer
+    /// chars than `u16::MAX` can still have more bytes than it. `"é"` is 2
+    /// bytes in UTF-8: 32 768 of them is 65 536 bytes, one past `u16::MAX`.
+    #[test]
+    fn oversized_multibyte_term_is_rejected_at_encode_time() {
+        let term = "é".repeat(32_768);
+        assert_eq!(term.len(), 65_536);
+        let doc = FtsDocTerms {
+            terms: vec![DocTerm { term, tf: 1 }],
+        };
+        let err = encode(&doc).expect_err("multi-byte term beyond u16 bytes must not silently truncate");
+        assert!(matches!(err, EngineError::CorruptFtsDocTerms { .. }));
+    }
+
+    /// A multi-byte term of exactly `u16::MAX` bytes (the largest legal
+    /// `term_len`) must still encode/decode losslessly — the boundary itself
+    /// isn't a rejection.
+    #[test]
+    fn multibyte_term_at_exact_u16_max_bytes_roundtrips() {
+        let mut term = "é".repeat(32_767); // 65 534 bytes
+        term.push('x'); // + 1 byte = 65 535 = u16::MAX exactly
+        assert_eq!(term.len(), usize::from(u16::MAX));
+        let doc = FtsDocTerms {
+            terms: vec![DocTerm { term, tf: 1 }],
+        };
+        let bytes = encode(&doc).expect("term at exactly u16::MAX bytes must be accepted");
+        assert_eq!(decode(&bytes).expect("decode ok"), doc);
+    }
 }

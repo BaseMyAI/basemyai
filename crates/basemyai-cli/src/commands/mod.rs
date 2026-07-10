@@ -144,6 +144,14 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
             let agent = resolve_agent()?;
             maintenance::consolidate(&path, &agent, format).await
         }
+        Command::ForgetAdaptive {
+            capacity,
+            half_life_secs,
+        } => {
+            let path = resolve_path()?;
+            let agent = resolve_agent()?;
+            maintenance::forget_adaptive(&path, &agent, capacity, half_life_secs, format).await
+        }
         Command::Llm { action } => match action {
             LlmAction::Detect => provision::llm_detect(format).await,
             LlmAction::Suggest => provision::llm_suggest(format).await,

@@ -147,6 +147,20 @@ pub(crate) enum Command {
     },
     /// Consolidation épisodes → faits + graphe, via le meilleur LLM local détecté.
     Consolidate,
+    /// Oubli adaptatif (VISION §5.2, ADR-037) : évince physiquement les
+    /// souvenirs les moins bien notés (`importance + H/(H+age)`) au-delà
+    /// d'une capacité par agent. Une passe manuelle, ponctuelle — la même
+    /// politique tourne en tâche de fond via `AdaptiveForgettingTask`
+    /// (bindings/surfaces qui font tourner un `MaintenanceWorker`).
+    ForgetAdaptive {
+        /// Nombre maximum de souvenirs conservés pour l'agent ; le reste est
+        /// évincé, du moins bien noté au mieux noté.
+        #[arg(long)]
+        capacity: usize,
+        /// Demi-vie de récence en secondes (`H` dans le score de rétention).
+        #[arg(long, default_value_t = 86_400)]
+        half_life_secs: i64,
+    },
     /// Vérifie un `.bmai` : conteneur valide, version de format attendue.
     Verify,
     /// Applique les migrations de schéma en attente (idempotent).

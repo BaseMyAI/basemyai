@@ -4,6 +4,8 @@
 
 use napi_derive::napi;
 
+use basemyai::MemoryEventKind;
+
 /// Options de production pour ouvrir une mémoire persistée.
 #[napi(object)]
 pub struct MemoryOpenOptions {
@@ -106,4 +108,39 @@ impl From<basemyai::Reached> for Entity {
 
 fn clamp_u32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// Un événement mémoire poussé à un abonné `watch` (ADR-022, live subscriptions
+/// côté binding Node). Ne porte jamais le contenu du souvenir — seulement son
+/// identité et la nature de la mutation, comme les payloads MCP/REST
+/// équivalents ; l'abonné rappelle `recall`/`stats` par `id` s'il veut le détail.
+#[napi(object)]
+pub struct MemoryEventPayload {
+    pub agent_id: String,
+    /// `"remembered"` | `"invalidated"` | `"forgotten"` | `"consolidated"` |
+    /// `"unknown"` (genre futur non reconnu — `MemoryEventKind` est `#[non_exhaustive]`).
+    pub kind: String,
+    /// `short_term` | `episodic` | `procedural` | `semantic`.
+    pub layer: String,
+    pub id: String,
+}
+
+impl From<&basemyai::MemoryEvent> for MemoryEventPayload {
+    fn from(ev: &basemyai::MemoryEvent) -> Self {
+        let kind = match ev.kind {
+            MemoryEventKind::Remembered => "remembered",
+            MemoryEventKind::Invalidated => "invalidated",
+            MemoryEventKind::Forgotten => "forgotten",
+            MemoryEventKind::Consolidated => "consolidated",
+            // `MemoryEventKind` est `#[non_exhaustive]` : un genre futur
+            // atterrit ici plutôt que de casser la compilation.
+            _ => "unknown",
+        };
+        Self {
+            agent_id: ev.agent_id.clone(),
+            kind: kind.to_string(),
+            layer: ev.layer.table().to_string(),
+            id: ev.id.clone(),
+        }
+    }
 }

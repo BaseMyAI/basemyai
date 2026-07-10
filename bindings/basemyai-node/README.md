@@ -85,6 +85,19 @@ const reachable = await mem.recallGraph("alice", 2);
 
 // Physical delete (GDPR right to erasure)
 await mem.forget(id);
+
+// Live subscriptions (ADR-022): invoke a callback for every remember /
+// invalidate / forget / consolidate for this agent (optionally scoped to one
+// layer). Isolation is enforced server-side — a mismatched agentId never
+// receives anything, no matter what filter is requested here.
+const handle = await mem.watch("assistant-42", undefined, (event) => {
+  console.log(event.kind, event.layer, event.id); // never the memory's content
+});
+
+// Later: stop the relay and free the background task. Also happens
+// automatically if the handle is garbage-collected, but calling close()
+// explicitly is recommended.
+handle.close();
 ```
 
 ### Memory layers
@@ -110,6 +123,8 @@ await mem.forget(id);
 | `stats()` | Count of valid memories per layer |
 | `addGraphEntity` / `addGraphEdge` | Insert graph facts |
 | `recallGraph(start, maxDepth?)` | Multi-hop graph traversal |
+| `watch(agentId, layer?, callback)` | Live subscription (ADR-022): invokes `callback` with a `MemoryEventPayload` (`agentId`, `kind`, `layer`, `id`) for every memory mutation, isolated server-side by agent/layer. Resolves to a `WatchHandle` |
+| `WatchHandle.close()` | Stop a `watch` subscription and free its background task (idempotent; also runs on GC) |
 
 ### `Memory.open` options
 

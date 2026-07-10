@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: BUSL-1.1
+#
+# Sidecar REST `basemyai-rest` — voir crates/basemyai-rest/Dockerfile.
+#
+# Prérequis avant `docker compose up` :
+#   1. Le modèle baseline all-MiniLM-L6-v2 doit exister sous ./model/ sur
+#      l'hôte (config.json, tokenizer.json, model.safetensors) — l'embedder
+#      Candle ne télécharge JAMAIS silencieusement (ADR-010). Provisionnez-le
+#      d'abord hors conteneur (ex. `cargo run -p basemyai-cli -- setup`), ou
+#      passez BASEMYAI_FETCH=1 pour autoriser un fetch HuggingFace explicite
+#      au premier démarrage (nécessite un accès réseau sortant).
+#   2. Une clé de chiffrement au repos : BASEMYAI_DB_KEY (variable d'env ci-
+#      dessous), ou montez un secret sur /run/secrets/basemyai_db_key.
+#   3. En production, BASEMYAI_REST_API_KEY (le serveur refuse de démarrer
+#      sans clé API tant que BASEMYAI_REST_DEV=1 n'est pas positionné, et
+#      BASEMYAI_REST_DEV=1 n'est autorisé que sur un bind loopback).
+
+services:
+  basemyai-rest:
+    build:
+      context: .
+      dockerfile: crates/basemyai-rest/Dockerfile
+    image: basemyai-rest:latest
+    ports:
+      - "127.0.0.1:7743:7743"
+    environment:
+      BASEMYAI_REST_BIND: "0.0.0.0"
+      BASEMYAI_REST_PORT: "7743"
+      BASEMYAI_DB_PATH: "/data/memory.bmai"
+      BASEMYAI_MODEL_PATH: "/data/model"
+      # Obligatoire : décommentez et fournissez une vraie passphrase, ou
+      # utilisez `secrets:` (voir plus bas) / BASEMYAI_DB_KEY_FILE.
+      # BASEMYAI_DB_KEY: "change-me-32-bytes-minimum"
+      # Obligatoire hors mode dev :
+      # BASEMYAI_REST_API_KEY: "change-me"
+      # Mode dev (auth désactivée) — loopback uniquement, refusé sinon :
+      # BASEMYAI_REST_DEV: "1"
+    volumes:
+      - basemyai-data:/data
+      - ./model:/data/model:ro
+    restart: unless-stopped
+
+volumes:
+  basemyai-data:

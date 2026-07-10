@@ -11,5 +11,5 @@ mod errors;
 mod memory;
 mod types;
 
-pub use memory::Memory;
-pub use types::{AgentStats, Entity, MemoryOpenOptions, Record};
+pub use memory::{Memory, WatchHandle};
+pub use types::{AgentStats, Entity, MemoryEventPayload, MemoryOpenOptions, Record};

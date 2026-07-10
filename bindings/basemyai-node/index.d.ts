@@ -10,16 +10,16 @@ export declare class Memory {
   /** `agent_id` propriétaire de cette mémoire. */
   agent(): string
   /** Mémorise `text` dans une couche (défaut `semantic`). Résout vers l'UUID. */
-  remember(text: string, layer?: MemoryLayer | undefined | null): Promise<string>
+  remember(text: string, layer?: string | undefined | null): Promise<string>
   /** Recall temporel sémantique : résout vers un tableau de `Record`. */
-  recall(query: string, k?: number | undefined | null): Promise<Array<Record>>
+  recall(query: string, k?: number | undefined | null, includeProcedural?: boolean | undefined | null, excludeImported?: boolean | undefined | null): Promise<Array<Record>>
   /** Recall limité à une couche mémoire (`short_term`, `episodic`, `procedural`, `semantic`). */
-  recallByLayer(query: string, layer: MemoryLayer, k?: number | undefined | null): Promise<Array<Record>>
+  recallByLayer(query: string, layer: string, k?: number | undefined | null): Promise<Array<Record>>
   /**
    * Recall hybride : vecteur + BM25 (full-text) fusionnés par RRF. Résout vers
    * un tableau de `Record` (le `score` porte le score RRF fusionné).
    */
-  recallHybrid(query: string, k?: number | undefined | null): Promise<Array<Record>>
+  recallHybrid(query: string, k?: number | undefined | null, includeProcedural?: boolean | undefined | null, excludeImported?: boolean | undefined | null): Promise<Array<Record>>
   /** Invalide (soft-delete) un souvenir par son id. */
   invalidate(id: string): Promise<void>
   /** Supprime physiquement un souvenir (droit à l'effacement). */
@@ -32,9 +32,40 @@ export declare class Memory {
   addGraphEdge(src: string, relation: string, dst: string, weight?: number | undefined | null): Promise<void>
   /** Traverse le graphe depuis `start` : résout vers un tableau d'`Entity`. */
   recallGraph(start: string, maxDepth?: number | undefined | null): Promise<Array<Entity>>
+  /**
+   * S'abonne en direct aux événements mémoire de `agent_id` (et, si fourni,
+   * à une seule couche) — équivalent binding natif du `watch` MCP/REST
+   * (ADR-022). `callback` est invoqué avec un [`MemoryEventPayload`] pour
+   * chaque événement qui passe le filtre d'isolation.
+   *
+   * L'isolation est appliquée **côté** `basemyai::MemorySubscription::recv`,
+   * jamais déléguée à l'appelant : un `agent_id` qui ne correspond pas à
+   * l'agent réellement propriétaire de l'événement ne délivre jamais rien,
+   * quel que soit le filtre demandé ici (défense en profondeur — voir
+   * `watch_isolates_events_from_other_agents` côté REST/MCP).
+   *
+   * Résout immédiatement vers un [`WatchHandle`] : appeler `close()` dessus
+   * (ou le laisser être garbage-collecté côté JS) arrête le relais et
+   * libère la tâche tokio de fond — aucune tâche ne survit indéfiniment
+   * sans abonné vivant.
+   */
+  watch(agentId: string, layer: string | undefined | null, callback: ((arg: MemoryEventPayload) => void)): Promise<WatchHandle>
 }
 
-export type MemoryLayer = "short_term" | "episodic" | "procedural" | "semantic"
+/**
+ * Poignée d'abonnement renvoyée par [`Memory::watch`]. Tant qu'elle est
+ * vivante (ou jusqu'à `close()`), la tâche de relais tourne en tâche de fond
+ * et invoque le callback JS à chaque événement. `close()` est idempotent ;
+ * elle est aussi appelée implicitement quand l'objet JS est garbage-collecté
+ * (via `Drop`), pour ne jamais fuir de tâche tokio.
+ */
+export declare class WatchHandle {
+  /**
+   * Arrête l'abonnement : le callback ne sera plus jamais invoqué après cet
+   * appel. Idempotent — un second appel est un no-op.
+   */
+  close(): void
+}
 
 /** Statistiques d'un agent, par couche. */
 export interface AgentStats {
@@ -53,11 +84,29 @@ export interface Entity {
   depth: number
 }
 
+/**
+ * Un événement mémoire poussé à un abonné `watch` (ADR-022, live subscriptions
+ * côté binding Node). Ne porte jamais le contenu du souvenir — seulement son
+ * identité et la nature de la mutation, comme les payloads MCP/REST
+ * équivalents ; l'abonné rappelle `recall`/`stats` par `id` s'il veut le détail.
+ */
+export interface MemoryEventPayload {
+  agentId: string
+  /**
+   * `"remembered"` | `"invalidated"` | `"forgotten"` | `"consolidated"` |
+   * `"unknown"` (genre futur non reconnu — `MemoryEventKind` est `#[non_exhaustive]`).
+   */
+  kind: string
+  /** `short_term` | `episodic` | `procedural` | `semantic`. */
+  layer: string
+  id: string
+}
+
 /** Options de production pour ouvrir une mémoire persistée. */
 export interface MemoryOpenOptions {
   path: string
   agentId: string
-  encryptionKey: string
+  encryptionKey?: string
   modelPath?: string
   allowModelDownload?: boolean
 }
@@ -66,7 +115,12 @@ export interface MemoryOpenOptions {
 export interface Record {
   id: string
   text: string
-  layer: MemoryLayer
+  /** `short_term` | `episodic` | `procedural` | `semantic`. */
+  layer: string
   /** Similarité cosinus normalisée dans `[0, 1]` (`1` = identique). */
   score: number
+  /** Tag wire de provenance. */
+  source: string
+  /** Provenance typée (ADR-036). */
+  trust: string
 }

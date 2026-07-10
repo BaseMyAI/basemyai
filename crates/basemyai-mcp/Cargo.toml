@@ -8,6 +8,13 @@ license.workspace     = true
 authors.workspace     = true
 repository.workspace  = true
 
+# Not distributed via `cargo-dist` (see root `dist-workspace.toml`): the MCP
+# server ships via stdio/HTTP transports consumed by MCP clients (Claude
+# Desktop, etc.), not as a standalone precompiled binary. Only `basemyai-cli`
+# opts into `dist`.
+[package.metadata.dist]
+dist = false
+
 [features]
 default = ["embed", "stdio", "http"]
 embed   = ["basemyai/embed"]

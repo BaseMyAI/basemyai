@@ -1,14 +1,17 @@
 //! Tests d'intégration du wiring `MaintenanceWorker` (M0.2).
-//! Vérifie que `ConsolidationTask` tourne correctement via l'interface
-//! `MaintenanceTask` — GC/oubli adaptatif étaient les deux autres tâches
-//! enregistrées ici avant ADR-032 (retrait de libSQL) ; elles n'ont pas
-//! d'équivalent natif aujourd'hui (voir `crates/basemyai-cli/src/commands/
-//! maintenance.rs`).
+//! Vérifie que `ConsolidationTask` et `AdaptiveForgettingTask` tournent
+//! correctement via l'interface `MaintenanceTask`. Le GC temporel
+//! (`valid_until`) reste sans équivalent natif (hors scope ADR-037, voir
+//! `crates/basemyai-cli/src/commands/maintenance.rs`) ; l'oubli adaptatif,
+//! lui, a été porté sur le moteur natif par ADR-037 (scan applicatif au lieu
+//! du `ROW_NUMBER() OVER` SQL retiré par ADR-033).
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use basemyai::{AgentId, ConsolidationTask, LlmInference, Memory, MemoryLayer};
+use basemyai::{
+    AdaptiveForgettingPolicy, AdaptiveForgettingTask, AgentId, ConsolidationTask, LlmInference, Memory, MemoryLayer,
+};
 use basemyai_core::{Embedder, MaintenanceTask, MaintenanceWorker, Result as CoreResult};
 mod support;
 
@@ -115,5 +118,83 @@ async fn consolidation_runs_through_worker_background_loop() {
     assert!(
         hits.iter().any(|r| r.layer == MemoryLayer::Semantic),
         "la boucle de maintenance doit avoir consolidé le fait en semantic"
+    );
+}
+
+/// `AdaptiveForgettingTask::run` évince physiquement les souvenirs excédant
+/// la capacité — bout en bout via l'interface `MaintenanceTask` (ADR-037).
+#[tokio::test]
+async fn adaptive_forgetting_task_evicts_beyond_capacity_via_maintenance_interface() {
+    let mem = Arc::new(open_memory("a").await);
+    for i in 0..5 {
+        mem.remember(&format!("souvenir numero {i}"), MemoryLayer::Semantic)
+            .await
+            .expect("souvenir");
+    }
+    assert_eq!(mem.stats().await.expect("stats").total(), 5);
+
+    let policy = AdaptiveForgettingPolicy {
+        capacity: 2,
+        recency_half_life_secs: 86_400,
+    };
+    let task = AdaptiveForgettingTask::new(Arc::clone(&mem), policy);
+    task.run().await.expect("run");
+
+    assert_eq!(
+        mem.stats().await.expect("stats").total(),
+        2,
+        "la capacité doit être respectée après l'éviction"
+    );
+}
+
+/// No-op si l'agent est déjà sous la capacité : aucun souvenir ne disparaît.
+#[tokio::test]
+async fn adaptive_forgetting_task_is_a_noop_under_capacity() {
+    let mem = Arc::new(open_memory("a").await);
+    mem.remember("un seul souvenir", MemoryLayer::Semantic)
+        .await
+        .expect("souvenir");
+
+    let policy = AdaptiveForgettingPolicy {
+        capacity: 10,
+        recency_half_life_secs: 86_400,
+    };
+    AdaptiveForgettingTask::new(Arc::clone(&mem), policy)
+        .run()
+        .await
+        .expect("run");
+
+    assert_eq!(mem.stats().await.expect("stats").total(), 1);
+}
+
+/// End-to-end : `AdaptiveForgettingTask` enregistrée dans un
+/// `MaintenanceWorker` et déclenchée par la boucle de fond, comme
+/// `ConsolidationTask` — même pattern d'injection (ADR-032/033/037).
+#[tokio::test]
+async fn adaptive_forgetting_runs_through_worker_background_loop() {
+    let mem = Arc::new(open_memory("a").await);
+    for i in 0..5 {
+        mem.remember(&format!("souvenir numero {i}"), MemoryLayer::Semantic)
+            .await
+            .expect("souvenir");
+    }
+
+    let policy = AdaptiveForgettingPolicy {
+        capacity: 1,
+        recency_half_life_secs: 86_400,
+    };
+    MaintenanceWorker::new()
+        .register(
+            Duration::from_millis(40),
+            Arc::new(AdaptiveForgettingTask::new(Arc::clone(&mem), policy)),
+        )
+        .start();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(
+        mem.stats().await.expect("stats").total(),
+        1,
+        "la boucle de maintenance doit avoir évincé les souvenirs excédentaires"
     );
 }

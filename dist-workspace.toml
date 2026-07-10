@@ -1,0 +1,28 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'. Only `basemyai-cli` (binary `basemyai`) is meant to be
+# distributed this way — `crates/basemyai-rest` (bin `basemyai-rest`) opts out
+# via `package.metadata.dist.dist = false` in its own Cargo.toml, and `xtask`
+# is already `publish = false` (excluded by default).
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell"]
+# Target platforms to build apps for (Rust target-triple syntax) — aligned
+# with bindings/basemyai-node/package.json `napi.targets` for ecosystem
+# consistency (see CLAUDE.md).
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+# Distinct tag namespace: CLI release tags become `cli-v0.1.0` instead of
+# plain `v0.1.0`. This keeps `dist`'s generated release tags from ever
+# colliding with the plain `v*` tags used by the existing crates.io publish
+# workflow (`.github/workflows/release.yml`), which `dist` does NOT manage —
+# see the note in that file for why the two release flows are kept separate.
+tag-namespace = "cli"

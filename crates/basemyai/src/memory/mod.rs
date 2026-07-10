@@ -551,6 +551,29 @@ impl Memory {
         Ok(())
     }
 
+    /// Passe d'oubli adaptatif (VISION §5.2, ADR-012 §4, portée sur le moteur
+    /// natif par ADR-037) : scanne tous les souvenirs de cet agent, calcule
+    /// le score de rétention (`importance + H/(H+age)`), et évince
+    /// physiquement (via [`Self::forget`], donc atomique souvenir+FTS et
+    /// événementiel) tout ce qui dépasse `policy.capacity`, du moins bien
+    /// noté au mieux noté. No-op si l'agent a `capacity` souvenirs ou moins.
+    ///
+    /// # Errors
+    /// Propage les erreurs de stockage (scan ou éviction).
+    pub async fn adaptive_forget(
+        &self,
+        policy: crate::maintenance::AdaptiveForgettingPolicy,
+    ) -> Result<crate::maintenance::ForgettingReport> {
+        let candidates = self.engine.scan_for_forgetting(&self.agent).await?;
+        let scanned = candidates.len();
+        let victims = crate::maintenance::adaptive_forgetting::select_victims(&candidates, now_unix(), policy);
+        let evicted = victims.len();
+        for id in victims {
+            self.forget(&id).await?;
+        }
+        Ok(crate::maintenance::ForgettingReport { scanned, evicted })
+    }
+
     /// Purge **toutes** les données de cet agent : souvenirs, entités et
     /// relations. Irréversible (RGPD, droit à l'oubli). Idempotent : ne
     /// renvoie pas d'erreur si l'agent n'a aucune donnée.
