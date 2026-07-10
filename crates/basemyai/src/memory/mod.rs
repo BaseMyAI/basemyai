@@ -552,11 +552,13 @@ impl Memory {
     }
 
     /// Passe d'oubli adaptatif (VISION §5.2, ADR-012 §4, portée sur le moteur
-    /// natif par ADR-037) : scanne tous les souvenirs de cet agent, calcule
-    /// le score de rétention (`importance + H/(H+age)`), et évince
-    /// physiquement (via [`Self::forget`], donc atomique souvenir+FTS et
-    /// événementiel) tout ce qui dépasse `policy.capacity`, du moins bien
-    /// noté au mieux noté. No-op si l'agent a `capacity` souvenirs ou moins.
+    /// natif par ADR-037/038) : scanne les souvenirs **actifs** (ni invalidés
+    /// ni expirés — ceux-là sont hors périmètre, cf. [`Self::expired_gc`]) de
+    /// cet agent, calcule le score de rétention (`importance + H/(H+age)`),
+    /// et évince physiquement (via [`Self::forget`], donc atomique
+    /// souvenir+FTS et événementiel) tout ce qui dépasse `policy.capacity`,
+    /// du moins bien noté au mieux noté. No-op si l'agent a `capacity`
+    /// souvenirs actifs ou moins.
     ///
     /// # Errors
     /// Propage les erreurs de stockage (scan ou éviction).
@@ -564,14 +566,68 @@ impl Memory {
         &self,
         policy: crate::maintenance::AdaptiveForgettingPolicy,
     ) -> Result<crate::maintenance::ForgettingReport> {
-        let candidates = self.engine.scan_for_forgetting(&self.agent).await?;
-        let scanned = candidates.len();
-        let victims = crate::maintenance::adaptive_forgetting::select_victims(&candidates, now_unix(), policy);
+        let (scanned, victims) =
+            crate::maintenance::adaptive_forgetting::scan_and_select(&self.engine(), &self.agent, policy).await?;
         let evicted = victims.len();
         for id in victims {
             self.forget(&id).await?;
         }
         Ok(crate::maintenance::ForgettingReport { scanned, evicted })
+    }
+
+    /// Passe de GC temporel (ADR-038) : supprime physiquement, par pages
+    /// bornées de `page_size` souvenirs, tous les souvenirs de cet agent dont
+    /// `valid_until <= now` (invalidés explicitement, ou expirés par leur
+    /// fenêtre de validité). Chaque suppression passe par [`Self::forget`]
+    /// (atomique souvenir+FTS+vecteur, événementielle) — idempotent et
+    /// reprennable : une interruption entre deux pages (ou deux souvenirs
+    /// d'une même page) laisse chaque souvenir soit pleinement présent, soit
+    /// pleinement absent, jamais dans un état intermédiaire, et relancer
+    /// termine le travail restant (même discipline que `purge_agent`,
+    /// ADR-027 §6).
+    ///
+    /// Ne touche **jamais** un souvenir dont `valid_until` est `None` (pas de
+    /// chevauchement avec [`Self::adaptive_forget`], qui lui ne considère que
+    /// les souvenirs actifs).
+    ///
+    /// # Errors
+    /// [`MemoryError::InvalidGcPageSize`] si `page_size == 0` (une page vide
+    /// ne progresserait jamais). Propage aussi les erreurs de stockage (scan
+    /// ou suppression).
+    pub async fn expired_gc(&self, page_size: usize) -> Result<crate::maintenance::ExpiredGcReport> {
+        if page_size == 0 {
+            return Err(MemoryError::InvalidGcPageSize);
+        }
+        let now = now_unix();
+        let mut cursor: Option<String> = None;
+        let mut examined = 0usize;
+        let mut deleted = 0usize;
+        let mut pages = 0usize;
+        loop {
+            let page = self
+                .engine
+                .scan_expired(&self.agent, now, cursor.as_deref(), page_size)
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            pages += 1;
+            examined += page.len();
+            for candidate in &page {
+                self.forget(&candidate.id).await?;
+                deleted += 1;
+            }
+            let last_full_page = page.len() == page_size;
+            cursor = page.last().map(|c| c.id.clone());
+            if !last_full_page {
+                break;
+            }
+        }
+        Ok(crate::maintenance::ExpiredGcReport {
+            examined,
+            deleted,
+            pages,
+        })
     }
 
     /// Purge **toutes** les données de cet agent : souvenirs, entités et

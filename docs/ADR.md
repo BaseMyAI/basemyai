@@ -45,3 +45,4 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-035](adr/ADR-035-procedural-recall-and-temporal-dedup.md) | Recall procedural opt-in + `exact_fact_exists` temporel | ✅ Accepted |
 | [ADR-036](adr/ADR-036-trust-level-and-public-provenance.md) | `TrustLevel`, provenance publique, anti-spoofing import | ✅ Accepted |
 | [ADR-037](adr/ADR-037-native-adaptive-forgetting.md) | Oubli adaptatif porté sur le moteur natif (scan applicatif, sans fenêtrage SQL) | ✅ Accepted |
+| [ADR-038](adr/ADR-038-native-expired-memory-gc.md) | GC temporel porté sur le moteur natif (`ExpiredMemoryGc`, scan applicatif paginé par curseur) | ✅ Accepted |

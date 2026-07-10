@@ -707,21 +707,59 @@ impl MemoryStore for NativeMemoryStore {
         .await
     }
 
-    async fn scan_for_forgetting(&self, agent: &AgentId) -> Result<Vec<super::ForgetCandidate>> {
+    async fn scan_for_forgetting(&self, agent: &AgentId, now: i64) -> Result<Vec<super::ForgetCandidate>> {
         let agent = agent.clone();
         // Lecture pure — verrou de lecture partagé (N5.5). Aucun tri ici :
         // c'est la politique (`crate::maintenance`) qui décide de l'ordre.
+        // Filtre de validité (ADR-038) : seuls les souvenirs actifs à `now`
+        // entrent dans la compétition de capacité — un invalidé/expiré
+        // n'est jamais un candidat à l'oubli adaptatif (c'est le ressort du
+        // GC temporel, `scan_expired`).
         self.with_inner_read(move |inner| {
             let NativeInner { engine, memory, .. } = inner;
             let records = memory.scan_agent(engine, agent.as_str()).map_err(storage)?;
             Ok(records
                 .into_iter()
+                .filter(|(_, record)| record_valid_at(record, now))
                 .map(|(id, record)| super::ForgetCandidate {
                     id,
                     importance: record.importance,
                     last_access: record.last_access,
                 })
                 .collect())
+        })
+        .await
+    }
+
+    async fn scan_expired(
+        &self,
+        agent: &AgentId,
+        now: i64,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<super::ExpiredCandidate>> {
+        let agent = agent.clone();
+        let after_id = after_id.map(str::to_string);
+        // Lecture pure — verrou de lecture partagé (N5.5). Scan complet de
+        // l'agent (même limitation assumée que `scan_for_forgetting`,
+        // ADR-037/038 : pas d'index secondaire sur `valid_until`), mais le
+        // résultat matérialisé est borné par `limit` et filtré aux seules
+        // lignes réellement expirées.
+        self.with_inner_read(move |inner| {
+            let NativeInner { engine, memory, .. } = inner;
+            let mut records = memory.scan_agent(engine, agent.as_str()).map_err(storage)?;
+            records.retain(|(_, record)| record.valid_until.is_some_and(|until| until <= now));
+            records.sort_by(|(a_id, _), (b_id, _)| a_id.cmp(b_id));
+            let mut out: Vec<super::ExpiredCandidate> = records
+                .into_iter()
+                .filter(|(id, _)| after_id.as_deref().is_none_or(|cursor| id.as_str() > cursor))
+                .map(|(id, record)| super::ExpiredCandidate {
+                    id,
+                    valid_until: record.valid_until.expect("filtered to Some above"),
+                })
+                .collect();
+            out.truncate(limit);
+            Ok(out)
         })
         .await
     }

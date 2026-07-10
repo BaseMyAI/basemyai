@@ -197,11 +197,49 @@ basemyai consolidate   # episodes -> facts + graph, via the best local LLM detec
 local LLM backend (`basemyai llm detect` to diagnose) — it is never a hard
 dependency of the rest of the CLI.
 
-> **Removed in ADR-033 (native-only).** The one-shot CLI commands
-> `maintenance gc` and `maintenance forget-adaptive` no longer exist — they
-> depended on libSQL-specific SQL windowing. GC temporel and adaptive forgetting
-> remain API concepts in the SDK docs; a native port would need its own design.
-> Use `invalidate`/`forget`/`purge` for explicit lifecycle management today.
+## Maintenance: adaptive forgetting and expired-memory GC
+
+```bash
+basemyai forget-adaptive --capacity 10000                       # evict least-retained active memories beyond capacity
+basemyai forget-adaptive --capacity 10000 --half-life-secs 604800
+basemyai forget-adaptive --capacity 10000 --dry-run              # report only, evict nothing
+
+basemyai gc                                                      # delete every memory with valid_until <= now
+basemyai gc --page-size 500                                      # bound the scan/delete batch size
+basemyai gc --dry-run                                             # report only, delete nothing
+```
+
+Removed in ADR-033 (native-only) as `maintenance gc` / `maintenance
+forget-adaptive` (they depended on libSQL-specific SQL windowing), both were
+**reintroduced as flat root commands** — `forget-adaptive` by ADR-037, `gc` by
+ADR-038 — on top of an applicative scan instead of a windowed/`DELETE` SQL
+query. They implement two disjoint mechanisms by construction:
+
+- `forget-adaptive` bounds the **active** population of an agent by capacity,
+  evicting the lowest-retention-score memories first
+  (`score = importance + half_life / (half_life + age)`, hyperbolic decay).
+  Invalidated/expired memories are never counted and never touched by this
+  command — see `gc` for those.
+- `gc` deletes memories whose `valid_until <= now` (invalidated explicitly, or
+  expired by their validity window) and **only** those — active memories are
+  never touched by this command, no matter how many there are or how
+  unimportant.
+
+Both commands go through `open_engine` (raw store), exactly like
+`list`/`forget`/`invalidate`/`purge` — **no Candle embedder is loaded**, so
+neither needs a provisioned model. Both support `--dry-run` (compute and
+report what would happen, mutate nothing) and print a structured JSON report
+under `--format json` (`scanned`/`evicted`/`capacity` for `forget-adaptive`;
+`examined`/`deleted`/`pages`/`page_size` for `gc`, plus `dry_run` on both).
+`gc --page-size 0` is rejected explicitly (`VALIDATION_ERROR`, exit 5) rather
+than silently reporting "nothing to do".
+
+The same policies run as background tasks (`AdaptiveForgettingTask`,
+`ExpiredMemoryGcTask`) via `basemyai::MaintenanceWorker` for surfaces that
+keep a worker running continuously (the CLI itself is one-shot, no
+background worker) — see `crates/basemyai/tests/maintenance_worker.rs`.
+Design details: `docs/adr/ADR-037-native-adaptive-forgetting.md`,
+`docs/adr/ADR-038-native-expired-memory-gc.md`.
 
 ## Shell completions
 
@@ -229,8 +267,10 @@ basemyai --db ./agent.bmai --agent demo recall "UI preference" --hybrid | jq '.r
 - `assert_cmd` integration tests (`crates/basemyai-cli/tests/cli.rs`,
   `cargo test -p basemyai-cli`, **wired in CI gate**) cover every command that
   doesn't need the Candle embedder — `init`/`inspect`/`verify`/`migrate`/
-  `list`/`forget`/`invalidate`/`purge`/`graph`, plus key/agent/confirmation/
-  already-exists/not-configured paths and the explicit absence of
-  `maintenance *`. `remember`/`recall`/`stats`/`export`/`import`/
-  `consolidate` are still untested in CI (they load the embedding model,
-  unavailable offline in CI).
+  `list`/`forget`/`invalidate`/`purge`/`graph`/`forget-adaptive`/`gc`, plus
+  key/agent/confirmation/already-exists/not-configured paths and the explicit
+  absence of the `maintenance` subcommand group (both maintenance commands are
+  flat root commands today, see above). `remember`/`recall`/`stats`/`export`/
+  `import`/`consolidate` are still untested in CI (they load the embedding
+  model, unavailable offline in CI) — `forget-adaptive`/`gc` do **not** need
+  the embedder (raw store access, `open_engine`) so they're fully covered.

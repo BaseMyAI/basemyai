@@ -127,6 +127,7 @@ fn memory_error_code(e: &MemoryError) -> &'static str {
         MemoryError::EncryptionRequired => "KEY_REQUIRED",
         MemoryError::MissingAgent => "INVALID_AGENT",
         MemoryError::UnknownLayer(_) | MemoryError::Porting(_) | MemoryError::TextTooLong { .. } => "VALIDATION_ERROR",
+        MemoryError::InvalidGcPageSize => "VALIDATION_ERROR",
         MemoryError::Inference(_) | MemoryError::Extraction(_) => "LLM_ERROR",
         _ => "INTERNAL_ERROR",
     }
@@ -138,6 +139,7 @@ fn memory_error_exit(e: &MemoryError) -> u8 {
         MemoryError::EncryptionRequired => exit::KEY_ERROR,
         MemoryError::MissingAgent => exit::VALIDATION,
         MemoryError::UnknownLayer(_) | MemoryError::Porting(_) | MemoryError::TextTooLong { .. } => exit::VALIDATION,
+        MemoryError::InvalidGcPageSize => exit::VALIDATION,
         _ => exit::GENERIC,
     }
 }

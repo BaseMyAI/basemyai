@@ -56,16 +56,25 @@ pub struct HydratedRecord {
 }
 
 /// Un candidat à l'oubli adaptatif (VISION §5.2, ADR-012, portée sur le
-/// moteur natif par ADR-037) : seulement les colonnes nécessaires au score de
-/// rétention, jamais le contenu (le scan n'a pas besoin de le charger).
-/// Inclut les souvenirs déjà invalidés — parité avec le comportement V1, où
-/// l'oubli adaptatif et le GC temporel (`valid_until`) étaient deux
-/// mécanismes indépendants opérant tous deux sur toute la table `memory`.
+/// moteur natif par ADR-037, périmètre affiné pour n'inclure que les
+/// souvenirs **actifs** — voir la note sur [`MemoryStore::scan_for_forgetting`]) :
+/// seulement les colonnes nécessaires au score de rétention, jamais le
+/// contenu (le scan n'a pas besoin de le charger).
 #[derive(Debug, Clone)]
 pub struct ForgetCandidate {
     pub id: String,
     pub importance: f64,
     pub last_access: i64,
+}
+
+/// Un candidat au GC temporel (ADR-038) : uniquement ce qu'il faut pour
+/// journaliser/paginer, jamais le contenu. `valid_until` est toujours
+/// `Some` ici (c'est le prédicat même de l'expiration) mais reste porté en
+/// clair plutôt que déballé, pour un rapport diagnostiquable sans second aller-retour.
+#[derive(Debug, Clone)]
+pub struct ExpiredCandidate {
+    pub id: String,
+    pub valid_until: i64,
 }
 
 /// Contrat d'opérations mémoire : tout ce que `basemyai` a besoin de demander
@@ -216,5 +225,35 @@ pub trait MemoryStore: Send + Sync {
     /// de fenêtrage SQL — ADR-037). Volontairement pas de tri ni de limite
     /// ici : c'est la brique brute, la politique (capacité, demi-vie) vit
     /// côté [`crate::maintenance`].
-    async fn scan_for_forgetting(&self, agent: &AgentId) -> Result<Vec<ForgetCandidate>>;
+    ///
+    /// **Périmètre : uniquement les souvenirs valides à `now`** (ni
+    /// invalidés, ni déjà expirés). Décision affinée par rapport à la V1 :
+    /// l'oubli adaptatif borne la population *active*, jamais les reliquats
+    /// déjà invalides — ceux-là sont la responsabilité exclusive du GC
+    /// temporel ([`Self::scan_expired`], ADR-038). Un souvenir invalidé de
+    /// longue date mais très "important" ne doit jamais pouvoir protéger sa
+    /// place au détriment d'un souvenir actif moins bien noté : compter les
+    /// lignes déjà mortes dans la compétition de capacité fausserait la
+    /// sélection (c'est exactement le cas limite qu'ADR-038 §"Non-chevauchement"
+    /// couvre).
+    async fn scan_for_forgetting(&self, agent: &AgentId, now: i64) -> Result<Vec<ForgetCandidate>>;
+
+    /// Page de souvenirs **expirés** de `agent` (`valid_until <= now`),
+    /// triée par id croissant, curseur `after_id` exclusif (le dernier id
+    /// vu à la page précédente — `None` pour la première page), bornée à
+    /// `limit` entrées (ADR-038). Le curseur est porté par l'id plutôt que
+    /// par la position : une page reste correcte même si des lignes
+    /// disparaissent entre deux appels (le cas normal — le GC efface au fur
+    /// et à mesure).
+    ///
+    /// Ne renvoie **jamais** un souvenir dont `valid_until` est `None`
+    /// (validité indéfinie) — seule l'expiration temporelle explicite est en
+    /// jeu ici, jamais `valid_from` dans le futur (pas encore actif ≠ expiré).
+    async fn scan_expired(
+        &self,
+        agent: &AgentId,
+        now: i64,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ExpiredCandidate>>;
 }

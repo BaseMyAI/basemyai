@@ -455,6 +455,165 @@ fn config_key_check_ok_when_env_set() {
         .stdout(predicate::str::contains("env_db_key"));
 }
 
+#[test]
+fn forget_adaptive_on_fresh_agent_is_a_noop_with_json_report() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    let out = isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .arg("--format")
+        .arg("json")
+        .arg("--db")
+        .arg(&db)
+        .arg("--agent")
+        .arg("alice")
+        .args(["forget-adaptive", "--capacity", "10"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON on stdout");
+    assert_eq!(v["scanned"], 0);
+    assert_eq!(v["evicted"], 0);
+    assert_eq!(v["capacity"], 10);
+    assert_eq!(v["dry_run"], false);
+}
+
+#[test]
+fn forget_adaptive_dry_run_flag_is_threaded_through_to_the_json_report() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    let out = isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .arg("--format")
+        .arg("json")
+        .arg("--db")
+        .arg(&db)
+        .arg("--agent")
+        .arg("alice")
+        .args(["forget-adaptive", "--capacity", "0", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON on stdout");
+    assert_eq!(v["dry_run"], true);
+}
+
+/// `forget-adaptive`/`gc` opèrent sur le store nu (`open_engine`), jamais sur
+/// une `Memory` complète : elles ne doivent pas exiger de modèle Candle
+/// provisionné, contrairement à `remember`/`recall`/`consolidate`.
+#[test]
+fn forget_adaptive_does_not_require_a_provisioned_embedder() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .arg("--db")
+        .arg(&db)
+        .arg("--agent")
+        .arg("alice")
+        .args(["forget-adaptive", "--capacity", "5"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn gc_on_fresh_agent_is_a_noop_with_json_report() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    let out = isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .arg("--format")
+        .arg("json")
+        .arg("--db")
+        .arg(&db)
+        .arg("--agent")
+        .arg("alice")
+        .arg("gc")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON on stdout");
+    assert_eq!(v["examined"], 0);
+    assert_eq!(v["deleted"], 0);
+    assert_eq!(v["pages"], 0);
+    assert_eq!(v["dry_run"], false);
+}
+
+#[test]
+fn gc_dry_run_flag_is_threaded_through_to_the_json_report() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    let out = isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .arg("--format")
+        .arg("json")
+        .arg("--db")
+        .arg(&db)
+        .arg("--agent")
+        .arg("alice")
+        .args(["gc", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON on stdout");
+    assert_eq!(v["dry_run"], true);
+}
+
+#[test]
+fn gc_rejects_zero_page_size() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .arg("--format")
+        .arg("json")
+        .arg("--db")
+        .arg(&db)
+        .arg("--agent")
+        .arg("alice")
+        .args(["gc", "--page-size", "0"])
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("\"code\":\"VALIDATION_ERROR\""));
+}
+
+#[test]
+fn gc_does_not_require_a_provisioned_embedder() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .arg("--db")
+        .arg(&db)
+        .arg("--agent")
+        .arg("alice")
+        .arg("gc")
+        .assert()
+        .success();
+}
+
 const ROTATED_KEY: &str = "rotated-test-key-do-not-use-in-prod";
 
 #[test]

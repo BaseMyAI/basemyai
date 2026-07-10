@@ -29,7 +29,10 @@ pub use cognition::{
     consolidate, consolidation_prompt, parse_extraction, validate_extraction_bounds,
 };
 pub use error::{MemoryError, Result};
-pub use maintenance::{AdaptiveForgettingPolicy, AdaptiveForgettingTask, ConsolidationTask, ForgettingReport};
+pub use maintenance::{
+    AdaptiveForgettingPolicy, AdaptiveForgettingTask, ConsolidationTask, ExpiredGcReport, ExpiredMemoryGcTask,
+    ForgettingReport,
+};
 #[cfg(feature = "test-util")]
 pub use memory::HashEmbedder;
 pub use memory::{

@@ -68,6 +68,13 @@ pub enum MemoryError {
         /// Limite autorisée en octets (`Memory::MAX_TEXT_LEN`).
         max: usize,
     },
+
+    /// `page_size == 0` passé à une passe de GC temporel (ADR-038) : une page
+    /// vide ne progresserait jamais — rejeté explicitement plutôt que de
+    /// renvoyer silencieusement un rapport à zéro qui se lirait comme "rien
+    /// n'était expiré".
+    #[error("gc page_size must be greater than zero")]
+    InvalidGcPageSize,
 }
 
 /// Alias de résultat de la couche mémoire.

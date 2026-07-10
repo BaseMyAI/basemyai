@@ -148,18 +148,35 @@ pub(crate) enum Command {
     /// Consolidation épisodes → faits + graphe, via le meilleur LLM local détecté.
     Consolidate,
     /// Oubli adaptatif (VISION §5.2, ADR-037) : évince physiquement les
-    /// souvenirs les moins bien notés (`importance + H/(H+age)`) au-delà
-    /// d'une capacité par agent. Une passe manuelle, ponctuelle — la même
-    /// politique tourne en tâche de fond via `AdaptiveForgettingTask`
+    /// souvenirs actifs les moins bien notés (`importance + H/(H+age)`)
+    /// au-delà d'une capacité par agent. Une passe manuelle, ponctuelle — la
+    /// même politique tourne en tâche de fond via `AdaptiveForgettingTask`
     /// (bindings/surfaces qui font tourner un `MaintenanceWorker`).
     ForgetAdaptive {
-        /// Nombre maximum de souvenirs conservés pour l'agent ; le reste est
-        /// évincé, du moins bien noté au mieux noté.
+        /// Nombre maximum de souvenirs actifs conservés pour l'agent ; le
+        /// reste est évincé, du moins bien noté au mieux noté.
         #[arg(long)]
         capacity: usize,
         /// Demi-vie de récence en secondes (`H` dans le score de rétention).
         #[arg(long, default_value_t = 86_400)]
         half_life_secs: i64,
+        /// N'évince rien : calcule et affiche ce qui serait évincé.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// GC temporel (ADR-038) : supprime physiquement les souvenirs de
+    /// l'agent dont `valid_until` est déjà passé (invalidés explicitement ou
+    /// expirés par leur fenêtre de validité). Traité par pages bornées.
+    /// N'affecte jamais les souvenirs actifs (aucun chevauchement avec
+    /// `forget-adaptive`).
+    Gc {
+        /// Taille de page du scan/de la suppression (bornée, jamais un
+        /// balayage non borné en un seul passage).
+        #[arg(long, default_value_t = basemyai::maintenance::DEFAULT_GC_PAGE_SIZE)]
+        page_size: usize,
+        /// Ne supprime rien : calcule et affiche ce qui serait supprimé.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Vérifie un `.bmai` : conteneur valide, version de format attendue.
     Verify,

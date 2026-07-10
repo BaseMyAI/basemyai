@@ -10,15 +10,22 @@
 //! font tourner un `MaintenanceWorker` en continu (CLI = one-shot, pas de
 //! worker de fond).
 //!
-//! GC temporel (`valid_until`) reste hors scope : il reposait lui aussi sur
-//! du SQL spécifique à libSQL, retiré du workspace (ADR-032/033), et son
-//! portage natif est un item de suivi séparé, non couvert par ADR-037.
+//! `gc` : GC temporel (`valid_until <= now`), porté sur le moteur natif par
+//! ADR-038 — même discipline (scan applicatif paginé au lieu d'un `DELETE`
+//! SQL fenêtré), même tâche de fond équivalente
+//! (`basemyai::ExpiredMemoryGcTask`).
+//!
+//! Ni `forget-adaptive` ni `gc` ne font le moindre embedding : les deux
+//! passent par `open_engine` (store nu, `Arc<dyn MemoryStore>`), jamais par
+//! `open_memory` — pas de chargement Candle pour des opérations purement
+//! temporelles/de capacité (même raisonnement que `list`/`forget`/
+//! `invalidate`/`purge`).
 
 use std::path::Path;
 
 use basemyai::AdaptiveForgettingPolicy;
 
-use crate::context::open_memory;
+use crate::context::{open_engine, open_memory};
 use crate::error::CliError;
 use crate::output::Format;
 
@@ -67,32 +74,83 @@ pub(crate) async fn forget_adaptive(
     agent: &str,
     capacity: usize,
     half_life_secs: i64,
+    dry_run: bool,
     format: Format,
 ) -> Result<(), CliError> {
-    let memory = open_memory(path, agent).await?;
+    let (store, agent_id) = open_engine(path, agent).await?;
     let policy = AdaptiveForgettingPolicy {
         capacity,
         recency_half_life_secs: half_life_secs,
     };
-    let report = memory.adaptive_forget(policy).await?;
+    let report = basemyai::maintenance::run_adaptive_forget(&store, &agent_id, policy, dry_run).await?;
     format.print(
         || {
-            crate::ui::render::section("Adaptive forgetting");
+            crate::ui::render::section(if dry_run {
+                "Adaptive forgetting (dry run)"
+            } else {
+                "Adaptive forgetting"
+            });
             crate::ui::table::print_table(
                 &["Metric", "Value"],
                 vec![
                     vec!["scanned".to_string(), report.scanned.to_string()],
-                    vec!["evicted".to_string(), report.evicted.to_string()],
+                    vec![
+                        if dry_run { "would_evict" } else { "evicted" }.to_string(),
+                        report.evicted.to_string(),
+                    ],
                     vec!["capacity".to_string(), capacity.to_string()],
                 ],
             );
         },
         || {
             serde_json::json!({
+                "dry_run": dry_run,
                 "scanned": report.scanned,
                 "evicted": report.evicted,
                 "capacity": capacity,
                 "recency_half_life_secs": half_life_secs,
+            })
+        },
+    );
+    Ok(())
+}
+
+pub(crate) async fn gc(
+    path: &Path,
+    agent: &str,
+    page_size: usize,
+    dry_run: bool,
+    format: Format,
+) -> Result<(), CliError> {
+    let (store, agent_id) = open_engine(path, agent).await?;
+    let report = basemyai::maintenance::run_expired_gc(&store, &agent_id, page_size, dry_run).await?;
+    format.print(
+        || {
+            crate::ui::render::section(if dry_run {
+                "Expired memory GC (dry run)"
+            } else {
+                "Expired memory GC"
+            });
+            crate::ui::table::print_table(
+                &["Metric", "Value"],
+                vec![
+                    vec!["examined".to_string(), report.examined.to_string()],
+                    vec![
+                        if dry_run { "would_delete" } else { "deleted" }.to_string(),
+                        report.deleted.to_string(),
+                    ],
+                    vec!["pages".to_string(), report.pages.to_string()],
+                    vec!["page_size".to_string(), page_size.to_string()],
+                ],
+            );
+        },
+        || {
+            serde_json::json!({
+                "dry_run": dry_run,
+                "examined": report.examined,
+                "deleted": report.deleted,
+                "pages": report.pages,
+                "page_size": page_size,
             })
         },
     );

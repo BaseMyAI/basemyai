@@ -147,10 +147,16 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
         Command::ForgetAdaptive {
             capacity,
             half_life_secs,
+            dry_run,
         } => {
             let path = resolve_path()?;
             let agent = resolve_agent()?;
-            maintenance::forget_adaptive(&path, &agent, capacity, half_life_secs, format).await
+            maintenance::forget_adaptive(&path, &agent, capacity, half_life_secs, dry_run, format).await
+        }
+        Command::Gc { page_size, dry_run } => {
+            let path = resolve_path()?;
+            let agent = resolve_agent()?;
+            maintenance::gc(&path, &agent, page_size, dry_run, format).await
         }
         Command::Llm { action } => match action {
             LlmAction::Detect => provision::llm_detect(format).await,
