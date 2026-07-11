@@ -50,6 +50,8 @@
 //!   test-crash-consistency`).
 
 pub mod error;
+#[cfg(any(test, feature = "test-util"))]
+pub mod failpoint;
 pub mod format;
 pub mod harness;
 pub mod idx;
@@ -58,10 +60,22 @@ pub mod store;
 
 pub(crate) mod crypto;
 
+/// Fault-injection site (N7.4). Compiles to **nothing** without
+/// `test-util`/`cfg(test)`; with them, consults the [`failpoint`] registry
+/// and either continues, returns an injected error (`?`), or aborts the
+/// process — see the [`failpoint`] module docs for sites and configuration.
+macro_rules! fail_point {
+    ($name:literal) => {
+        #[cfg(any(test, feature = "test-util"))]
+        crate::failpoint::hit($name)?;
+    };
+}
+pub(crate) use fail_point;
+
 pub use error::{EngineError, Result};
 pub use idx::fts::{FtsStats, PersistentFts};
 pub use idx::graph::{GraphEdgeMeta, GraphEntity, PersistentGraph, RamGraph, Reached};
 pub use idx::memory::{MemoryRecord, NewMemoryRecord, PersistentMemoryIndex, VecMapEntry};
 pub use idx::vector::{PersistentVectorIndex, VectorIndex, VectorIndexParams};
 pub use key::Key;
-pub use store::{Batch, Engine, EngineOptions, Value};
+pub use store::{Batch, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, EngineStats, Value};

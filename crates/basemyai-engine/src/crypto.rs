@@ -5,8 +5,8 @@
 //!
 //! Split of responsibilities: [`crate::format::crypto`] owns the byte
 //! layouts (pure codecs), this module owns the cryptography and the
-//! `crypto.meta` file I/O, and `store::{wal,sst,engine}` own *when* sealing
-//! happens. The user key never encrypts data directly: it derives a KEK
+//! `crypto.meta` file I/O, and `store::{wal,sst_block,engine}` own *when*
+//! sealing happens. The user key never encrypts data directly: it derives a KEK
 //! (`SHA-256(domain || salt || user_key)`, ADR-030 §1) that seals a random
 //! 32-byte DEK; WAL records and SST files are sealed under the DEK. Key
 //! rotation therefore re-wraps the DEK in a new `crypto.meta` (one atomic
@@ -173,6 +173,7 @@ pub(crate) fn write_meta(dir: &Path, user_key: &[u8], ctx: &CryptoContext) -> Re
         file.sync_all().map_err(|e| EngineError::io(tmp_path.clone(), e))?;
     }
     fs::rename(&tmp_path, &final_path).map_err(|e| EngineError::io(final_path.clone(), e))?;
+    crate::fail_point!("after_crypto_meta_write");
     Ok(())
 }
 

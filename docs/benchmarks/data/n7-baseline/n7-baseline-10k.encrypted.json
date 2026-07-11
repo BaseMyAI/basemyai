@@ -1,0 +1,81 @@
+{
+  "meta": {
+    "schema": "basemyai-engine-bench/1",
+    "commit": "c0aaa38",
+    "unix_time": 1783702381,
+    "os": "windows",
+    "arch": "x86_64",
+    "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "encrypted": true,
+    "n": 10000,
+    "memory_n": 5000,
+    "memtable_flush_threshold": 1000,
+    "compaction_sst_threshold": 4,
+    "rss_peak_bytes": 102567936,
+    "rss_mean_bytes": 31397368
+  },
+  "workloads": [
+    {
+      "name": "kv-fill", "ops": 10000, "total_secs": 2.5362,
+      "mean_ms": 0.2536, "p50_ms": 0.2060, "p95_ms": 0.3750, "p99_ms": 0.5998,
+      "throughput_ops_per_sec": 3942.9, "rss_after_bytes": 8192000,
+      "engine_stats": { "wal_bytes": 0, "wal_records": 10000, "memtable_bytes": 0, "sst_count": 2, "sst_bytes": 1250128, "tombstone_count": 0, "flush_count": 10, "compaction_count": 2, "compaction_input_bytes": 1750640, "compaction_output_bytes": 1750128, "bytes_read": 0, "bytes_written": 4850768, "block_cache_hits": 0, "block_cache_misses": 0 }
+    },
+    {
+      "name": "kv-point-read", "ops": 10000, "total_secs": 0.0045,
+      "mean_ms": 0.0004, "p50_ms": 0.0004, "p95_ms": 0.0007, "p99_ms": 0.0012,
+      "throughput_ops_per_sec": 2235786.0, "rss_after_bytes": 8200192,
+      "engine_stats": { "wal_bytes": 0, "wal_records": 10000, "memtable_bytes": 0, "sst_count": 2, "sst_bytes": 1250128, "tombstone_count": 0, "flush_count": 10, "compaction_count": 2, "compaction_input_bytes": 1750640, "compaction_output_bytes": 1750128, "bytes_read": 0, "bytes_written": 4850768, "block_cache_hits": 0, "block_cache_misses": 0 }
+    },
+    {
+      "name": "kv-prefix-scan", "ops": 10, "total_secs": 0.0020,
+      "mean_ms": 0.1960, "p50_ms": 0.1829, "p95_ms": 0.3150, "p99_ms": 0.3150,
+      "throughput_ops_per_sec": 5101.8, "rss_after_bytes": 8237056,
+      "rows_returned": 10000,
+      "engine_stats": { "wal_bytes": 0, "wal_records": 10000, "memtable_bytes": 0, "sst_count": 2, "sst_bytes": 1250128, "tombstone_count": 0, "flush_count": 10, "compaction_count": 2, "compaction_input_bytes": 1750640, "compaction_output_bytes": 1750128, "bytes_read": 0, "bytes_written": 4850768, "block_cache_hits": 0, "block_cache_misses": 0 }
+    },
+    {
+      "name": "mixed-read-write", "ops": 10000, "total_secs": 0.5219,
+      "mean_ms": 0.0522, "p50_ms": 0.0011, "p95_ms": 0.2247, "p99_ms": 0.2894,
+      "throughput_ops_per_sec": 19162.4, "rss_after_bytes": 8257536,
+      "engine_stats": { "wal_bytes": 175380, "wal_records": 12000, "memtable_bytes": 104980, "sst_count": 3, "sst_bytes": 1375192, "tombstone_count": 0, "flush_count": 11, "compaction_count": 2, "compaction_input_bytes": 1750640, "compaction_output_bytes": 1750128, "bytes_read": 0, "bytes_written": 5345832, "block_cache_hits": 0, "block_cache_misses": 0 }
+    },
+    {
+      "name": "delete-churn", "ops": 12000, "total_secs": 5.8957,
+      "mean_ms": 0.4913, "p50_ms": 0.2336, "p95_ms": 0.5287, "p99_ms": 11.6182,
+      "throughput_ops_per_sec": 2035.4, "rss_after_bytes": 9015296,
+      "churned_keys_per_cycle": 2000,
+      "engine_stats": { "wal_bytes": 165020, "wal_records": 24000, "memtable_bytes": 103472, "sst_count": 3, "sst_bytes": 1272492, "tombstone_count": 892, "flush_count": 23, "compaction_count": 5, "compaction_input_bytes": 6088800, "compaction_output_bytes": 5084820, "bytes_read": 0, "bytes_written": 11201292, "block_cache_hits": 0, "block_cache_misses": 0 }
+    },
+    {
+      "name": "flush-compaction", "ops": 32, "total_secs": 0.2430,
+      "mean_ms": 7.5950, "p50_ms": 1.3941, "p95_ms": 26.8151, "p99_ms": 29.0482,
+      "throughput_ops_per_sec": 131.7, "rss_after_bytes": 10100736,
+      "compactions_triggered": 8,
+      "engine_stats": { "wal_bytes": 0, "wal_records": 26048, "memtable_bytes": 0, "sst_count": 3, "sst_bytes": 1498000, "tombstone_count": 0, "flush_count": 55, "compaction_count": 13, "compaction_input_bytes": 17216392, "compaction_output_bytes": 16076564, "bytes_read": 0, "bytes_written": 22925080, "block_cache_hits": 0, "block_cache_misses": 0 }
+    },
+    {
+      "name": "open-large-store", "ops": 1, "total_secs": 0.0064,
+      "mean_ms": 6.3859, "p50_ms": 6.3859, "p95_ms": 6.3859, "p99_ms": 6.3859,
+      "throughput_ops_per_sec": 156.6, "rss_after_bytes": 8630272,
+      "open_bytes_read": 1498000,
+      "rss_delta_bytes": 2310144,
+      "engine_stats": { "wal_bytes": 0, "wal_records": 0, "memtable_bytes": 0, "sst_count": 3, "sst_bytes": 1498000, "tombstone_count": 0, "flush_count": 0, "compaction_count": 0, "compaction_input_bytes": 0, "compaction_output_bytes": 0, "bytes_read": 1498000, "bytes_written": 0, "block_cache_hits": 0, "block_cache_misses": 0 }
+    },
+    {
+      "name": "memory-remember", "ops": 5000, "total_secs": 19.7632,
+      "mean_ms": 3.9526, "p50_ms": 1.8443, "p95_ms": 12.5118, "p99_ms": 24.9599,
+      "throughput_ops_per_sec": 253.0, "rss_after_bytes": 44851200,
+      "engine_stats": { "wal_bytes": 484824, "wal_records": 5000, "memtable_bytes": 476263, "sst_count": 1, "sst_bytes": 13933076, "tombstone_count": 0, "flush_count": 165, "compaction_count": 41, "compaction_input_bytes": 521403755, "compaction_output_bytes": 327054895, "bytes_read": 0, "bytes_written": 796353158, "block_cache_hits": 0, "block_cache_misses": 0 }
+    },
+    {
+      "name": "memory-recall", "ops": 200, "total_secs": 0.8029,
+      "mean_ms": 4.0144, "p50_ms": 3.8658, "p95_ms": 6.3905, "p99_ms": 6.9035,
+      "throughput_ops_per_sec": 249.1, "rss_after_bytes": 45768704,
+      "k": 10,
+      "hits_returned": 2000,
+      "vector_search_only": true,
+      "engine_stats": { "wal_bytes": 484824, "wal_records": 5000, "memtable_bytes": 476263, "sst_count": 1, "sst_bytes": 13933076, "tombstone_count": 0, "flush_count": 165, "compaction_count": 41, "compaction_input_bytes": 521403755, "compaction_output_bytes": 327054895, "bytes_read": 0, "bytes_written": 796353158, "block_cache_hits": 0, "block_cache_misses": 0 }
+    }
+  ]
+}

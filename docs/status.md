@@ -153,7 +153,7 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 |---|---|---|---|
 | Métadonnées conteneur (`bmai_meta` KV) | ✅ | `basemyai/src/storage/native_store.rs` ; `tests/format.rs` (`native_store_writes_bmai_container_metadata`) | `format=basemyai-memory`, `format_version=1`, `storage_engine=native`, `embedding_dim=384`. |
 | `BMAI_FORMAT_VERSION` constante | ✅ | `basemyai::storage::BMAI_FORMAT_VERSION` | |
-| Spec format documentée | ✅ | `docs/format/bmai-v1.md` ; ADR-019/ADR-033 | Spec native (répertoire moteur, `format_version=2`, `storage_engine=native`). |
+| Spec format documentée | ✅ | `docs/format/bmai-v1.md` ; ADR-019/ADR-033 | Spec native (répertoire moteur, `format_version=2`, `storage_engine=native`). **Statut : expérimental** — aucune compatibilité entre revisions internes garantie avant le gel du format (`docs/format/bmai-v1.md` §Format stability), voir `PLAN-NATIVE-ENGINE.md` pour la politique de remplacement. |
 | Extension `.bmai` | ✅ | répertoire moteur natif (WAL/SST/`crypto.meta`) | Conteneur natif chiffré ADR-030. **Pas de compatibilité** avec les `.bmai` V1/libSQL (export JSONL avant migration). |
 
 ---
@@ -200,6 +200,7 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | Feature | Statut | Preuve | Notes |
 |---|---|---|---|
 | Moteur natif BaseMyAI (N0→N5.6) | ✅ | `docs/TODO-NATIVE-ENGINE.md` (toutes cases cochées) ; ADR-024→033 | **Clos 2026-07-08** (ADR-033). Chantier complet : LSM, vecteur, graphe, FTS, chiffrement, hardening M6. Historique détaillé dans `TODO-NATIVE-ENGINE.md`. |
+| N7 — Observabilité + banc d'essai moteur | ✅ | `Engine::stats()` (`tests/engine_stats.rs`) ; failpoints (`src/failpoint.rs`, `tests/failpoints.rs`) ; `engine_bench` + `cargo xtask engine-*` ; `tests/corruption_smoke.rs` ; baseline `docs/benchmarks/n7-engine-baseline-2026-07-10.md` | **Clos 2026-07-10** (programme production-hardening, `PLAN-NATIVE-ENGINE.md` §4). Baseline mesurée : amplification d'écriture ×80 (memory) / ×14 (KV) de la compaction naïve, flush p95 91,8 ms à 100k, ouverture = chargement SST intégral — le dossier chiffré justifiant N8 (ADR-039). Gap connu pinné par test : SST supprimée = perte silencieuse (pas de manifest avant N9). |
 | Sync P2P (change-capture WAL) | 📋 | `TODO-NATIVE-ENGINE.md` §N6 | V2. Primitive WAL posée. |
 | Langage de requête (Couche 4) | 📋 | ADR-024 §vision | Décision produit préalable. |
 | Multi-modèles d'embedding | ⏸️ | — | V2 (baseline unique en V1). |

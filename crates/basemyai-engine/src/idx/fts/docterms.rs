@@ -35,7 +35,7 @@ pub const FTS_DOCTERMS_VERSION: u16 = 1;
 /// [`crate::format::lock`]). Field list and order must mirror the byte
 /// layout documented above exactly — update both together, never one
 /// without the other. `entries[].*` fields describe one repeated entry, not
-/// a fixed-count set of fields (same convention as `SstFile`).
+/// a fixed-count set of fields (same convention as `SstDataBlock`).
 pub fn spec() -> FormatSpec {
     FormatSpec {
         name: "FtsDocTerms",
@@ -56,7 +56,7 @@ const HEADER_LEN: usize = 4 + 2 + 4;
 const CRC_LEN: usize = 4;
 /// Smallest an entry could possibly be (empty term) — the bound used to
 /// reject a lying `count` before it drives a `Vec::with_capacity` call
-/// (same discipline as `format::sst`'s `entry_count`).
+/// (same discipline as `format::sst_block`'s `entry_count`).
 const MIN_ENTRY_LEN: usize = 2 + 4;
 
 /// One `(term, tf)` pair of a decoded doc-terms block.
@@ -107,7 +107,7 @@ pub fn encode(doc: &FtsDocTerms) -> Result<Vec<u8>> {
 /// allocation, and every `term_len` is bounded against the buffer's actual
 /// remaining length before a string is materialized — a lying count or
 /// length yields `CorruptFtsDocTerms`, never a panic or an oversized
-/// allocation (same discipline as `format::sst::decode`).
+/// allocation (same discipline as `format::sst_block::decode_sst_data_block`).
 pub fn decode(buf: &[u8]) -> Result<FtsDocTerms> {
     let corrupt = |reason: String| EngineError::CorruptFtsDocTerms { reason };
 

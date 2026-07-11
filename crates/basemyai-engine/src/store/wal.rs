@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use crate::crypto::CryptoContext;
 use crate::error::{EngineError, Result};
+use crate::fail_point;
 use crate::format::crypto as envelope;
 use crate::format::wal::{self, BatchOp, WalOp, WalRecord};
 
@@ -139,7 +140,8 @@ impl Wal {
     /// Appends one record and fsyncs before returning — the operation is
     /// durable once this call succeeds. Explicitly seeks to end-of-file
     /// first (see [`Wal::open_for_append`] for why this isn't `O_APPEND`).
-    pub(crate) fn append(&mut self, op: WalOp, key: &[u8], value: Option<&[u8]>) -> Result<()> {
+    /// Returns the on-disk bytes written (envelope included when encrypted).
+    pub(crate) fn append(&mut self, op: WalOp, key: &[u8], value: Option<&[u8]>) -> Result<u64> {
         let record = wal::encode(op, key, value);
         self.write_record(&record)
     }
@@ -150,8 +152,8 @@ impl Wal {
     /// checksum (see the "Batch records" section of `format::wal`), so a
     /// crash can only ever leave either every sub-operation absent (record
     /// never made it) or every sub-operation present (record fully synced)
-    /// — never a partial subset.
-    pub(crate) fn append_batch(&mut self, ops: &[BatchOp]) -> Result<()> {
+    /// — never a partial subset. Returns the on-disk bytes written.
+    pub(crate) fn append_batch(&mut self, ops: &[BatchOp]) -> Result<u64> {
         if ops.len() > wal::MAX_BATCH_OPS {
             return Err(EngineError::WalBatchTooLarge {
                 len: ops.len(),
@@ -163,7 +165,7 @@ impl Wal {
         self.write_record(&record)
     }
 
-    fn write_record(&mut self, record: &[u8]) -> Result<()> {
+    fn write_record(&mut self, record: &[u8]) -> Result<u64> {
         let sealed;
         let on_disk: &[u8] = match &self.crypto {
             Some(crypto) => {
@@ -179,10 +181,21 @@ impl Wal {
         self.file
             .write_all(on_disk)
             .map_err(|e| EngineError::io(self.path.clone(), e))?;
+        fail_point!("after_wal_append");
         self.file
             .sync_all()
             .map_err(|e| EngineError::io(self.path.clone(), e))?;
-        Ok(())
+        fail_point!("after_wal_fsync");
+        Ok(on_disk.len() as u64)
+    }
+
+    /// Current WAL file length on disk (the `wal_bytes` gauge of
+    /// [`crate::EngineStats`]).
+    pub(crate) fn size_on_disk(&self) -> Result<u64> {
+        self.file
+            .metadata()
+            .map(|m| m.len())
+            .map_err(|e| EngineError::io(self.path.clone(), e))
     }
 
     /// Truncates the WAL to empty and fsyncs. Callers must only invoke this

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
 //! On-disk layouts of the three encryption-at-rest artifacts (ADR-030):
 //! the `crypto.meta` key-wrap file, the per-record WAL envelope and the
-//! whole-file SST envelope.
+//! per-section block-based-SST envelope (`EncryptedSstBlock`, ADR-039 §3).
 //!
 //! This module only does *encoding*: bytes in, bytes out. No cryptography
 //! happens here — sealing/opening (AEAD) and key derivation live in
-//! [`crate::crypto`]; file I/O stays in `crate::store::{wal,sst}` and
-//! `crate::crypto`. Same split as [`super::wal`]/[`super::sst`] vs
-//! `store::{wal,sst}`.
+//! [`crate::crypto`]; file I/O stays in `crate::store::{wal,sst_block}` and
+//! `crate::crypto`. Same split as [`super::wal`]/[`super::sst_block`] vs
+//! `store::{wal,sst_block}`.
 //!
 //! ## `crypto.meta` (`CryptoMeta:1` in `format.lock`)
 //!
@@ -53,17 +53,39 @@
 //! replay stops silently), `Err` only for a fully-buffered envelope that is
 //! structurally impossible.
 //!
-//! ## SST envelope (`SstEnvelope:1`)
+//! ## `EncryptedSstBlock` (`EncryptedSstBlock:1`, ADR-039 §3)
 //!
-//! The whole plain SST body ([`super::sst`]'s bytes) sealed as one unit —
-//! adequate because the store reads SSTs whole (ADR-025, no block reads):
+//! Superseded the whole-file `SstEnvelope:1` (ADR-030 §3's original
+//! block-based-SST-format grant: "si un futur ADR introduit un index de
+//! blocs, le chiffrement par bloc sera un nouveau format versionné"). Every
+//! section of a block-based SST *except* the header — each data block, the
+//! block index, the bloom filter, the footer — is sealed individually as one
+//! of these envelopes:
 //!
 //! ```text
-//! magic:      u32   = SST_ENVELOPE_MAGIC
-//! version:    u16   = SST_ENVELOPE_VERSION
+//! magic:      u32   = ENCRYPTED_SST_BLOCK_MAGIC
+//! version:    u16   = ENCRYPTED_SST_BLOCK_VERSION
 //! nonce:      [u8; 24]
-//! ciphertext: rest of file    sealed plain SST-file bytes (+16-byte tag)
+//! ct_len:     u32
+//! ciphertext: [u8; ct_len]   sealed plain section bytes (+16-byte tag)
 //! ```
+//!
+//! `SstHeader` is never wrapped in this envelope — it stays plaintext even
+//! in an encrypted store (see `format::sst_block`'s module doc: it is the
+//! bootstrap record every other section's AAD needs `sst_id` from).
+//!
+//! **AAD** (the anti-permutation binding ADR-039 §3 requires): `domain
+//! (magic ‖ version) ‖ sst_id ‖ section_type ‖ section_no` — see
+//! [`SstSectionType`] and [`encrypted_sst_block_aad`]. A block moved between
+//! two SSTs (different `sst_id`) or reordered within one (different
+//! `section_no`) fails its Poly1305 tag even though the block itself is
+//! individually intact.
+//!
+//! Same no-torn-tail-tolerance contract the superseded whole-file
+//! `SstEnvelope:1` carried (never [`decode_wal_envelope`]'s `Ok(None)`
+//! tolerance): every section is read via an already-known offset/length
+//! (from the footer or the block index), never mid-stream, so any structural
+//! problem is genuine corruption, not a torn write in flight.
 
 use std::fmt;
 use std::path::Path;
@@ -78,13 +100,18 @@ pub(crate) const CRYPTO_META_VERSION: u16 = 1;
 pub(crate) const WAL_ENVELOPE_MAGIC: u32 = 0x4257_4C45; // b"BWLE"
 pub(crate) const WAL_ENVELOPE_VERSION: u16 = 1;
 
-pub(crate) const SST_ENVELOPE_MAGIC: u32 = 0x4253_5345; // b"BSSE"
-pub(crate) const SST_ENVELOPE_VERSION: u16 = 1;
+pub(crate) const ENCRYPTED_SST_BLOCK_MAGIC: u32 = 0x4253_4245; // b"BSBE"
+pub(crate) const ENCRYPTED_SST_BLOCK_VERSION: u16 = 1;
 
 /// Per-store KEK-derivation salt length (ADR-030 §1).
 pub(crate) const SALT_LEN: usize = 16;
 /// XChaCha20-Poly1305 nonce length.
 pub(crate) const NONCE_LEN: usize = 24;
+/// Poly1305 authentication tag length appended to every AEAD ciphertext —
+/// named here (rather than left as a "+16-byte tag" doc-comment aside) so
+/// [`encrypted_sst_block_sealed_len`] can compute a section's exact sealed
+/// size without duplicating the constant.
+pub(crate) const AEAD_TAG_LEN: usize = 16;
 
 /// Canonical wire-format spec of `crypto.meta`, hashed into `format.lock`.
 pub(crate) fn crypto_meta_spec() -> super::FormatSpec {
@@ -118,17 +145,40 @@ pub(crate) fn wal_envelope_spec() -> super::FormatSpec {
     }
 }
 
-/// Canonical wire-format spec of the SST envelope, hashed into `format.lock`.
-pub(crate) fn sst_envelope_spec() -> super::FormatSpec {
+/// Canonical wire-format spec of `EncryptedSstBlock`, hashed into `format.lock`.
+pub(crate) fn encrypted_sst_block_spec() -> super::FormatSpec {
     super::FormatSpec {
-        name: "SstEnvelope",
-        version: SST_ENVELOPE_VERSION,
+        name: "EncryptedSstBlock",
+        version: ENCRYPTED_SST_BLOCK_VERSION,
         fields: &[
             ("magic", "u32"),
             ("version", "u16"),
             ("nonce", "bytes(24)"),
-            ("ciphertext", "bytes(eof)"),
+            ("ct_len", "u32"),
+            ("ciphertext", "bytes(ct_len)"),
         ],
+    }
+}
+
+/// One section of a block-based SST that gets its own `EncryptedSstBlock`
+/// envelope (ADR-039 §3). Deliberately excludes the header — see the module
+/// doc for why it stays plaintext.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SstSectionType {
+    Data,
+    Index,
+    Bloom,
+    Footer,
+}
+
+impl SstSectionType {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::Data => 0,
+            Self::Index => 1,
+            Self::Bloom => 2,
+            Self::Footer => 3,
+        }
     }
 }
 
@@ -317,52 +367,84 @@ pub(crate) fn decode_wal_envelope<'a>(buf: &'a [u8], path: &Path) -> Result<Opti
     Ok(Some((Nonce::from_wire(nonce_wire), &buf[pos..end], end)))
 }
 
-/// Encodes a whole-file SST envelope around already-sealed ciphertext.
+const ENCRYPTED_SST_BLOCK_HEADER_LEN: usize = 4 + 2 + NONCE_LEN + 4;
+
+/// Encodes one `EncryptedSstBlock` envelope around already-sealed ciphertext.
 #[must_use]
-pub(crate) fn encode_sst_envelope(nonce: &Nonce, ciphertext: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(4 + 2 + NONCE_LEN + ciphertext.len());
-    buf.extend_from_slice(&SST_ENVELOPE_MAGIC.to_le_bytes());
-    buf.extend_from_slice(&SST_ENVELOPE_VERSION.to_le_bytes());
+pub(crate) fn encode_encrypted_sst_block(nonce: &Nonce, ciphertext: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(ENCRYPTED_SST_BLOCK_HEADER_LEN + ciphertext.len());
+    buf.extend_from_slice(&ENCRYPTED_SST_BLOCK_MAGIC.to_le_bytes());
+    buf.extend_from_slice(&ENCRYPTED_SST_BLOCK_VERSION.to_le_bytes());
     buf.extend_from_slice(nonce.as_bytes());
+    buf.extend_from_slice(&(ciphertext.len() as u32).to_le_bytes());
     buf.extend_from_slice(ciphertext);
     buf
 }
 
-/// The AAD every SST-envelope seal is bound to (magic + version).
+/// The exact on-disk length an `EncryptedSstBlock` envelope occupies for a
+/// section whose *plaintext* is `plain_len` bytes — header framing plus the
+/// plaintext length plus the Poly1305 tag. Used by the block-based-SST
+/// reader (`store::sst_block`) to locate the sealed footer, whose plaintext
+/// length ([`super::sst_block::SST_FOOTER_LEN`]) is fixed, so its sealed
+/// on-disk length is too: the reader can seek to it from EOF without reading
+/// anything else first, encrypted or not.
 #[must_use]
-pub(crate) fn sst_envelope_aad() -> [u8; 6] {
-    let mut aad = [0u8; 6];
-    aad[0..4].copy_from_slice(&SST_ENVELOPE_MAGIC.to_le_bytes());
-    aad[4..6].copy_from_slice(&SST_ENVELOPE_VERSION.to_le_bytes());
+pub(crate) fn encrypted_sst_block_sealed_len(plain_len: usize) -> usize {
+    ENCRYPTED_SST_BLOCK_HEADER_LEN + plain_len + AEAD_TAG_LEN
+}
+
+/// The AAD every `EncryptedSstBlock` seal is bound to: domain (magic +
+/// version) ‖ `sst_id` ‖ `section` ‖ `section_no` (ADR-039 §3). Binds a
+/// sealed section to exactly one store, one SST generation and one position
+/// within it — moving it anywhere else fails the Poly1305 tag even though
+/// the bytes are individually intact.
+#[must_use]
+pub(crate) fn encrypted_sst_block_aad(sst_id: u64, section: SstSectionType, section_no: u32) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(4 + 2 + 8 + 1 + 4);
+    aad.extend_from_slice(&ENCRYPTED_SST_BLOCK_MAGIC.to_le_bytes());
+    aad.extend_from_slice(&ENCRYPTED_SST_BLOCK_VERSION.to_le_bytes());
+    aad.extend_from_slice(&sst_id.to_le_bytes());
+    aad.push(section.tag());
+    aad.extend_from_slice(&section_no.to_le_bytes());
     aad
 }
 
-/// Decodes a whole-file SST envelope: `(nonce, ciphertext)`. Unlike the WAL
-/// envelope there is no torn-tail tolerance — an SST is only ever read after
-/// its crash-safe rename, so any structural problem is genuine corruption
-/// ([`EngineError::CorruptSst`], same variant its plaintext sibling uses).
-pub(crate) fn decode_sst_envelope<'a>(buf: &'a [u8], path: &Path) -> Result<(Nonce, &'a [u8])> {
-    let corrupt = |reason: &str| EngineError::CorruptSst {
+/// Decodes one `EncryptedSstBlock` envelope: `(nonce, ciphertext)`. Like the
+/// whole-file SST envelope it superseded, there is no torn-tail tolerance —
+/// every section is read via an offset/length already known from the footer
+/// or block index, never mid-stream, so any structural problem is genuine
+/// corruption ([`EngineError::CorruptEncryptedSstBlock`]).
+pub(crate) fn decode_encrypted_sst_block<'a>(buf: &'a [u8], path: &Path) -> Result<(Nonce, &'a [u8])> {
+    let corrupt = |reason: &str| EngineError::CorruptEncryptedSstBlock {
         path: path.to_path_buf(),
         reason: reason.to_string(),
     };
-    if buf.len() < 4 + 2 + NONCE_LEN {
+    if buf.len() < ENCRYPTED_SST_BLOCK_HEADER_LEN {
         return Err(corrupt("file shorter than the fixed envelope header"));
     }
     let magic = u32::from_le_bytes(buf[0..4].try_into().expect("slice is exactly 4 bytes"));
-    if magic != SST_ENVELOPE_MAGIC {
+    if magic != ENCRYPTED_SST_BLOCK_MAGIC {
         return Err(corrupt("bad envelope magic"));
     }
     let version = u16::from_le_bytes(buf[4..6].try_into().expect("slice is exactly 2 bytes"));
-    if version != SST_ENVELOPE_VERSION {
-        return Err(EngineError::UnsupportedFormatVersion {
+    if version != ENCRYPTED_SST_BLOCK_VERSION {
+        return Err(EngineError::UnsupportedEncryptedSstBlockVersion {
             path: path.to_path_buf(),
-            expected: SST_ENVELOPE_VERSION,
+            expected: ENCRYPTED_SST_BLOCK_VERSION,
             found: version,
         });
     }
-    let nonce_wire: [u8; NONCE_LEN] = buf[6..6 + NONCE_LEN].try_into().expect("slice is exactly NONCE_LEN");
-    Ok((Nonce::from_wire(nonce_wire), &buf[6 + NONCE_LEN..]))
+    let mut pos = 6;
+    let nonce_wire: [u8; NONCE_LEN] = buf[pos..pos + NONCE_LEN]
+        .try_into()
+        .expect("slice is exactly NONCE_LEN");
+    pos += NONCE_LEN;
+    let ct_len = u32::from_le_bytes(buf[pos..pos + 4].try_into().expect("slice is exactly 4 bytes")) as usize;
+    pos += 4;
+    if ct_len != buf.len() - pos {
+        return Err(corrupt("ct_len does not match the bytes actually present"));
+    }
+    Ok((Nonce::from_wire(nonce_wire), &buf[pos..]))
 }
 
 #[cfg(test)]
@@ -505,28 +587,94 @@ mod tests {
     }
 
     #[test]
-    fn sst_envelope_roundtrips() {
+    fn encrypted_sst_block_roundtrips() {
         let nonce = Nonce::generate_with(&mut DeterministicTestRng::new(5));
-        let ct = b"sealed sst".to_vec();
-        let bytes = encode_sst_envelope(&nonce, &ct);
-        let (got_nonce, got_ct) = decode_sst_envelope(&bytes, &path()).expect("decode ok");
+        let ct = b"sealed section".to_vec();
+        let bytes = encode_encrypted_sst_block(&nonce, &ct);
+        let (got_nonce, got_ct) = decode_encrypted_sst_block(&bytes, &path()).expect("decode ok");
         assert_eq!(got_nonce, nonce);
         assert_eq!(got_ct, ct.as_slice());
     }
 
     #[test]
-    fn sst_envelope_bad_magic_is_corrupt_error() {
-        // A plaintext SST read in encrypted mode lands here: its magic
+    fn encrypted_sst_block_bad_magic_is_corrupt_error() {
+        // A plaintext section read in encrypted mode lands here: its magic
         // differs, and the diagnosis must be loud, not a silent skip.
-        let plain = crate::format::sst::encode(&[]);
-        let err = decode_sst_envelope(&plain, &path()).expect_err("plaintext file is not an envelope");
-        assert!(matches!(err, EngineError::CorruptSst { .. }));
+        let plain = crate::format::sst_block::encode_sst_data_block(&[]);
+        let err = decode_encrypted_sst_block(&plain, &path()).expect_err("plaintext section is not an envelope");
+        assert!(matches!(err, EngineError::CorruptEncryptedSstBlock { .. }));
+    }
+
+    #[test]
+    fn encrypted_sst_block_truncation_is_corrupt_error_at_every_cut() {
+        let nonce = Nonce::generate_with(&mut DeterministicTestRng::new(6));
+        let bytes = encode_encrypted_sst_block(&nonce, b"sealed section");
+        for cut in 0..bytes.len() {
+            let err = decode_encrypted_sst_block(&bytes[..cut], &path()).expect_err("truncated envelope is corrupt");
+            assert!(
+                matches!(err, EngineError::CorruptEncryptedSstBlock { .. }),
+                "cut={cut}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn encrypted_sst_block_lying_ct_len_is_corrupt_error() {
+        let nonce = Nonce::generate_with(&mut DeterministicTestRng::new(7));
+        let mut bytes = encode_encrypted_sst_block(&nonce, b"x");
+        let len_at = 4 + 2 + NONCE_LEN;
+        bytes[len_at..len_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let err = decode_encrypted_sst_block(&bytes, &path()).expect_err("lying ct_len is corrupt, not torn-tail");
+        assert!(matches!(err, EngineError::CorruptEncryptedSstBlock { .. }));
+    }
+
+    #[test]
+    fn encrypted_sst_block_wrong_version_is_unsupported() {
+        let nonce = Nonce::generate_with(&mut DeterministicTestRng::new(8));
+        let mut bytes = encode_encrypted_sst_block(&nonce, b"x");
+        bytes[4..6].copy_from_slice(&99u16.to_le_bytes());
+        let err = decode_encrypted_sst_block(&bytes, &path()).expect_err("wrong version is unsupported");
+        assert!(matches!(err, EngineError::UnsupportedEncryptedSstBlockVersion { .. }));
+    }
+
+    #[test]
+    fn encrypted_sst_block_aad_binds_sst_id_section_and_section_no() {
+        // The anti-permutation property ADR-039 §3 requires: every one of
+        // these coordinates changing the AAD is what makes a moved/reordered
+        // section fail its tag even though the bytes are individually intact.
+        let base = encrypted_sst_block_aad(1, SstSectionType::Data, 0);
+        assert_ne!(
+            base,
+            encrypted_sst_block_aad(2, SstSectionType::Data, 0),
+            "sst_id must bind"
+        );
+        assert_ne!(
+            base,
+            encrypted_sst_block_aad(1, SstSectionType::Index, 0),
+            "section type must bind"
+        );
+        assert_ne!(
+            base,
+            encrypted_sst_block_aad(1, SstSectionType::Data, 1),
+            "section_no must bind"
+        );
+    }
+
+    #[test]
+    fn encrypted_sst_block_sealed_len_accounts_for_header_and_tag() {
+        assert_eq!(
+            encrypted_sst_block_sealed_len(100),
+            ENCRYPTED_SST_BLOCK_HEADER_LEN + 100 + AEAD_TAG_LEN
+        );
     }
 
     #[test]
     fn envelope_aads_are_distinct_per_artifact() {
-        // A WAL ciphertext replayed as an SST body (or vice versa) must fail
-        // the AEAD open — the two AADs differing is what guarantees it.
-        assert_ne!(wal_envelope_aad(), sst_envelope_aad());
+        // A WAL ciphertext replayed as an SST section (or vice versa) must
+        // fail the AEAD open — the two AADs differing is what guarantees it.
+        assert_ne!(
+            wal_envelope_aad().to_vec(),
+            encrypted_sst_block_aad(0, SstSectionType::Data, 0)
+        );
     }
 }

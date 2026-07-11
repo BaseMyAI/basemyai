@@ -39,8 +39,8 @@
 //! crc32:          u32   over every byte above (magic..neighbors)
 //! ```
 //!
-//! Like `format::{wal,sst}`, this module only does *encoding*: turning a
-//! node into bytes and back. Reading/writing blocks through `Engine` is
+//! Like `format::{wal,sst_block}`, this module only does *encoding*: turning
+//! a node into bytes and back. Reading/writing blocks through `Engine` is
 //! `idx::vector::persistent`'s job.
 
 use crate::error::{EngineError, Result};
@@ -141,7 +141,7 @@ pub fn encode(node: &VectorNode) -> Result<Vec<u8>> {
 
 /// Decodes a node block previously produced by [`encode`].
 ///
-/// N2 fuzzing lesson (see `docs/TODO-NATIVE-ENGINE.md`, `format::sst`): every
+/// N2 fuzzing lesson (see `docs/TODO-NATIVE-ENGINE.md`, `format::sst_block`): every
 /// count field read from the wire is bounded against the *actual* buffer
 /// length before any allocation — here the exact-length equation
 /// `header + dim·4 + neighbor_count·8 + crc == buf.len()` is checked before
@@ -334,7 +334,7 @@ mod tests {
     /// A `neighbor_count` that lies about the payload size (with a
     /// recomputed crc32, so the checksum gate does not short-circuit first)
     /// must be caught by the exact-length equation, not by a panic or an
-    /// oversized allocation — the exact N2 fuzzing lesson from `format::sst`.
+    /// oversized allocation — the exact N2 fuzzing lesson from `format::sst_block`.
     #[test]
     fn lying_neighbor_count_is_rejected_not_panicking() {
         let mut bytes = encode(&sample()).expect("encode ok");

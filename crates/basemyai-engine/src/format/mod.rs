@@ -10,7 +10,8 @@
 pub(crate) mod checksum;
 pub(crate) mod crypto;
 pub mod lock;
-pub mod sst;
+pub mod sst_block;
+pub mod store_meta;
 pub mod wal;
 
 pub use lock::FormatSpec;

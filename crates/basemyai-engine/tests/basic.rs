@@ -77,6 +77,8 @@ fn overwrite_then_delete_then_reopen_stays_deleted_after_compaction() {
     let options = EngineOptions {
         memtable_flush_threshold: 1,
         compaction_sst_threshold: 2,
+        block_size: 256,
+        ..EngineOptions::default()
     };
     {
         let mut engine = Engine::open_with_options(dir.path(), options).expect("open");
@@ -96,6 +98,8 @@ fn many_flushes_and_compaction_preserve_latest_value() {
     let options = EngineOptions {
         memtable_flush_threshold: 1,
         compaction_sst_threshold: 2,
+        block_size: 256,
+        ..EngineOptions::default()
     };
     {
         let mut engine = Engine::open_with_options(dir.path(), options).expect("open");
@@ -152,6 +156,8 @@ fn batch_of_n_puts_is_all_or_nothing_visible_without_flush_via_wal_replay() {
         let options = EngineOptions {
             memtable_flush_threshold: 10_000,
             compaction_sst_threshold: 4,
+            block_size: 16 * 1024,
+            ..EngineOptions::default()
         };
         let mut engine = Engine::open_with_options(dir.path(), options).expect("open");
         let mut batch = Batch::new();

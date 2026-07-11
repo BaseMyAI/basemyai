@@ -1,6 +1,6 @@
 # `.bmai` Format Specification
 
-**Status**: Active (native engine, ADR-033)  
+**Status**: Active (native engine, ADR-033) — **format stability: experimental**  
 **Date**: 2026-07-08 (rewritten for native-only; supersedes the 2026-06-18 libSQL draft)
 
 `.bmai` is the public BaseMyAI agent memory database artifact. Since ADR-033,
@@ -8,6 +8,27 @@ it is implemented as an **encrypted native engine directory** (`basemyai-engine`
 not as a SQLite/libSQL file. Applications must open it through BaseMyAI APIs
 (`Memory::open_native`, CLI, MCP, REST, bindings) — not as a generic database
 file.
+
+## Format stability
+
+BaseMyAI is not yet used publicly in production on the native engine, so the
+on-disk `.bmai` format (WAL/SST layout, block/codec versions, `crypto.meta`)
+is **experimental**, not a frozen contract:
+
+- no backward compatibility between internal format revisions is guaranteed;
+- a wire-format change can drop an old codec or on-disk layout outright
+  (`format.lock` is bumped deliberately, not migrated);
+- development stores created with an old format version are recreated, not
+  migrated — see `PLAN-NATIVE-ENGINE.md` §"Politique de remplacement du
+  format" for the concrete rule engine changes (e.g. the block-based SST
+  format landed by ADR-039/N8) must follow;
+- a migration path is only built when it is actually useful to the project —
+  never speculatively.
+
+The format-stability contract begins only once an explicit decision (a new
+ADR) freezes it — expected at the earliest around or before BaseMyAI `1.0`.
+Until then, treat every `.bmai` directory produced by a development build as
+disposable.
 
 ## Product identity
 
@@ -63,16 +84,19 @@ A production `.bmai` directory typically contains:
 
 | Path | Role |
 |---|---|
+| `store.meta` | Store-generation marker (ADR-039 §7). Absent with other artifacts present ⇒ an incompatible/pre-ADR-039 store, rejected at open. |
 | `crypto.meta` | DEK/KEK envelope (ADR-030). Presence means the store is encrypted. |
 | `wal.log` | Write-ahead log (per-record envelopes when encrypted). |
-| `*.sst` | Sorted string table files (whole-file envelopes when encrypted). |
+| `*.sst` | Block-based sorted string tables (ADR-039): header (plaintext) + data blocks + block index + bloom filter + footer; every section but the header sealed individually when encrypted (`EncryptedSstBlock`, AEAD bound to `sst_id`/section/section number). |
 
 Index data (vector LM-DiskANN, graph, memory records, FTS postings) lives in
 the engine KV space under versioned key layouts governed by
 `crates/basemyai-engine/format.lock` — not in a separate SQL schema.
 
-Wire formats (`WalRecord`, `SstFile`, `CryptoMeta`, index record types) are
-versioned in `format.lock`; CI fails if they drift without a deliberate bump.
+Wire formats (`WalRecord`, `SstHeader`, `SstDataBlock`, `SstBlockIndex`,
+`SstBloomFilter`, `SstFooter`, `EncryptedSstBlock`, `StoreMeta`, `CryptoMeta`,
+index record types) are versioned in `format.lock`; CI fails if they drift
+without a deliberate bump.
 
 ## Engine boundary
 

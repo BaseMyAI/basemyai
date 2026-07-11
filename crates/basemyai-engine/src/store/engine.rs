@@ -4,17 +4,35 @@
 //! ordering guarantee.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::crypto::{self, CryptoContext};
 use crate::error::{EngineError, Result};
+use crate::fail_point;
+use crate::format::store_meta::{self, StoreMeta};
 use crate::format::wal::{BatchOp, WalOp};
 use crate::key::Key;
 use crate::store::Value;
+use crate::store::block_cache::BlockCache;
 use crate::store::memtable::Memtable;
-use crate::store::sst::{self, SstFile};
+use crate::store::sst_block::{self, BlockSstFile};
+use crate::store::stats::{Counters, EngineStats};
 use crate::store::wal::Wal;
+
+/// Default `EngineOptions::block_size` — the winning value from the N8.1
+/// spike (`docs/benchmarks/n8.1-block-size-spike-2026-07-10.md`), measured
+/// against 16/32/64 KiB on the canonical `kv`/`vecnode` workloads, clear and
+/// encrypted.
+pub const DEFAULT_BLOCK_SIZE: u32 = 16 * 1024;
+
+/// Default `EngineOptions::block_cache_capacity_bytes` (N8.7, ADR-039 §5.6)
+/// — an order-of-magnitude starting point, not yet measured against a
+/// dedicated cache-sizing bench (that's a follow-up, not this milestone's
+/// brief: "no speculative sophistication").
+pub const DEFAULT_BLOCK_CACHE_CAPACITY_BYTES: usize = 32 * 1024 * 1024;
 
 /// A group of `put`/`delete` operations applied atomically by
 /// [`Engine::apply_batch`]: on reopen after a crash mid-batch, either every
@@ -79,6 +97,18 @@ pub struct EngineOptions {
     /// existing SST into one (naive full-merge compaction — ADR-025
     /// explicitly defers a tiered/leveled strategy to a later N2 step).
     pub compaction_sst_threshold: usize,
+    /// Target size (bytes) of one SST data block before the writer starts a
+    /// new one — a target, not an exact bound (ADR-039 §1). Read back from
+    /// each SST's own header at open, so a store may (and typically will)
+    /// contain SSTs written under different `block_size` values over its
+    /// lifetime; the reader has a single code path regardless. Default:
+    /// [`DEFAULT_BLOCK_SIZE`] (16 KiB, the N8.1 spike's winning value).
+    pub block_size: u32,
+    /// Byte budget for the engine-wide decoded-block cache (N8.7, ADR-039
+    /// §5.6) — one shared LRU across every SST this `Engine` holds, keyed
+    /// by `(sst_id, block_no)`. Default: [`DEFAULT_BLOCK_CACHE_CAPACITY_BYTES`]
+    /// (32 MiB).
+    pub block_cache_capacity_bytes: usize,
 }
 
 impl Default for EngineOptions {
@@ -86,6 +116,8 @@ impl Default for EngineOptions {
         Self {
             memtable_flush_threshold: 1000,
             compaction_sst_threshold: 4,
+            block_size: DEFAULT_BLOCK_SIZE,
+            block_cache_capacity_bytes: DEFAULT_BLOCK_CACHE_CAPACITY_BYTES,
         }
     }
 }
@@ -98,13 +130,29 @@ pub struct Engine {
     wal: Wal,
     memtable: Memtable,
     /// Ordered oldest to newest.
-    ssts: Vec<SstFile>,
+    ssts: Vec<BlockSstFile>,
     next_sst_id: u64,
     options: EngineOptions,
     /// `Some` = encrypted at rest (ADR-030): WAL records and SST files are
     /// sealed under the store's DEK; `crypto.meta` holds the DEK wrapped by
     /// the user key.
     crypto: Option<CryptoContext>,
+    /// Monotonic activity counters since open (N7.1) — the gauge half of
+    /// [`EngineStats`] is derived from live state in [`Engine::stats`].
+    counters: Counters,
+    /// Counter: point lookups that read more than one on-disk data block
+    /// within a single SST (ADR-039 §4/§5.5). `AtomicU64`, not a plain
+    /// field in [`Counters`], because [`Engine::get`] is `&self` (Engine's
+    /// public API shape does not change with this milestone) yet still
+    /// needs to record this invariant.
+    point_lookup_full_sst_read: AtomicU64,
+    /// Engine-wide bounded LRU cache of decoded SST data blocks (N8.7,
+    /// ADR-039 §5.6), consulted only by [`Engine::get`]'s point-lookup path
+    /// — never by `scan_prefix`/`compact`'s full walks, which would just
+    /// pollute it with cold data. Interior-mutable so `get` can stay
+    /// `&self`; see `store::block_cache` for the "no lock across I/O"
+    /// contract.
+    block_cache: BlockCache,
 }
 
 impl Engine {
@@ -156,6 +204,12 @@ impl Engine {
         let dir = path.to_path_buf();
         fs::create_dir_all(&dir).map_err(|e| EngineError::io(dir.clone(), e))?;
 
+        // Store-generation check (N8.9, ADR-039 §7) — before touching
+        // crypto/WAL/SST state at all: an incompatible or pre-ADR-039 store
+        // must fail fast and typed, not as inexplicable corruption further
+        // in. A genuinely fresh directory publishes a new `store.meta` here.
+        check_or_create_store_meta(&dir)?;
+
         // `crypto.meta`'s presence is the single source of truth for the
         // store's mode (ADR-030 §2) — never guessed from file contents.
         let meta_exists = crypto::crypto_meta_path(&dir).exists();
@@ -175,11 +229,20 @@ impl Engine {
             (false, None) => None,
         };
 
-        let ssts = sst::scan_existing(&dir, crypto.as_ref())?;
+        let ssts = sst_block::scan_existing(&dir, crypto.as_ref())?;
         let next_sst_id = ssts.iter().map(|s| s.id + 1).max().unwrap_or(0);
+
+        // Everything loaded at open was read from disk: the O(metadata)
+        // bytes each SST's lazy `load` actually reads (N8.4 — never the
+        // whole file), plus the WAL bytes replayed just below.
+        let mut counters = Counters {
+            bytes_read: ssts.iter().map(|s| s.bytes_read_at_open).sum(),
+            ..Counters::default()
+        };
 
         let wal_path = dir.join("wal.log");
         let mut wal = Wal::open_for_append(wal_path, crypto.clone())?;
+        counters.bytes_read += wal.size_on_disk()?;
         let mut memtable = Memtable::new();
         for record in wal.replay()? {
             match record.op {
@@ -197,6 +260,7 @@ impl Engine {
             }
         }
 
+        let block_cache = BlockCache::new(options.block_cache_capacity_bytes);
         Ok(Self {
             dir,
             wal,
@@ -205,6 +269,45 @@ impl Engine {
             next_sst_id,
             options,
             crypto,
+            counters,
+            point_lookup_full_sst_read: AtomicU64::new(0),
+            block_cache,
+        })
+    }
+
+    /// Point-in-time observability snapshot (N7.1): monotonic counters since
+    /// open plus gauges over the current state. See [`EngineStats`] for
+    /// per-field semantics. Cheap — the only iteration is over the memtable,
+    /// bounded by `memtable_flush_threshold`.
+    ///
+    /// # Errors
+    /// I/O errors from statting the WAL file.
+    pub fn stats(&self) -> Result<EngineStats> {
+        let mut memtable_bytes = 0u64;
+        let mut memtable_tombstones = 0u64;
+        for (k, v) in self.memtable.iter() {
+            memtable_bytes += k.as_bytes().len() as u64;
+            match v {
+                Some(value) => memtable_bytes += value.len() as u64,
+                None => memtable_tombstones += 1,
+            }
+        }
+        Ok(EngineStats {
+            wal_bytes: self.wal.size_on_disk()?,
+            wal_records: self.counters.wal_records,
+            memtable_bytes,
+            sst_count: self.ssts.len(),
+            sst_bytes: self.ssts.iter().map(|s| s.file_bytes).sum(),
+            tombstone_count: memtable_tombstones + self.ssts.iter().map(|s| s.tombstones).sum::<u64>(),
+            flush_count: self.counters.flush_count,
+            compaction_count: self.counters.compaction_count,
+            compaction_input_bytes: self.counters.compaction_input_bytes,
+            compaction_output_bytes: self.counters.compaction_output_bytes,
+            bytes_read: self.counters.bytes_read,
+            bytes_written: self.counters.bytes_written,
+            block_cache_hits: self.block_cache.hits(),
+            block_cache_misses: self.block_cache.misses(),
+            point_lookup_full_sst_read: self.point_lookup_full_sst_read.load(Ordering::Relaxed),
         })
     }
 
@@ -242,7 +345,8 @@ impl Engine {
     /// Inserts or overwrites `key`. Durable once this returns `Ok` — the WAL
     /// record is fsynced before the memtable is updated.
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
-        self.wal.append(WalOp::Put, key, Some(value))?;
+        let written = self.wal.append(WalOp::Put, key, Some(value))?;
+        self.note_wal_record(written);
         self.memtable.put(Key::from(key), value.to_vec());
         self.maybe_flush()
     }
@@ -250,7 +354,8 @@ impl Engine {
     /// Deletes `key` (a no-op if it wasn't present). Durable once this
     /// returns `Ok`.
     pub fn delete(&mut self, key: &[u8]) -> Result<()> {
-        self.wal.append(WalOp::Delete, key, None)?;
+        let written = self.wal.append(WalOp::Delete, key, None)?;
+        self.note_wal_record(written);
         self.memtable.delete(Key::from(key));
         self.maybe_flush()
     }
@@ -281,7 +386,8 @@ impl Engine {
                 value: value.clone(),
             })
             .collect();
-        self.wal.append_batch(&wal_ops)?;
+        let written = self.wal.append_batch(&wal_ops)?;
+        self.note_wal_record(written);
 
         for (key, value) in &batch.ops {
             match value {
@@ -293,15 +399,22 @@ impl Engine {
     }
 
     /// Point lookup: memtable first, then SSTs newest to oldest — the first
-    /// hit (value or tombstone) wins.
+    /// hit (value or tombstone) wins. Each SST consulted resolves through
+    /// its own bloom-filter -> block-index -> single-block-read path — never
+    /// a full SST read. Feeds the `point_lookup_full_sst_read` invariant
+    /// counter surfaced by [`Self::stats`] (ADR-039 §4/§5.5).
     pub fn get(&self, key: &[u8]) -> Result<Option<Value>> {
         let key = Key::from(key);
         if let Some(hit) = self.memtable.get(&key) {
             return Ok(hit.cloned());
         }
         for s in self.ssts.iter().rev() {
-            if let Some(hit) = s.get(&key) {
-                return Ok(hit.cloned());
+            let (hit, blocks_read) = s.get(&key, &self.block_cache)?;
+            if blocks_read > 1 {
+                self.point_lookup_full_sst_read.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(value) = hit {
+                return Ok(value);
             }
         }
         Ok(None)
@@ -321,9 +434,9 @@ impl Engine {
     pub fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Key, Value)>> {
         let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
         for s in &self.ssts {
-            for (k, v) in s.entries() {
+            for (k, v) in s.entries()? {
                 if k.as_bytes().starts_with(prefix) {
-                    merged.insert(k.clone(), v.clone());
+                    merged.insert(k, v);
                 }
             }
         }
@@ -348,9 +461,12 @@ impl Engine {
         let entries: Vec<(Key, Option<Value>)> = self.memtable.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
         let id = self.next_sst_id;
-        let new_sst = SstFile::write_new(&self.dir, id, entries, self.crypto.as_ref())?;
+        let new_sst = BlockSstFile::write_new(&self.dir, id, entries, self.options.block_size, self.crypto.as_ref())?;
+        self.counters.flush_count += 1;
+        self.counters.bytes_written += new_sst.file_bytes;
         // The new SST is fsynced and durably renamed at this point — only
         // now is it safe to truncate the WAL (ADR-025 ordering rule).
+        fail_point!("before_wal_truncate");
         self.wal.reset()?;
 
         self.next_sst_id += 1;
@@ -369,17 +485,23 @@ impl Engine {
     /// deleted key has no older layer left to resurrect from. Correctness
     /// first; a tiered/leveled strategy is deferred (ADR-025).
     fn compact(&mut self) -> Result<()> {
+        fail_point!("during_compaction");
+        let input_bytes: u64 = self.ssts.iter().map(|s| s.file_bytes).sum();
         let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
         for s in &self.ssts {
-            for (k, v) in s.entries() {
-                merged.insert(k.clone(), v.clone());
+            for (k, v) in s.entries()? {
+                merged.insert(k, v);
             }
         }
         let entries: Vec<(Key, Option<Value>)> = merged.into_iter().filter(|(_, v)| v.is_some()).collect();
 
         let id = self.next_sst_id;
-        let new_sst = SstFile::write_new(&self.dir, id, entries, self.crypto.as_ref())?;
+        let new_sst = BlockSstFile::write_new(&self.dir, id, entries, self.options.block_size, self.crypto.as_ref())?;
         self.next_sst_id += 1;
+        self.counters.compaction_count += 1;
+        self.counters.compaction_input_bytes += input_bytes;
+        self.counters.compaction_output_bytes += new_sst.file_bytes;
+        self.counters.bytes_written += new_sst.file_bytes;
 
         let old_ssts = std::mem::replace(&mut self.ssts, vec![new_sst]);
         for old in old_ssts {
@@ -389,6 +511,10 @@ impl Engine {
             // `get` always finds the newest SST first, and there is now
             // exactly one.
             let _ = fs::remove_file(&old.path);
+            // A stale block from a deleted SST must never survive in the
+            // cache: its `sst_id` could be reused by a future SST (or, if
+            // not, would just be dead weight) — either way, drop it now.
+            self.block_cache.invalidate_sst(old.id);
         }
         Ok(())
     }
@@ -407,11 +533,17 @@ impl Engine {
         }
         Ok(())
     }
+
+    fn note_wal_record(&mut self, bytes_written: u64) {
+        self.counters.wal_records += 1;
+        self.counters.bytes_written += bytes_written;
+    }
 }
 
 /// `true` if `dir` contains at least one `*.sst` file — the "existing
 /// plaintext store" half of the mode check in `Engine::open_inner` (the
-/// other half is `wal.log`'s existence).
+/// other half is `wal.log`'s existence), and also half of the old-store
+/// detection in [`check_or_create_store_meta`].
 fn sst_files_present(dir: &Path) -> Result<bool> {
     if !dir.exists() {
         return Ok(false);
@@ -425,6 +557,76 @@ fn sst_files_present(dir: &Path) -> Result<bool> {
     Ok(false)
 }
 
+/// Store-generation gate (N8.9, ADR-039 §7) — the very first thing
+/// `Engine::open_inner` does to `dir`, before crypto/WAL/SST state is
+/// touched at all:
+///
+/// - `store.meta` present and its `store_format_version` matches
+///   [`store_meta::STORE_FORMAT_VERSION`]: nothing to do, this build
+///   understands the store.
+/// - `store.meta` present but its version does not match: typed
+///   [`EngineError::UnsupportedStoreFormat`] with `found` set to the actual
+///   on-disk version.
+/// - `store.meta` absent, but `wal.log` or a `*.sst` file already exists:
+///   this is a pre-ADR-039 store (or, in principle, any store this build's
+///   writer never produced) — [`EngineError::UnsupportedStoreFormat`] with
+///   the sentinel `found: 0` (no store.meta was ever written by any
+///   version, since [`store_meta::STORE_FORMAT_VERSION`] starts at 2 — "no
+///   generation-1 `store.meta`", see that module's doc).
+/// - `store.meta` absent and no other artifact present: a genuinely fresh
+///   directory — publish a new `store.meta` now, crash-safe (tmp + fsync +
+///   rename), behind the `before_manifest_publish` failpoint reserved for
+///   this since N7.4.
+///
+/// Deliberately checks only `wal.log`/`*.sst`, not `crypto.meta`: for a
+/// brand-new *encrypted* store, `crypto.meta` is created moments later in
+/// the very same `open_inner` call (after this function returns) — treating
+/// its presence as an "old artifact" here would make every first-ever
+/// encrypted-store open falsely look like an incompatible reopen.
+fn check_or_create_store_meta(dir: &Path) -> Result<()> {
+    let meta_path = dir.join("store.meta");
+    if meta_path.exists() {
+        let bytes = fs::read(&meta_path).map_err(|e| EngineError::io(meta_path.clone(), e))?;
+        let meta = store_meta::decode(&bytes, &meta_path)?;
+        if meta.store_format_version != store_meta::STORE_FORMAT_VERSION {
+            return Err(EngineError::UnsupportedStoreFormat {
+                path: dir.to_path_buf(),
+                expected: store_meta::STORE_FORMAT_VERSION,
+                found: meta.store_format_version,
+            });
+        }
+        return Ok(());
+    }
+
+    let has_old_artifacts = dir.join("wal.log").exists() || sst_files_present(dir)?;
+    if has_old_artifacts {
+        return Err(EngineError::UnsupportedStoreFormat {
+            path: dir.to_path_buf(),
+            expected: store_meta::STORE_FORMAT_VERSION,
+            found: 0, // sentinel: no store.meta at all (pre-ADR-039 store)
+        });
+    }
+
+    let tmp_path = meta_path.with_extension("meta.tmp");
+    let bytes = store_meta::encode(&StoreMeta {
+        store_format_version: store_meta::STORE_FORMAT_VERSION,
+    });
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .map_err(|e| EngineError::io(tmp_path.clone(), e))?;
+        file.write_all(&bytes)
+            .map_err(|e| EngineError::io(tmp_path.clone(), e))?;
+        file.sync_all().map_err(|e| EngineError::io(tmp_path.clone(), e))?;
+    }
+    fail_point!("before_manifest_publish");
+    fs::rename(&tmp_path, &meta_path).map_err(|e| EngineError::io(meta_path.clone(), e))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,11 +634,15 @@ mod tests {
     const KEY: &[u8] = b"test user key";
 
     /// Options that force flush + compaction quickly, so the encrypted
-    /// roundtrip exercises SST envelopes and compaction, not just the WAL.
+    /// roundtrip exercises sealed SST sections and compaction, not just the
+    /// WAL. Small `block_size` too, so these small stores still span more
+    /// than one data block per SST.
     fn small_options() -> EngineOptions {
         EngineOptions {
             memtable_flush_threshold: 4,
             compaction_sst_threshold: 2,
+            block_size: 256,
+            ..EngineOptions::default()
         }
     }
 

@@ -103,6 +103,8 @@ fn main() {
     let options = EngineOptions {
         memtable_flush_threshold: 32,
         compaction_sst_threshold: 3,
+        block_size: 4 * 1024,
+        ..EngineOptions::default()
     };
 
     let open_result = if encrypted {

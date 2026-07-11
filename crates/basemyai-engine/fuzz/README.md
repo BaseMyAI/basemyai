@@ -38,19 +38,16 @@ works fine — that's how these targets were authored and run).
   advance by `consumed`, stop on `None`/`Err`). Asserts forward progress on
   every `Some(..)` so a decoder bug that returns `consumed == 0` shows up as
   a fuzzer timeout/panic instead of silently wedging replay.
-- **`sst_decode`** — raw arbitrary bytes straight into `format::sst::decode`.
-  Useful for the length-check/magic/version paths, but `decode` verifies a
-  whole-buffer crc32 *before* touching any other field, so pure random
-  mutation essentially never gets past that gate (needs a 1-in-2^32
-  coincidence) — see `sst_decode_structured` below for why that's not the
-  same as "safe from attackers."
-- **`sst_decode_structured`** — builds a header (magic + version +
-  `entry_count`) plus an arbitrary body, appends the *correct* trailing
-  crc32 for that exact buffer, and fuzzes `decode` on that. crc32 isn't
-  cryptographic, so a real attacker crafting a malicious `.sst` file
-  computes the matching checksum trivially — the checksum only defends
-  against accidental bit-rot, not deliberate corruption. This target found a
-  real crash within seconds of running (see below).
+- **`sst_decode`** / **`sst_decode_structured`** — **retired** (ADR-039/N8.5):
+  targeted `format::sst::decode`, the whole-file `SstFile:1` format's
+  decoder. That module was deleted when the block-based SST format (ADR-039)
+  replaced it outright (no dual-format transition, per that ADR's §5.3
+  policy) — there is nothing left to fuzz. The entry-count bounding lesson
+  those targets found (see "Known finding" below) carries forward: every
+  `format::sst_block` decoder bounds attacker-controlled counts against the
+  buffer's actual remaining length before any `Vec::with_capacity`, and
+  `sst_data_block_decode`/`sst_data_block_decode_structured` below are its
+  direct successors.
 - **`vector_node_decode`** — raw arbitrary bytes into
   `idx::vector::node::decode` (the LM-DiskANN node block, ADR-026). Same
   crc32-gate caveat as `sst_decode`.
@@ -74,27 +71,54 @@ works fine — that's how these targets were authored and run).
   `idx::graph::edge::decode` (the graph-edge record; fixed-length, small
   structural surface like `vector_meta_decode`). **Posed but not yet
   executed** — same native-Windows linking constraint.
+- **`sst_header_decode`** (N8.2, ADR-039) — raw arbitrary bytes into
+  `format::sst_block::decode_sst_header`. Fixed-length, small structural
+  surface like `vector_meta_decode` (plus the `block_size != 0` gate).
+  **Posed but not yet executed** — same native-Windows linking constraint.
+- **`sst_data_block_decode`** / **`sst_data_block_decode_structured`** (N8.2)
+  — the block-based-SST-format siblings of `sst_decode`/
+  `sst_decode_structured`: one data block (`format::sst_block::SstDataBlock`)
+  instead of the whole legacy file, same `entry_count`-bounding bug class the
+  structured variant exists to catch. **Posed but not yet executed**.
+- **`sst_block_index_decode`** / **`sst_block_index_decode_structured`**
+  (N8.2) — same pattern against `decode_sst_block_index`
+  (`format::sst_block::SstBlockIndex`), whose per-entry `first_key_len`/
+  `last_key_len` are the wire-controlled lengths at risk. **Posed but not yet
+  executed**.
+- **`sst_bloom_filter_decode`** (N8.2) — raw arbitrary bytes into
+  `decode_sst_bloom_filter` (`format::sst_block::SstBloomFilter`), whose
+  `bits_len` is cross-checked against `ceil(num_bits / 8)` before slicing.
+  **Posed but not yet executed**.
+- **`sst_footer_decode`** (N8.2) — raw arbitrary bytes into
+  `decode_sst_footer` (`format::sst_block::SstFooter`). Fixed-length, small
+  structural surface like `vector_meta_decode` (plus the trailing
+  `footer_magic` sentinel check). **Posed but not yet executed**.
+- **`store_meta_decode`** (N8.2, ADR-039 §7) — raw arbitrary bytes into
+  `format::store_meta::decode`. Fixed-length, small structural surface like
+  `vector_meta_decode`. **Posed but not yet executed**.
 
-## Known finding (already reproduced, not yet fixed)
+## Known finding (historical, in code deleted by ADR-039/N8.5)
 
-`format::sst::decode` (`crates/basemyai-engine/src/format/sst.rs`) reads the
-file's `entry_count: u64` header field and passes it straight to
+`format::sst::decode` — the whole-file `SstFile:1` decoder, deleted along
+with the rest of `format/sst.rs` and `store/sst.rs` when the block-based SST
+format replaced it outright (ADR-039 §5.3, no dual-format transition) — used
+to read the file's `entry_count: u64` header field and pass it straight to
 `Vec::with_capacity(entry_count as usize)` **before** checking it against
 the buffer's actual remaining length. A crafted 18-byte file — magic +
 version + `entry_count = u64::MAX` + a correctly-computed trailing crc32 —
-panics with `capacity overflow` instead of returning
-`EngineError::CorruptSst`. `sst_decode_structured` reproduces this in well
-under a second of fuzzing; a hand-built repro (see the corresponding audit)
-confirms it's independent of the fuzzer harness. Any caller that loads an
-untrusted or adversarially-corrupted `.sst` file
-(`store::sst::SstFile::load`) can be crashed this way. Suggested fix: bound
-`entry_count` against `(crc_at - pos) / ENTRY_HEADER_LEN` (the maximum
-number of entries the remaining bytes could possibly encode) before calling
-`Vec::with_capacity`, or drop the pre-sized `Vec::with_capacity` and just
-`push` while validating each entry as today's loop already does.
+panicked with `capacity overflow` instead of returning
+`EngineError::CorruptSst`. The now-retired `sst_decode_structured` target
+reproduced this in well under a second of fuzzing. The lesson carried
+forward directly: every `format::sst_block` decoder
+(`decode_sst_data_block`, `decode_sst_block_index`, ...) bounds every
+attacker-controlled count against `(buffer_len - fixed_header) /
+min_entry_size` **before** any `Vec::with_capacity` call — see
+`sst_data_block_decode_structured`/`sst_block_index_decode_structured` for
+the fuzz coverage of that discipline in the current format.
 
 Crash artifacts are not committed (`artifacts/` and `corpus/` are
-git-ignored, they're machine/run-specific) — rerun as below to reproduce.
+git-ignored, they're machine/run-specific) — rerun as below to reproduce
+findings on the current targets.
 
 ## Running locally
 
@@ -109,11 +133,10 @@ cd crates/basemyai-engine/fuzz
 cargo fuzz list
 cargo fuzz run key_roundtrip -- -max_total_time=30
 cargo fuzz run wal_decode -- -max_total_time=30
-cargo fuzz run sst_decode -- -max_total_time=30
-cargo fuzz run sst_decode_structured -- -max_total_time=30
+cargo fuzz run sst_data_block_decode_structured -- -max_total_time=30
 
 # Reproduce a saved crash:
-cargo fuzz run sst_decode_structured artifacts/sst_decode_structured/<crash-file>
+cargo fuzz run <target> artifacts/<target>/<crash-file>
 ```
 
 ## CI
