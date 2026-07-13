@@ -24,7 +24,7 @@ embed   = ["basemyai/embed"]
 
 [dependencies]
 basemyai      = { path = "../basemyai" }
-basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
+basemyai-core = { version = "0.2.0", path = "../basemyai-core" }
 
 clap          = { version = "4", features = ["derive"] }
 clap_complete = "4"

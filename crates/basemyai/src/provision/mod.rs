@@ -3,7 +3,7 @@ pub mod embedder;
 pub mod llm;
 
 pub use embedder::{
-    BASELINE_DIM, BASELINE_MODEL_ID, HardwareProfile, ModelProvision, detect_hardware, provision,
+    BASELINE_DIM, BASELINE_MODEL_ID, GpuInfo, HardwareProfile, ModelProvision, detect_hardware, provision,
     provision_with_progress,
 };
 pub use llm::{

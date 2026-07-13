@@ -3,6 +3,7 @@
 # Cargo.lock exclu (workspace multi-crates avec binaires — lock inclus par convention)
 # Si tu veux versionner le lock, retire cette ligne.
 Cargo.lock
+.tmp-cli-smoke
 
 # ── Bases de données libSQL ───────────────────────────────────────────────────
 *.db

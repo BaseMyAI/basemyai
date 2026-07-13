@@ -482,6 +482,36 @@ async fn remember_rejects_text_over_max_len() {
     }
 }
 
+/// `MAX_TEXT_LEN` borne des **octets** UTF-8, pas des caractères. `"é"` fait 2
+/// octets ; un texte de 40 000 "é" a 40 000 caractères (bien sous la limite)
+/// mais 80 000 octets (bien au-delà) — doit être rejeté, et `len` rapporté
+/// doit être le compte d'octets, pas de caractères.
+#[tokio::test]
+async fn remember_rejects_multibyte_text_over_max_len_by_bytes_not_chars() {
+    let mem = open_memory("a").await;
+
+    let char_count = 40_000;
+    let too_long = "é".repeat(char_count);
+    assert_eq!(too_long.len(), char_count * 2, "'é' doit peser 2 octets en UTF-8");
+    assert!(too_long.len() > basemyai::MAX_TEXT_LEN);
+
+    let err = mem
+        .remember(&too_long, MemoryLayer::Semantic)
+        .await
+        .expect_err("un texte multi-octets dépassant MAX_TEXT_LEN en octets doit être rejeté");
+    match err {
+        basemyai::MemoryError::TextTooLong { len, max } => {
+            assert_eq!(
+                len,
+                char_count * 2,
+                "len rapporté doit être le compte d'octets, pas de caractères"
+            );
+            assert_eq!(max, basemyai::MAX_TEXT_LEN);
+        }
+        other => panic!("erreur attendue MemoryError::TextTooLong, obtenu {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn remember_accepts_text_at_exact_max_len() {
     let mem = open_memory("a").await;

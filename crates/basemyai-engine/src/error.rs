@@ -35,10 +35,6 @@ pub enum EngineError {
     #[error("WAL batch has {len} operations, exceeding the maximum {max}")]
     WalBatchTooLarge { len: usize, max: usize },
 
-    /// An SST file failed its checksum or is structurally malformed.
-    #[error("corrupt SST file {}: {reason}", .path.display())]
-    CorruptSst { path: PathBuf, reason: String },
-
     /// An on-disk record's format version is newer (or otherwise
     /// unrecognized) than what this build of the engine understands.
     #[error(
@@ -242,8 +238,9 @@ pub enum EngineError {
     CorruptCryptoMeta { path: PathBuf, reason: String },
 
     /// An AEAD seal operation failed — not reachable through corruption of
-    /// on-disk data (those surface as `CorruptWal`/`CorruptSst`), only
-    /// through an internal cipher failure at write time.
+    /// on-disk data (those surface as `CorruptWal`/`CorruptSstFooter`/
+    /// `CorruptEncryptedSstBlock`/etc.), only through an internal cipher
+    /// failure at write time.
     #[error("encryption failure: {reason}")]
     CryptoFailure { reason: String },
 
@@ -254,6 +251,127 @@ pub enum EngineError {
     /// does not implement general FTS5 query syntax.
     #[error("match_expr {match_expr:?} is not in the supported subset (quoted tokens joined by \" OR \"): {reason}")]
     UnsupportedMatchExpr { match_expr: String, reason: String },
+
+    /// A block-based SST's [`crate::format::sst_block::SstHeader`] failed
+    /// its checksum or is structurally malformed (ADR-039, N8.2 codecs).
+    #[error("corrupt SST header in {}: {reason}", .path.display())]
+    CorruptSstHeader { path: PathBuf, reason: String },
+
+    /// A block-based SST header's format version is newer (or otherwise
+    /// unrecognized) than what this build of the engine understands.
+    #[error(
+        "unsupported SST header format version {found} in {} (this build understands {expected})",
+        .path.display()
+    )]
+    UnsupportedSstHeaderVersion { path: PathBuf, expected: u16, found: u16 },
+
+    /// A block-based SST's [`crate::format::sst_block::SstDataBlock`]
+    /// (one data block, not the whole file) failed its checksum or is
+    /// structurally malformed.
+    #[error("corrupt SST data block in {}: {reason}", .path.display())]
+    CorruptSstDataBlock { path: PathBuf, reason: String },
+
+    /// A block-based SST data block's format version is newer (or
+    /// otherwise unrecognized) than what this build of the engine
+    /// understands.
+    #[error(
+        "unsupported SST data block format version {found} in {} (this build understands {expected})",
+        .path.display()
+    )]
+    UnsupportedSstDataBlockVersion { path: PathBuf, expected: u16, found: u16 },
+
+    /// A block-based SST's [`crate::format::sst_block::SstBlockIndex`]
+    /// failed its checksum or is structurally malformed.
+    #[error("corrupt SST block index in {}: {reason}", .path.display())]
+    CorruptSstBlockIndex { path: PathBuf, reason: String },
+
+    /// A block-based SST block index's format version is newer (or
+    /// otherwise unrecognized) than what this build of the engine
+    /// understands.
+    #[error(
+        "unsupported SST block index format version {found} in {} (this build understands {expected})",
+        .path.display()
+    )]
+    UnsupportedSstBlockIndexVersion { path: PathBuf, expected: u16, found: u16 },
+
+    /// A block-based SST's [`crate::format::sst_block::SstBloomFilter`]
+    /// failed its checksum or is structurally malformed.
+    #[error("corrupt SST bloom filter in {}: {reason}", .path.display())]
+    CorruptSstBloomFilter { path: PathBuf, reason: String },
+
+    /// A block-based SST bloom filter's format version is newer (or
+    /// otherwise unrecognized) than what this build of the engine
+    /// understands.
+    #[error(
+        "unsupported SST bloom filter format version {found} in {} (this build understands {expected})",
+        .path.display()
+    )]
+    UnsupportedSstBloomFilterVersion { path: PathBuf, expected: u16, found: u16 },
+
+    /// A block-based SST's [`crate::format::sst_block::SstFooter`] failed
+    /// its checksum, its trailing sentinel magic, or is otherwise
+    /// structurally malformed.
+    #[error("corrupt SST footer in {}: {reason}", .path.display())]
+    CorruptSstFooter { path: PathBuf, reason: String },
+
+    /// A block-based SST footer's format version is newer (or otherwise
+    /// unrecognized) than what this build of the engine understands.
+    #[error(
+        "unsupported SST footer format version {found} in {} (this build understands {expected})",
+        .path.display()
+    )]
+    UnsupportedSstFooterVersion { path: PathBuf, expected: u16, found: u16 },
+
+    /// The `store.meta` store-generation marker
+    /// ([`crate::format::store_meta`], ADR-039 §7) failed its checksum or
+    /// is structurally malformed. Distinct from a store-generation
+    /// mismatch (an intact, decodable `store.meta` whose
+    /// `store_format_version` this build does not accept) — that policy
+    /// decision belongs to the store-open path (N8.9), not this codec.
+    #[error("corrupt store.meta at {}: {reason}", .path.display())]
+    CorruptStoreMeta { path: PathBuf, reason: String },
+
+    /// A per-section `EncryptedSstBlock` envelope
+    /// ([`crate::format::crypto`], ADR-039 §3) failed structurally (bad
+    /// magic, truncation, a lying `ct_len`) or failed AEAD authentication —
+    /// both are reported through this single variant: by the time any
+    /// section is opened, the key has already been verified against
+    /// `crypto.meta`, so a failed tag is unambiguously corruption or
+    /// tampering, not a wrong key.
+    #[error("corrupt encrypted SST block in {}: {reason}", .path.display())]
+    CorruptEncryptedSstBlock { path: PathBuf, reason: String },
+
+    /// An `EncryptedSstBlock` envelope's format version is newer (or
+    /// otherwise unrecognized) than what this build of the engine
+    /// understands.
+    #[error(
+        "unsupported encrypted SST block format version {found} in {} (this build understands {expected})",
+        .path.display()
+    )]
+    UnsupportedEncryptedSstBlockVersion { path: PathBuf, expected: u16, found: u16 },
+
+    /// The store at `path` belongs to a different, incompatible on-disk
+    /// store generation than this build understands (`store.meta`'s
+    /// `store_format_version`, ADR-039 §7). `found == 0` is the sentinel for
+    /// "no `store.meta` at all" — a store created before this marker
+    /// existed (pre-ADR-039), detected because other store artifacts
+    /// (`wal.log` or a `*.sst` file) are present without it. A genuinely
+    /// empty/fresh directory never raises this — it just creates a new
+    /// `store.meta`.
+    #[error(
+        "unsupported store format version {found} at {} (this build understands {expected}) — \
+         recreate the store with the current version",
+        .path.display()
+    )]
+    UnsupportedStoreFormat { path: PathBuf, expected: u16, found: u16 },
+
+    /// A string handed to the temporal-expiry-index key encoder
+    /// (`key::temporal_index`, ADR-041 §7.2) would overflow that field's
+    /// `u32` length prefix. Sibling of
+    /// [`EngineError::GraphKeyTooLong`]/[`EngineError::MemoryKeyTooLong`]/
+    /// [`EngineError::FtsKeyTooLong`], same rationale.
+    #[error("temporal index key field {field} is {len} bytes, exceeding the u32 length-prefix wire field")]
+    TemporalKeyTooLong { field: &'static str, len: usize },
 }
 
 impl EngineError {

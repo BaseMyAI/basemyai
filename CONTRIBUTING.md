@@ -25,8 +25,10 @@ A few invariants are non-negotiable and enforced by tests and CI:
   `crates/basemyai-core/src` must return zero.
 - **Per-agent isolation is a security invariant**, not a config option (ADR-006).
   Every read and write is filtered by `agent_id` at the SQL level.
-- **All agent inputs are bound as SQL parameters**, never interpolated.
-- **Encryption is mandatory in `basemyai`** (libSQL `crypto` feature).
+- **All agent inputs are scoped by `agent_id` at the storage-key level**, never
+  through string interpolation.
+- **Encryption is mandatory in `basemyai`** (native AEAD engine, ADR-030 — pure
+  Rust, no CMake, no feature flag).
 - **The `Embedder` never downloads** and never detects hardware — it receives a
   resolved path and `Device` (ADR-010).
 
@@ -35,8 +37,8 @@ If a change requires bending one of these, it needs an **ADR** first (see below)
 ## Development setup
 
 Requires a recent stable Rust toolchain (edition 2024, see
-`rust-toolchain.toml`). The native vector path compiles without CMake; only the
-`crypto` feature (encryption at rest) needs **CMake** installed.
+`rust-toolchain.toml`). The whole workspace — including encryption at rest
+(ADR-030) — compiles without CMake; nothing in the active workspace needs it.
 
 ```bash
 # The quality gate — must pass before every commit. `cargo xtask` reproduces
@@ -45,9 +47,8 @@ Requires a recent stable Rust toolchain (edition 2024, see
 cargo xtask ci           # fmt --check + clippy + tests (the pre-commit gate)
 
 cargo xtask check        # fmt --check + per-crate clippy (CI features, -D warnings)
-cargo xtask test         # per-crate tests, light config (no embed/crypto)
+cargo xtask test         # per-crate tests, light config (no embed)
 cargo xtask test-embed   # CI `embed` job (Candle — heavy compile)
-cargo xtask test-crypto  # CI `crypto` job (libSQL encryption — needs CMake)
 ```
 
 Note: `cargo clippy --workspace --all-targets -- -D warnings` and
@@ -59,7 +60,6 @@ Use the `cargo xtask` targets above. Other useful commands:
 ```bash
 cargo fmt --all                                         # formatting
 cargo build -p basemyai-core --features embed           # Candle (heavy)
-cargo build -p basemyai-core --features crypto          # encryption (needs CMake)
 ```
 
 `crates/basemyai-engine/fuzz/` holds `cargo-fuzz` targets for the native
@@ -81,6 +81,30 @@ green.
 - No `static mut`. No std `Mutex` held across an `.await`.
 - Getters without a `get_` prefix. Prefer `&str` over `String` in parameters.
 - `Arc::clone(&x)` over `x.clone()` on ref-counted values.
+
+## Binary releases (`basemyai` CLI)
+
+Precompiled `basemyai-cli` binaries (command `basemyai`) are packaged with
+[`cargo-dist`](https://opensource.axo.dev/cargo-dist/), configured in
+`dist-workspace.toml`. Only the CLI opts in — `basemyai-mcp` and
+`basemyai-rest` also have a `[[bin]]` but explicitly set
+`package.metadata.dist.dist = false` (MCP ships as a library/transport
+consumed by MCP clients; the REST sidecar ships as a Docker image).
+
+```bash
+dist plan   # dry-run: shows what would be built/released, no build/publish
+```
+
+The CLI release flow uses its own tag namespace (`tag-namespace = "cli"` ->
+tags like `cli-v0.1.0`, workflow `.github/workflows/cli-release.yml`) so it
+never collides with the existing `.github/workflows/release.yml`, which
+`cargo-dist` does not manage (crates.io publish + GitHub Release on plain
+`v*` tags). The distributed CLI binary builds with the `embed` (Candle)
+feature **on**, matching `basemyai-cli`'s own default — Candle never
+downloads anything on its own; only explicit `basemyai setup --fetch`
+fetches model weights (ADR-010). Actually running `dist build`/`dist host`
+to cut a real release is a separate, deliberate decision (see
+`docs/status.md` §6).
 
 ## ADRs — how decisions are made
 

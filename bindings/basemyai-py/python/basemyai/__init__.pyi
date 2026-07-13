@@ -30,6 +30,16 @@ class Entity:
     label: str
     depth: int
 
+class WatchEvent:
+    agent_id: str
+    kind: Literal["remembered", "invalidated", "forgotten", "consolidated", "unknown"]
+    layer: MemoryLayer
+    id: str
+
+class MemoryWatch:
+    def __aiter__(self) -> MemoryWatch: ...
+    def __anext__(self) -> WatchEvent: ...
+
 class Memory:
     @staticmethod
     async def open(
@@ -52,5 +62,6 @@ class Memory:
     async def add_graph_entity(self, id: str, kind: str, label: str) -> None: ...
     async def add_graph_edge(self, src: str, relation: str, dst: str, weight: float = 1.0) -> None: ...
     async def recall_graph(self, start: str, max_depth: int = 2) -> list[Entity]: ...
+    def watch(self, layer: MemoryLayer | None = None) -> MemoryWatch: ...
 
 __all__: list[str]

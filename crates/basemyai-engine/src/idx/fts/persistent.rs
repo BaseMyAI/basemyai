@@ -118,25 +118,74 @@ impl PersistentFts {
     /// content at insert time, or already removed by an interrupted earlier
     /// attempt — mirroring the idempotence [`crate::idx::memory::PersistentMemoryIndex::forget`]
     /// already establishes for the record + vector node.
+    ///
+    /// Same read-modify-write caveat as [`Self::stage_insert`]: two documents
+    /// of the same agent must not be staged into one shared `batch` through
+    /// two *separate* calls before either is applied — that is
+    /// [`Self::stage_delete_many`]'s job.
     pub fn stage_delete(&self, engine: &Engine, agent: &str, vec_id: u64, batch: &mut Batch) -> Result<()> {
+        self.stage_delete_many(engine, agent, &[vec_id], batch)
+    }
+
+    /// Stages removal of **several** documents of one `agent`, plus a
+    /// **single** stats record carrying the whole group's aggregate, into
+    /// `batch` — the deletion sibling of [`Self::stage_insert_many`], and
+    /// what makes a bounded `forget_many` batch possible (ADR-041 §7.4): the
+    /// per-document read-modify-write on the stats record would otherwise
+    /// make later stagings in the same (not yet applied) batch read stale
+    /// stats and silently lose the earlier documents' decrements. Documents
+    /// never indexed (or repeated within `vec_ids`) stage nothing and count
+    /// nothing, like the single-document path.
+    pub fn stage_delete_many(&self, engine: &Engine, agent: &str, vec_ids: &[u64], batch: &mut Batch) -> Result<()> {
+        let mut agent_stats = self.load_stats(engine, agent)?;
+        let mut staged_any = false;
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::with_capacity(vec_ids.len());
+        for &vec_id in vec_ids {
+            if !seen.insert(vec_id) {
+                continue;
+            }
+            let docterms_key = fts_index::docterms_key(agent, vec_id)?;
+            let Some(bytes) = engine.get(docterms_key.as_bytes())? else {
+                continue;
+            };
+            let doc = docterms::decode(&bytes)?;
+
+            for term in &doc.terms {
+                let key = fts_index::postings_key(agent, &term.term, vec_id)?;
+                batch.delete(key.as_bytes());
+            }
+            batch.delete(docterms_key.as_bytes());
+
+            agent_stats.doc_count = agent_stats.doc_count.saturating_sub(1);
+            agent_stats.total_terms = agent_stats.total_terms.saturating_sub(docterms::doc_length(&doc));
+            staged_any = true;
+        }
+        if staged_any {
+            let meta_key = fts_index::meta_key(agent)?;
+            batch.put(meta_key.as_bytes(), &stats::encode(&agent_stats)?);
+        }
+        Ok(())
+    }
+
+    /// Approximate wire bytes a [`Self::stage_delete`] of `(agent, vec_id)`
+    /// would stage (posting-key deletes + the doc-terms delete): the
+    /// byte-budget probe behind `forget_many`'s `max_wal_bytes` bound
+    /// (ADR-041 §7.4). `0` for a never-indexed document. Costs one extra
+    /// point lookup of the doc-terms record per call (the staging pass
+    /// re-reads it) — assumed: the bound has to be known **before** the
+    /// chunk is staged, and a point lookup is cheap next to the batch it
+    /// sizes.
+    pub fn delete_footprint(&self, engine: &Engine, agent: &str, vec_id: u64) -> Result<usize> {
         let docterms_key = fts_index::docterms_key(agent, vec_id)?;
         let Some(bytes) = engine.get(docterms_key.as_bytes())? else {
-            return Ok(());
+            return Ok(0);
         };
         let doc = docterms::decode(&bytes)?;
-
+        let mut total = docterms_key.as_bytes().len();
         for term in &doc.terms {
-            let key = fts_index::postings_key(agent, &term.term, vec_id)?;
-            batch.delete(key.as_bytes());
+            total += fts_index::postings_key(agent, &term.term, vec_id)?.as_bytes().len();
         }
-        batch.delete(docterms_key.as_bytes());
-
-        let mut agent_stats = self.load_stats(engine, agent)?;
-        agent_stats.doc_count = agent_stats.doc_count.saturating_sub(1);
-        agent_stats.total_terms = agent_stats.total_terms.saturating_sub(docterms::doc_length(&doc));
-        let meta_key = fts_index::meta_key(agent)?;
-        batch.put(meta_key.as_bytes(), &stats::encode(&agent_stats)?);
-        Ok(())
+        Ok(total)
     }
 
     /// Loads the BM25 stats for `agent`: `Ok(default)` for an agent with no
@@ -488,6 +537,86 @@ mod tests {
         fts.stage_delete(&engine, "agent-a", 999, &mut batch)
             .expect("stage delete of absent doc");
         assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn stage_delete_many_aggregates_stats_once_and_skips_absent_and_duplicate_docs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut engine = open(dir.path());
+        let fts = PersistentFts::new();
+
+        // Three docs staged as one group (aggregated stats, like put_many).
+        let mut insert_batch = Batch::new();
+        fts.stage_insert_many(
+            &engine,
+            "agent-a",
+            &[(1, "chat chien"), (2, "chat"), (3, "oiseau souris jardin")],
+            &mut insert_batch,
+        )
+        .expect("stage inserts");
+        engine.apply_batch(&insert_batch).expect("apply inserts");
+        assert_eq!(
+            fts.load_stats(&engine, "agent-a").expect("stats"),
+            FtsStats {
+                doc_count: 3,
+                total_terms: 6
+            }
+        );
+
+        // Delete docs 1 and 3 in ONE shared batch — with a duplicate and an
+        // absent id thrown in, neither of which may count.
+        let mut delete_batch = Batch::new();
+        fts.stage_delete_many(&engine, "agent-a", &[1, 3, 1, 999], &mut delete_batch)
+            .expect("stage deletes");
+        engine.apply_batch(&delete_batch).expect("apply deletes");
+
+        // Both decrements must land: per-call stage_delete into a shared
+        // batch would have lost one (stale read-modify-write on stats).
+        assert_eq!(
+            fts.load_stats(&engine, "agent-a").expect("stats"),
+            FtsStats {
+                doc_count: 1,
+                total_terms: 1
+            }
+        );
+        assert!(
+            fts.search_bm25(&engine, "agent-a", r#""chien""#, 10)
+                .expect("search")
+                .is_empty()
+        );
+        assert_eq!(
+            fts.search_bm25(&engine, "agent-a", r#""chat""#, 10)
+                .expect("search")
+                .len(),
+            1,
+            "doc 2 must survive"
+        );
+    }
+
+    #[test]
+    fn delete_footprint_counts_key_bytes_and_is_zero_for_absent_docs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut engine = open(dir.path());
+        let fts = PersistentFts::new();
+
+        let mut batch = Batch::new();
+        fts.stage_insert(&engine, "agent-a", 1, "chat chien", &mut batch)
+            .expect("stage");
+        engine.apply_batch(&batch).expect("apply");
+
+        let footprint = fts.delete_footprint(&engine, "agent-a", 1).expect("footprint");
+        // Exactly the docterms key + one postings key per distinct term.
+        let expected = fts_index::docterms_key("agent-a", 1).expect("key").as_bytes().len()
+            + fts_index::postings_key("agent-a", "chat", 1)
+                .expect("key")
+                .as_bytes()
+                .len()
+            + fts_index::postings_key("agent-a", "chien", 1)
+                .expect("key")
+                .as_bytes()
+                .len();
+        assert_eq!(footprint, expected);
+        assert_eq!(fts.delete_footprint(&engine, "agent-a", 999).expect("footprint"), 0);
     }
 
     #[test]

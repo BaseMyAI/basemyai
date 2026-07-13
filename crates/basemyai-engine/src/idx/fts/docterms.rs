@@ -35,7 +35,7 @@ pub const FTS_DOCTERMS_VERSION: u16 = 1;
 /// [`crate::format::lock`]). Field list and order must mirror the byte
 /// layout documented above exactly — update both together, never one
 /// without the other. `entries[].*` fields describe one repeated entry, not
-/// a fixed-count set of fields (same convention as `SstFile`).
+/// a fixed-count set of fields (same convention as `SstDataBlock`).
 pub fn spec() -> FormatSpec {
     FormatSpec {
         name: "FtsDocTerms",
@@ -56,7 +56,7 @@ const HEADER_LEN: usize = 4 + 2 + 4;
 const CRC_LEN: usize = 4;
 /// Smallest an entry could possibly be (empty term) — the bound used to
 /// reject a lying `count` before it drives a `Vec::with_capacity` call
-/// (same discipline as `format::sst`'s `entry_count`).
+/// (same discipline as `format::sst_block`'s `entry_count`).
 const MIN_ENTRY_LEN: usize = 2 + 4;
 
 /// One `(term, tf)` pair of a decoded doc-terms block.
@@ -107,7 +107,7 @@ pub fn encode(doc: &FtsDocTerms) -> Result<Vec<u8>> {
 /// allocation, and every `term_len` is bounded against the buffer's actual
 /// remaining length before a string is materialized — a lying count or
 /// length yields `CorruptFtsDocTerms`, never a panic or an oversized
-/// allocation (same discipline as `format::sst::decode`).
+/// allocation (same discipline as `format::sst_block::decode_sst_data_block`).
 pub fn decode(buf: &[u8]) -> Result<FtsDocTerms> {
     let corrupt = |reason: String| EngineError::CorruptFtsDocTerms { reason };
 
@@ -341,5 +341,34 @@ mod tests {
         };
         let err = encode(&doc).expect_err("term beyond u16 must not silently truncate");
         assert!(matches!(err, EngineError::CorruptFtsDocTerms { .. }));
+    }
+
+    /// `term_len` bounds *bytes*, not chars — a multi-byte term with fewer
+    /// chars than `u16::MAX` can still have more bytes than it. `"é"` is 2
+    /// bytes in UTF-8: 32 768 of them is 65 536 bytes, one past `u16::MAX`.
+    #[test]
+    fn oversized_multibyte_term_is_rejected_at_encode_time() {
+        let term = "é".repeat(32_768);
+        assert_eq!(term.len(), 65_536);
+        let doc = FtsDocTerms {
+            terms: vec![DocTerm { term, tf: 1 }],
+        };
+        let err = encode(&doc).expect_err("multi-byte term beyond u16 bytes must not silently truncate");
+        assert!(matches!(err, EngineError::CorruptFtsDocTerms { .. }));
+    }
+
+    /// A multi-byte term of exactly `u16::MAX` bytes (the largest legal
+    /// `term_len`) must still encode/decode losslessly — the boundary itself
+    /// isn't a rejection.
+    #[test]
+    fn multibyte_term_at_exact_u16_max_bytes_roundtrips() {
+        let mut term = "é".repeat(32_767); // 65 534 bytes
+        term.push('x'); // + 1 byte = 65 535 = u16::MAX exactly
+        assert_eq!(term.len(), usize::from(u16::MAX));
+        let doc = FtsDocTerms {
+            terms: vec![DocTerm { term, tf: 1 }],
+        };
+        let bytes = encode(&doc).expect("term at exactly u16::MAX bytes must be accepted");
+        assert_eq!(decode(&bytes).expect("decode ok"), doc);
     }
 }

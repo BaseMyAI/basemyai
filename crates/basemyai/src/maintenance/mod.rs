@@ -2,13 +2,30 @@
 //! Tâches de maintenance **sémantiques**, injectées dans le worker agnostique
 //! du core (`basemyai_core::MaintenanceWorker`).
 //!
-//! GC temporel (`valid_until`) et oubli adaptatif (ADR-005/ADR-008, VISION
-//! §5.2) reposaient sur du SQL de fenêtrage (`ROW_NUMBER() OVER (PARTITION
-//! BY ...)`) spécifique au backend libSQL, retiré du workspace par ADR-032 —
-//! supprimés avec lui plutôt que portés en passant sur le moteur natif (un
-//! portage mérite son propre design/tests). `ConsolidationTask` survit :
-//! elle ne dépendait déjà d'aucun store partagé (auto-suffisante via
-//! `Arc<Memory>`).
+//! L'oubli adaptatif (ADR-012 §4) et le GC temporel (`valid_until`)
+//! reposaient tous deux sur du SQL spécifique au backend libSQL (fenêtrage
+//! `ROW_NUMBER() OVER (PARTITION BY ...)` pour le premier, `DELETE ...
+//! WHERE valid_until <= ?` pour le second), retirés du workspace par
+//! ADR-033. Les deux ont été **portés** sur le moteur natif : l'oubli
+//! adaptatif par ADR-037 puis borné en mémoire par ADR-041 §7.3
+//! ([`adaptive_forgetting`], deux passes paginées + tas borné à la
+//! capacité), le GC temporel par ADR-038 puis indexé par ADR-041 §7.2
+//! ([`expired_gc`], scan paginé par curseur sur l'index temporel). Les deux
+//! mécanismes opèrent sur des ensembles disjoints par construction (actifs
+//! vs. expirés) — voir la doc de [`expired_gc`] pour le détail du
+//! non-chevauchement.
+//!
+//! `ConsolidationTask`, `AdaptiveForgettingTask` et `ExpiredMemoryGcTask`
+//! partagent le même pattern : auto-suffisantes via `Arc<Memory>`, aucun
+//! store partagé injecté par le worker.
+
+pub(crate) mod adaptive_forgetting;
+pub(crate) mod expired_gc;
+
+pub use adaptive_forgetting::{
+    AdaptiveForgettingPolicy, AdaptiveForgettingTask, ForgettingReport, run as run_adaptive_forget,
+};
+pub use expired_gc::{DEFAULT_GC_PAGE_SIZE, ExpiredGcReport, ExpiredMemoryGcTask, run as run_expired_gc};
 
 use std::sync::Arc;
 

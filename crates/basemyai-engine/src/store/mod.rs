@@ -10,12 +10,31 @@
 //! rename it into place, *then* truncate the WAL, never the other order
 //! (ADR-025) — and `close` flushes and releases the store.
 
+// Bounded LRU cache of decoded SST data blocks (N8.7, ADR-039 §5.6) —
+// shared across every SST an `Engine` holds, consulted only by
+// `sst_block::BlockSstFile::get`'s point-lookup path.
+mod block_cache;
 mod engine;
 mod memtable;
-mod sst;
+mod repair;
+// Block-based SST format (ADR-039): writer + optimized reader, the sole SST
+// implementation `Engine` uses since N8.5 — see the module doc for the
+// read-path/AEAD details.
+mod sst_block;
+mod stats;
+// Offline, read-only store verification (ADR-040, N9.2) — the audit path
+// behind `basemyai verify`; see the module doc for the Quick/FullPhysical
+// split and the "never modifies the store" contract.
+mod verify;
+// Cross-structure logical checks over the reserved `idx/` keyspaces — the
+// `FullLogical` half of `verify` (ADR-040 §2, N9.3).
+mod verify_logical;
 mod wal;
 
-pub use engine::{Batch, Engine, EngineOptions};
+pub use engine::{Batch, DEFAULT_BLOCK_CACHE_CAPACITY_BYTES, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, ScanPage};
+pub use repair::{RebuildReport, RepairAction, RepairPlan, plan_repair, rebuild_indexes};
+pub use stats::EngineStats;
+pub use verify::{IntegrityIssue, IssueKind, VerifyMode, VerifyReport, verify_store};
 
 /// A stored value. Kept as a plain alias (not a newtype) since, unlike
 /// [`crate::key::Key`], nothing about its ordering or encoding is

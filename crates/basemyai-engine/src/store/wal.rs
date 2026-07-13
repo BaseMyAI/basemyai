@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use crate::crypto::CryptoContext;
 use crate::error::{EngineError, Result};
+use crate::fail_point;
 use crate::format::crypto as envelope;
 use crate::format::wal::{self, BatchOp, WalOp, WalRecord};
 
@@ -73,7 +74,7 @@ impl Wal {
         let mut records = Vec::new();
         let mut offset = 0usize;
         while offset < buf.len() {
-            match self.decode_next(&buf[offset..])? {
+            match decode_next(&buf[offset..], self.crypto.as_ref(), &self.path)? {
                 Some((record, consumed)) => {
                     offset += consumed;
                     match record.op {
@@ -107,39 +108,11 @@ impl Wal {
         Ok(records)
     }
 
-    /// Decodes the next record from `buf` in this WAL's mode. Plaintext:
-    /// straight [`wal::decode`]. Encrypted: peel one `WalEnvelope`
-    /// (incomplete envelope = torn tail, `Ok(None)`), open the seal (a
-    /// failure here is corruption — the key was already verified against
-    /// `crypto.meta` at open), then decode the recovered plaintext record,
-    /// which must be complete and consume its buffer exactly (the envelope
-    /// sealed exactly one record's bytes).
-    fn decode_next(&self, buf: &[u8]) -> Result<Option<(WalRecord, usize)>> {
-        let Some(crypto) = &self.crypto else {
-            return wal::decode(buf, &self.path);
-        };
-        let Some((nonce, ciphertext, consumed)) = envelope::decode_wal_envelope(buf, &self.path)? else {
-            return Ok(None);
-        };
-        let plaintext = crypto
-            .open(&nonce, ciphertext, &envelope::wal_envelope_aad())
-            .ok_or_else(|| EngineError::CorruptWal {
-                path: self.path.clone(),
-                reason: "envelope failed AEAD authentication (tampered or corrupt)".to_string(),
-            })?;
-        match wal::decode(&plaintext, &self.path)? {
-            Some((record, inner_consumed)) if inner_consumed == plaintext.len() => Ok(Some((record, consumed))),
-            _ => Err(EngineError::CorruptWal {
-                path: self.path.clone(),
-                reason: "authenticated envelope does not contain exactly one WAL record".to_string(),
-            }),
-        }
-    }
-
     /// Appends one record and fsyncs before returning — the operation is
     /// durable once this call succeeds. Explicitly seeks to end-of-file
     /// first (see [`Wal::open_for_append`] for why this isn't `O_APPEND`).
-    pub(crate) fn append(&mut self, op: WalOp, key: &[u8], value: Option<&[u8]>) -> Result<()> {
+    /// Returns the on-disk bytes written (envelope included when encrypted).
+    pub(crate) fn append(&mut self, op: WalOp, key: &[u8], value: Option<&[u8]>) -> Result<u64> {
         let record = wal::encode(op, key, value);
         self.write_record(&record)
     }
@@ -150,8 +123,8 @@ impl Wal {
     /// checksum (see the "Batch records" section of `format::wal`), so a
     /// crash can only ever leave either every sub-operation absent (record
     /// never made it) or every sub-operation present (record fully synced)
-    /// — never a partial subset.
-    pub(crate) fn append_batch(&mut self, ops: &[BatchOp]) -> Result<()> {
+    /// — never a partial subset. Returns the on-disk bytes written.
+    pub(crate) fn append_batch(&mut self, ops: &[BatchOp]) -> Result<u64> {
         if ops.len() > wal::MAX_BATCH_OPS {
             return Err(EngineError::WalBatchTooLarge {
                 len: ops.len(),
@@ -163,7 +136,7 @@ impl Wal {
         self.write_record(&record)
     }
 
-    fn write_record(&mut self, record: &[u8]) -> Result<()> {
+    fn write_record(&mut self, record: &[u8]) -> Result<u64> {
         let sealed;
         let on_disk: &[u8] = match &self.crypto {
             Some(crypto) => {
@@ -179,10 +152,21 @@ impl Wal {
         self.file
             .write_all(on_disk)
             .map_err(|e| EngineError::io(self.path.clone(), e))?;
+        fail_point!("after_wal_append");
         self.file
             .sync_all()
             .map_err(|e| EngineError::io(self.path.clone(), e))?;
-        Ok(())
+        fail_point!("after_wal_fsync");
+        Ok(on_disk.len() as u64)
+    }
+
+    /// Current WAL file length on disk (the `wal_bytes` gauge of
+    /// [`crate::EngineStats`]).
+    pub(crate) fn size_on_disk(&self) -> Result<u64> {
+        self.file
+            .metadata()
+            .map(|m| m.len())
+            .map_err(|e| EngineError::io(self.path.clone(), e))
     }
 
     /// Truncates the WAL to empty and fsyncs. Callers must only invoke this
@@ -209,6 +193,104 @@ impl Wal {
     pub(crate) fn path(&self) -> &std::path::Path {
         &self.path
     }
+}
+
+/// Decodes the next record from `buf` in the given mode. Plaintext:
+/// straight [`wal::decode`]. Encrypted: peel one `WalEnvelope` (incomplete
+/// envelope = torn tail, `Ok(None)`), open the seal (a failure here is
+/// corruption — the key was already verified against `crypto.meta` at
+/// open), then decode the recovered plaintext record, which must be
+/// complete and consume its buffer exactly (the envelope sealed exactly one
+/// record's bytes).
+///
+/// Free function (not a `Wal` method) so [`Wal::replay`] and the read-only
+/// verification scan ([`scan_readonly`], ADR-040) share one decoder and
+/// cannot drift apart.
+fn decode_next(
+    buf: &[u8],
+    crypto: Option<&CryptoContext>,
+    path: &std::path::Path,
+) -> Result<Option<(WalRecord, usize)>> {
+    let Some(crypto) = crypto else {
+        return wal::decode(buf, path);
+    };
+    let Some((nonce, ciphertext, consumed)) = envelope::decode_wal_envelope(buf, path)? else {
+        return Ok(None);
+    };
+    let plaintext = crypto
+        .open(&nonce, ciphertext, &envelope::wal_envelope_aad())
+        .ok_or_else(|| EngineError::CorruptWal {
+            path: path.to_path_buf(),
+            reason: "envelope failed AEAD authentication (tampered or corrupt)".to_string(),
+        })?;
+    match wal::decode(&plaintext, path)? {
+        Some((record, inner_consumed)) if inner_consumed == plaintext.len() => Ok(Some((record, consumed))),
+        _ => Err(EngineError::CorruptWal {
+            path: path.to_path_buf(),
+            reason: "authenticated envelope does not contain exactly one WAL record".to_string(),
+        }),
+    }
+}
+
+/// Result of a read-only structural WAL scan ([`scan_readonly`]).
+pub(crate) struct WalScan {
+    /// Fully-formed, checksum-valid records found, in append order (batches
+    /// expanded into their `Put`/`Delete` sub-operations, same accounting as
+    /// [`Wal::replay`]). Carried in full — not just counted — so the
+    /// `FullLogical` verification pass (ADR-040 §2, N9.3) can overlay the
+    /// WAL's unflushed state onto the SST view without ever opening the
+    /// store for writing.
+    pub(crate) records: Vec<WalRecord>,
+    /// Trailing bytes that do not form a complete record — the expected
+    /// shape of a torn write left by a crash mid-append. `0` on a cleanly
+    /// closed WAL.
+    pub(crate) torn_tail_bytes: u64,
+}
+
+/// Structurally scans the WAL at `path` **without modifying it** — unlike
+/// [`Wal::replay`], which truncates a torn tail before reuse. This is the
+/// verification path's WAL reader (ADR-040 §2 rule 1: `verify` never writes,
+/// not even the truncation `open` allows itself). A missing file scans as
+/// empty (a store flushed-and-closed cleanly may have an empty or absent
+/// WAL).
+///
+/// # Errors
+/// [`EngineError::CorruptWal`] for a fully-buffered record that fails its
+/// checksum/AEAD or a malformed nested batch — genuine corruption, never
+/// confused with the torn tail (reported via [`WalScan::torn_tail_bytes`]).
+pub(crate) fn scan_readonly(path: &std::path::Path, crypto: Option<&CryptoContext>) -> Result<WalScan> {
+    if !path.exists() {
+        return Ok(WalScan {
+            records: Vec::new(),
+            torn_tail_bytes: 0,
+        });
+    }
+    let buf = std::fs::read(path).map_err(|e| EngineError::io(path.to_path_buf(), e))?;
+    let mut records = Vec::new();
+    let mut offset = 0usize;
+    while offset < buf.len() {
+        match decode_next(&buf[offset..], crypto, path)? {
+            Some((record, consumed)) => {
+                offset += consumed;
+                match record.op {
+                    WalOp::Batch => {
+                        let payload = record.value.unwrap_or_default();
+                        records.extend(wal::decode_batch(&payload, path)?.into_iter().map(|entry| WalRecord {
+                            op: entry.op,
+                            key: entry.key,
+                            value: entry.value,
+                        }));
+                    }
+                    WalOp::Put | WalOp::Delete => records.push(record),
+                }
+            }
+            None => break,
+        }
+    }
+    Ok(WalScan {
+        records,
+        torn_tail_bytes: (buf.len() - offset) as u64,
+    })
 }
 
 #[cfg(test)]

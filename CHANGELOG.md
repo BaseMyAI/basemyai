@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **N10 — scalable maintenance (ADR-041, §7.1→§7.5).**
+  - Importance API: `Memory::remember_with_importance` / `Memory::set_importance`
+    (NaN/infinite rejected via `MemoryError::InvalidImportance`); `NewMemory`
+    and `MemoryStore::put_memory` gain an `importance: f64` field
+    (`DEFAULT_IMPORTANCE = 1.0`).
+  - Temporal expiry index (`idx/temporal/expiry/`) + `Engine::scan_range`:
+    expired-memory GC is now a bounded range query instead of a full
+    per-agent scan (no `MemoryRecord` decoding at all).
+  - Memory-bounded adaptive forgetting: two paged passes over
+    `Engine::scan_range_page`, survivor selection in `O(capacity)` memory.
+  - `MemoryStore::forget_many` + engine `PersistentMemoryIndex::forget_many`
+    (`ForgetBatchOptions { max_items, max_wal_bytes }`): batched physical
+    deletion in bounded atomic chunks (aggregated FTS stats, grouped vector
+    tombstones, one WAL record per chunk), idempotent resume between chunks.
+    Wired into both eviction paths (GC + adaptive forgetting, CLI and
+    event-emitting `Memory` facade — `Forgotten` events still emitted
+    post-commit, per existing memory).
+  - Agent registry (`meta/agents/`): `NativeMemoryStore::list_agents()` —
+    identifiers only, registered on first insert, unregistered by
+    `purge_agent` (never by a mere forget). Not retroactive for stores
+    written before this change.
+
+### Changed
+
+- **Breaking (trait `MemoryStore`)**: `scan_for_forgetting` is now paginated
+  (`after_id`/`limit`, active-only candidates) and `forget_many` is a new
+  required method.
+
+## [0.2.0] - 2026-07-10
+
+First native-only release. **Breaking**: no libSQL/V1 compatibility — see
+"Changed" below and `docs/adr/ADR-033-native-only.md`.
+
+### Added
+
+- **Adaptive forgetting, ported to the native engine (ADR-037).** Reintroduces
+  the capacity-bounded eviction mechanism removed by the native-only
+  migration, on top of an applicative scan (`MemoryStore::scan_for_forgetting`)
+  instead of a libSQL windowed query. `Memory::adaptive_forget`,
+  `AdaptiveForgettingTask` (`MaintenanceWorker` integration), and the CLI
+  `forget-adaptive` command (`--capacity`, `--half-life-secs`, `--dry-run`).
+  Same hyperbolic retention score as before removal
+  (`importance + half_life / (half_life + age)`); scope refined to only
+  consider **active** memories (invalidated/expired memories no longer count
+  toward capacity — see expired-memory GC below).
+- **Expired-memory GC, ported to the native engine (ADR-038).** Reintroduces
+  physical deletion of memories whose `valid_until <= now`, paginated by an
+  id-based cursor (idempotent, resumable after an interruption).
+  `Memory::expired_gc`, `ExpiredMemoryGcTask`, and the CLI `gc` command
+  (`--page-size`, `--dry-run`). Disjoint by construction from adaptive
+  forgetting (active vs. expired memories never overlap).
+- Both `forget-adaptive` and `gc` CLI commands open the raw store
+  (`open_engine`), never a full `Memory` — no Candle embedder is loaded, so
+  neither needs a provisioned model and both run in CI.
+- **NAPI live subscriptions** (`bindings/basemyai-node`) — `Memory.watch(agentId, layer?, callback)`
+  resolves to a `WatchHandle`; the JS callback is invoked via `ThreadsafeFunction`
+  for every `remember`/`invalidate`/`forget`/`consolidate` event on that agent
+  (optionally scoped to one layer), isolated server-side exactly like the
+  existing REST/MCP/Python `watch` surfaces. `WatchHandle.close()` stops the
+  relay and frees its background task (idempotent; also runs on `Drop`/GC).
+- **CUDA/NVML hardware detection** (`basemyai`, feature `cuda-detect`) —
+  `detect_hardware()` now reports `HardwareProfile.gpus: Vec<GpuInfo>` (GPU
+  count, name, total/free VRAM per device) via `nvml-wrapper`, a pure-Rust
+  NVML binding (no CMake). Best-effort: NVML/driver absent (no NVIDIA GPU,
+  the common case in CI) never panics, `gpus` is simply empty. Optional and
+  outside the default/CI feature set given its cost and the lack of NVIDIA
+  hardware to validate against in CI.
+- **Docker image for `basemyai-rest`** — multi-stage `Dockerfile`
+  (`crates/basemyai-rest/Dockerfile`) and `docker-compose.yml` at the
+  workspace root. Builder needs only `build-essential`/`pkg-config` (no
+  CMake, no libSQL); runtime is `debian-slim` running as a non-root user.
+- **`cargo-dist` packaging for `basemyai-cli`** (`dist-workspace.toml`,
+  `.github/workflows/cli-release.yml`) — precompiled binaries for
+  Windows/Linux/macOS (x86_64 + aarch64). Uses its own tag namespace
+  (`cli-v*`) so it never collides with the existing crates.io/GitHub-Release
+  workflow. `basemyai-mcp`/`basemyai-rest` opt out
+  (`package.metadata.dist.dist = false`) since they ship as a
+  library/transport and a Docker image, respectively, not standalone
+  binaries.
+- **P1 market benchmark rerun on the native engine**
+  (`docs/benchmarks/n6-native-vs-mem0-qdrant-2026-07-10.md`) — the prior
+  comparison (2026-06-21) measured BaseMyAI on the now-removed libSQL
+  backend. Rerun confirms the core claim (`remember` ~10.8× faster than real
+  Mem0, which pays an LLM call per `.add()`) while also disclosing where the
+  native engine is currently slower than raw Qdrant (`recall`/`recall_hybrid`
+  latency) — reported honestly rather than omitted.
+
 ### Changed
 
 - Migrated the active workspace to **native-only** storage: removed libSQL/V1
@@ -111,5 +200,6 @@ Stable types (public fields, no `#[non_exhaustive]`):
 `Record`, `AgentStats`, `Reached`, `ConsolidationReport`, `Fused`, `Ranking`,
 `Neighbor`, `Filter`, `Migration`, `Validity`, `KnownModel`, `LlmOption`.
 
-[Unreleased]: https://github.com/basemyai/basemyai/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/basemyai/basemyai/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/basemyai/basemyai/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/basemyai/basemyai/releases/tag/v0.1.0

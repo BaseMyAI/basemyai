@@ -49,6 +49,23 @@ pub struct HardwareProfile {
     pub gpu_vram_mb: Option<u64>,
     pub cpu_cores: usize,
     pub device: Device,
+    /// GPU NVIDIA détectés via NVML (feature `cuda-detect`). Vide si la
+    /// feature est désactivée, si NVML/le driver est absent (cas normal sans
+    /// GPU NVIDIA), ou si la machine n'a effectivement aucun GPU NVIDIA.
+    /// Structuré pour que `choose_llm`/`provision` puisse en tenir compte
+    /// (nombre de GPU, VRAM par device) sans nouvelle détection.
+    pub gpus: Vec<GpuInfo>,
+}
+
+/// Un GPU NVIDIA détecté via NVML : identité + VRAM.
+#[derive(Debug, Clone)]
+pub struct GpuInfo {
+    /// Index NVML du device (0-based).
+    pub index: usize,
+    /// Nom commercial (ex. `"NVIDIA GeForce RTX 4090"`).
+    pub name: String,
+    pub vram_total_mb: u64,
+    pub vram_free_mb: u64,
 }
 
 /// Résultat du provisioning : ce que l'`Embedder` du core recevra, déjà résolu.
@@ -132,14 +149,18 @@ pub fn detect_hardware() -> HardwareProfile {
 
     let total_ram_mb = sys.total_memory() / (1024 * 1024);
     let cpu_cores = std::thread::available_parallelism().map(usize::from).unwrap_or(1);
-    let gpu_vram_mb = detect_vram_mb();
-    let device = resolve_device();
+    let gpus = detect_nvml_gpus();
+    // NVML (précis, VRAM libre/totale par device) prime sur `nvidia-smi`/
+    // `system_profiler` (best-effort, GPU 0 uniquement) si disponible.
+    let gpu_vram_mb = gpus.first().map(|g| g.vram_total_mb).or_else(detect_vram_mb);
+    let device = resolve_device(&gpus);
 
     HardwareProfile {
         total_ram_mb,
         gpu_vram_mb,
         cpu_cores,
         device,
+        gpus,
     }
 }
 
@@ -391,12 +412,64 @@ fn parse_vram_mb(s: &str) -> Option<u64> {
     }
 }
 
+// ── Détection GPU NVIDIA (NVML) ───────────────────────────────────────────────
+
+/// Détection GPU NVIDIA via NVML (feature `cuda-detect`) : nombre de GPU,
+/// VRAM totale/libre par device. **Best-effort et jamais fatal** : NVML ou le
+/// driver NVIDIA absent est le cas *normal* sur une machine sans GPU NVIDIA
+/// (ex. la CI), pas une erreur — on retourne simplement `Vec::new()`.
+#[cfg(feature = "cuda-detect")]
+fn detect_nvml_gpus() -> Vec<GpuInfo> {
+    let nvml = match nvml_wrapper::Nvml::init() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::debug!("NVML indisponible (normal sans GPU NVIDIA) : {e}");
+            return Vec::new();
+        }
+    };
+
+    let count = match nvml.device_count() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("NVML : impossible de compter les GPU : {e}");
+            return Vec::new();
+        }
+    };
+
+    let mut gpus = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let Ok(device) = nvml.device_by_index(index) else {
+            continue;
+        };
+        let name = device.name().unwrap_or_else(|_| "GPU NVIDIA".to_string());
+        let Ok(mem) = device.memory_info() else {
+            continue;
+        };
+        gpus.push(GpuInfo {
+            index: index as usize,
+            name,
+            vram_total_mb: mem.total / (1024 * 1024),
+            vram_free_mb: mem.free / (1024 * 1024),
+        });
+    }
+    gpus
+}
+
+/// Sans la feature `cuda-detect` : aucune détection NVML, toujours vide (pas
+/// de dépendance `nvml-wrapper` tirée dans le build par défaut).
+#[cfg(not(feature = "cuda-detect"))]
+fn detect_nvml_gpus() -> Vec<GpuInfo> {
+    Vec::new()
+}
+
 // ── Device & cache ────────────────────────────────────────────────────────────
 
-/// Choisit le device : **CUDA > Metal > CPU**.
+/// Choisit le device : **CUDA (NVML puis env var) > Metal > CPU**.
 #[must_use]
-fn resolve_device() -> Device {
-    if cuda_available() {
+fn resolve_device(gpus: &[GpuInfo]) -> Device {
+    if let Some(gpu) = gpus.first() {
+        Device::Cuda(gpu.index)
+    } else if cuda_available() {
         Device::Cuda(0)
     } else if metal_available() {
         Device::Metal

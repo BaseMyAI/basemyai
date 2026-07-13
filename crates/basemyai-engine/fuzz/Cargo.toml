@@ -41,20 +41,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "sst_decode"
-path = "fuzz_targets/sst_decode.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "sst_decode_structured"
-path = "fuzz_targets/sst_decode_structured.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "vector_node_decode"
 path = "fuzz_targets/vector_node_decode.rs"
 test = false
@@ -85,6 +71,125 @@ bench = false
 [[bin]]
 name = "graph_edge_decode"
 path = "fuzz_targets/graph_edge_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst_header_decode"
+path = "fuzz_targets/sst_header_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst_data_block_decode"
+path = "fuzz_targets/sst_data_block_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst_data_block_decode_structured"
+path = "fuzz_targets/sst_data_block_decode_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst_block_index_decode"
+path = "fuzz_targets/sst_block_index_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst_block_index_decode_structured"
+path = "fuzz_targets/sst_block_index_decode_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst_bloom_filter_decode"
+path = "fuzz_targets/sst_bloom_filter_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sst_footer_decode"
+path = "fuzz_targets/sst_footer_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_meta_decode"
+path = "fuzz_targets/store_meta_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_meta_decode"
+path = "fuzz_targets/crypto_meta_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wal_envelope_decode"
+path = "fuzz_targets/wal_envelope_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encrypted_sst_block_decode"
+path = "fuzz_targets/encrypted_sst_block_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fts_docterms_decode"
+path = "fuzz_targets/fts_docterms_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fts_postings_decode"
+path = "fuzz_targets/fts_postings_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fts_stats_decode"
+path = "fuzz_targets/fts_stats_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "memory_index_meta_decode"
+path = "fuzz_targets/memory_index_meta_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "memory_record_decode"
+path = "fuzz_targets/memory_record_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "memory_vecmap_decode"
+path = "fuzz_targets/memory_vecmap_decode.rs"
 test = false
 doc = false
 bench = false

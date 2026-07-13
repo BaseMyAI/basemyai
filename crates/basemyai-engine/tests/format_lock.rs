@@ -1,5 +1,6 @@
 //! CI gate: the committed `crates/basemyai-engine/format.lock` must match the
-//! wire-format specs currently defined in `src/format/{wal,sst}.rs`.
+//! wire-format specs currently defined in
+//! `src/format/{wal,sst_block,crypto,store_meta}.rs`.
 //!
 //! This is *the* anti-drift check described by
 //! `docs/adr/ADR-025-native-engine-storage-foundation.md` and
@@ -41,8 +42,8 @@ fn format_lock_matches_current_wire_formats() {
         "\n\nformat.lock is out of sync with the current wire-format specs:\n\n{}\n\n\
          If this drift is deliberate (you changed a wire format on purpose), bump the \
          relevant `*_VERSION` constant, update the byte-layout doc comment AND the \
-         `spec()` function in src/format/{{wal,sst}}.rs together, then update \
-         format.lock to match. If it is NOT deliberate, revert your change.\n",
+         `spec()` function in src/format/{{wal,sst_block,crypto,store_meta}}.rs together, \
+         then update format.lock to match. If it is NOT deliberate, revert your change.\n",
         mismatches
             .iter()
             .map(|m| format!("- {m}"))

@@ -99,6 +99,20 @@ pub(crate) enum Step {
         now: i64,
         expect_ids: &'static [&'static str],
     },
+    /// Postcondition sur `MemoryStore::recall_vector`, champ par champ
+    /// (texte, couche) — distincte de [`Step::ExpectRecallVector`] pour ne
+    /// pas alourdir les scénarios qui ne vérifient que les ids. Couvre la
+    /// fidélité de round-trip `text`/`layer` (portée depuis
+    /// `storage_contract.rs::put_memory_then_recall_vector_roundtrips`).
+    ExpectRecallVectorFields {
+        agent: Option<&'static str>,
+        label: &'static str,
+        query_seed: u8,
+        k: usize,
+        layer: Option<MemoryLayer>,
+        now: i64,
+        expect: &'static [(&'static str, &'static str, MemoryLayer)],
+    },
     /// Postcondition sur `MemoryStore::vector_ranking_ids`.
     ExpectVectorRankingIds {
         agent: Option<&'static str>,
@@ -224,7 +238,7 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
             } => {
                 let agent = resolve(*agent);
                 store
-                    .put_memory(id, &agent, *layer, text, *validity, &vec_for(*vector_seed), source)
+                    .put_memory(id, &agent, *layer, text, *validity, &vec_for(*vector_seed), source, 1.0)
                     .await
                     .unwrap_or_else(|e| panic!("{}: put_memory a échoué: {e}", step_ctx(scenario.name, i, "remember")));
             }
@@ -241,6 +255,7 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
                         validity: it.validity,
                         vector: v.as_slice(),
                         source: it.source,
+                        importance: 1.0,
                     })
                     .collect();
                 store.put_memory_batch(&agent, &news).await.unwrap_or_else(|e| {
@@ -324,6 +339,27 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
                     .unwrap_or_else(|e| panic!("{ctx}: recall_vector a échoué: {e}"));
                 let got_ids: Vec<&str> = got.iter().map(|r| r.id.as_str()).collect();
                 assert_eq!(got_ids, *expect_ids, "{ctx}: recall_vector ids inattendus");
+            }
+            Step::ExpectRecallVectorFields {
+                agent,
+                label,
+                query_seed,
+                k,
+                layer,
+                now,
+                expect,
+            } => {
+                let agent = resolve(*agent);
+                let ctx = step_ctx(scenario.name, i, label);
+                let got = store
+                    .recall_vector(&agent, &vec_for(*query_seed), *k, *layer, Metric::Cosine, *now, true)
+                    .await
+                    .unwrap_or_else(|e| panic!("{ctx}: recall_vector a échoué: {e}"));
+                let got_fields: Vec<(&str, &str, MemoryLayer)> =
+                    got.iter().map(|r| (r.id.as_str(), r.text.as_str(), r.layer)).collect();
+                let expect_fields: Vec<(&str, &str, MemoryLayer)> =
+                    expect.iter().map(|(id, text, layer)| (*id, *text, *layer)).collect();
+                assert_eq!(got_fields, expect_fields, "{ctx}: recall_vector champs inattendus");
             }
             Step::ExpectVectorRankingIds {
                 agent,

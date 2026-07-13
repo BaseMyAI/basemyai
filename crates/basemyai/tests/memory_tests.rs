@@ -46,6 +46,7 @@ async fn assert_put_memory_batch_is_all_or_nothing<S: basemyai::storage::MemoryS
             Validity::since(0),
             &existing,
             "user",
+            1.0,
         )
         .await
         .expect("seed");
@@ -61,6 +62,7 @@ async fn assert_put_memory_batch_is_all_or_nothing<S: basemyai::storage::MemoryS
             validity: Validity::since(0),
             vector: &v1,
             source: "user",
+            importance: 1.0,
         },
         NewMemory {
             id: "existing".to_string(), // duplicate: collides with the seed
@@ -69,6 +71,7 @@ async fn assert_put_memory_batch_is_all_or_nothing<S: basemyai::storage::MemoryS
             validity: Validity::since(0),
             vector: &v2,
             source: "user",
+            importance: 1.0,
         },
         NewMemory {
             id: "fresh-2".to_string(),
@@ -77,6 +80,7 @@ async fn assert_put_memory_batch_is_all_or_nothing<S: basemyai::storage::MemoryS
             validity: Validity::since(0),
             vector: &v3,
             source: "user",
+            importance: 1.0,
         },
     ];
     assert!(
@@ -109,6 +113,143 @@ backend_suite!(native, make_native_store);
 #[tokio::test]
 async fn native_put_memory_batch_is_all_or_nothing() {
     assert_put_memory_batch_is_all_or_nothing(&make_native_store().await).await;
+}
+
+/// `forget_many` (ADR-041 §7.4) : suppression par lots bornés, parité DELETE
+/// (ids absents / d'un autre agent / dupliqués ignorés en silence), résultat
+/// indépendant des bornes de lot, et re-run idempotent.
+#[tokio::test]
+async fn native_forget_many_is_bounded_idempotent_and_agent_scoped() {
+    use basemyai::MemoryLayer;
+    use basemyai::storage::{ForgetBatchOptions, MemoryStore, NewMemory};
+    use basemyai::temporal::Validity;
+
+    let store = make_native_store().await;
+    let agent = basemyai::AgentId::new("agent-fm").expect("agent id");
+    let other = basemyai::AgentId::new("agent-autre").expect("agent id");
+
+    let vectors: Vec<Vec<f32>> = (0..6u8).map(memory_tests::vec_for).collect();
+    let items: Vec<NewMemory<'_>> = (0..5usize)
+        .map(|i| NewMemory {
+            id: format!("m{i}"),
+            layer: MemoryLayer::Episodic,
+            text: "le chat dort",
+            validity: Validity::since(0),
+            vector: &vectors[i],
+            source: "user",
+            importance: 1.0,
+        })
+        .collect();
+    store.put_memory_batch(&agent, &items).await.expect("batch");
+    store
+        .put_memory(
+            "m0",
+            &other,
+            MemoryLayer::Episodic,
+            "autre agent",
+            Validity::since(0),
+            &vectors[5],
+            "user",
+            1.0,
+        )
+        .await
+        .expect("seed autre agent");
+
+    // Bornes minuscules : chaque lot est un souvenir — le résultat doit être
+    // identique aux défauts. "m0" de l'autre agent, "fantome" et le doublon
+    // ne comptent jamais.
+    let removed = store
+        .forget_many(
+            &agent,
+            &[
+                "m0".to_string(),
+                "m1".to_string(),
+                "fantome".to_string(),
+                "m2".to_string(),
+                "m1".to_string(),
+            ],
+            ForgetBatchOptions {
+                max_items: 1,
+                max_wal_bytes: 1,
+            },
+        )
+        .await
+        .expect("forget_many");
+    assert_eq!(removed, 3);
+
+    let stats = store.agent_stats(&agent, 0).await.expect("stats");
+    assert_eq!(stats.total(), 2, "m3 et m4 doivent survivre");
+    let other_stats = store.agent_stats(&other, 0).await.expect("stats");
+    assert_eq!(
+        other_stats.total(),
+        1,
+        "l'id partagé m0 ne doit jamais fuir inter-agent"
+    );
+
+    // Re-run : pur no-op (reprise idempotente après interruption).
+    let removed = store
+        .forget_many(
+            &agent,
+            &["m0".to_string(), "m1".to_string(), "m2".to_string()],
+            ForgetBatchOptions::default(),
+        )
+        .await
+        .expect("re-run");
+    assert_eq!(removed, 0);
+
+    // Lot vide : no-op sans erreur.
+    assert_eq!(
+        store
+            .forget_many(&agent, &[], ForgetBatchOptions::default())
+            .await
+            .expect("lot vide"),
+        0
+    );
+}
+
+/// Registre d'agents (ADR-041 §7.5) : identifiants seuls, inscrit au premier
+/// souvenir, désinscrit par `purge_agent` — jamais par un simple `forget`.
+#[tokio::test]
+async fn native_list_agents_tracks_inserts_and_purges() {
+    use basemyai::MemoryLayer;
+    use basemyai::storage::MemoryStore;
+    use basemyai::temporal::Validity;
+
+    let store = make_native_store().await;
+    assert!(store.list_agents().await.expect("list").is_empty());
+
+    let a = basemyai::AgentId::new("agent-a").expect("agent id");
+    let b = basemyai::AgentId::new("agent-b").expect("agent id");
+    for (agent, seed) in [(&b, 1u8), (&a, 2)] {
+        let v = memory_tests::vec_for(seed);
+        store
+            .put_memory(
+                "m1",
+                agent,
+                MemoryLayer::Episodic,
+                "x",
+                Validity::since(0),
+                &v,
+                "user",
+                1.0,
+            )
+            .await
+            .expect("put");
+    }
+    assert_eq!(
+        store.list_agents().await.expect("list"),
+        vec!["agent-a".to_string(), "agent-b".to_string()]
+    );
+
+    store.forget(&b, "m1").await.expect("forget");
+    assert_eq!(
+        store.list_agents().await.expect("list").len(),
+        2,
+        "oublier le dernier souvenir laisse l'agent inscrit (visite no-op bon marché)"
+    );
+
+    store.purge_agent(&b).await.expect("purge");
+    assert_eq!(store.list_agents().await.expect("list"), vec!["agent-a".to_string()]);
 }
 
 /// Backend natif **chiffré au repos** (N5.4, ADR-030) : la suite complète des
@@ -146,6 +287,7 @@ async fn native_rotate_key_preserves_data_and_invalidates_old_key() {
                 Validity::since(0),
                 &vector,
                 "user",
+                1.0,
             )
             .await
             .expect("put avant rotation");
@@ -209,6 +351,7 @@ async fn native_concurrent_reads_are_correct_and_faster_than_sequential() {
                 Validity::since(0),
                 &vector,
                 "user",
+                1.0,
             )
             .await
             .expect("seed");

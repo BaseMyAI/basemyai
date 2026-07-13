@@ -170,7 +170,7 @@ pub fn encode(meta: &VectorIndexMeta) -> Result<Vec<u8>> {
 ///
 /// Fixed-length record: an exact-length check runs before any field is
 /// read, so no wire field can drive an allocation or out-of-bounds read
-/// (N2 fuzzing lesson, same discipline as `format::sst` / `node::decode`).
+/// (N2 fuzzing lesson, same discipline as `format::sst_block` / `node::decode`).
 pub fn decode(buf: &[u8]) -> Result<VectorIndexMeta> {
     let corrupt = |reason: String| EngineError::CorruptVectorIndexMeta { reason };
 

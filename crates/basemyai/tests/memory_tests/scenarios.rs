@@ -62,6 +62,15 @@ fn remember_recall_roundtrip() -> Scenario {
                 now: 0,
                 expect_ids: &["m1"],
             },
+            Step::ExpectRecallVectorFields {
+                agent: None,
+                label: "recall après remember (fidélité texte/couche)",
+                query_seed: 1,
+                k: 5,
+                layer: None,
+                now: 0,
+                expect: &[("m1", "bonjour", MemoryLayer::Episodic)],
+            },
         ],
     }
 }

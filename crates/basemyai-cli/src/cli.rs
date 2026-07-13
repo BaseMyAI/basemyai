@@ -147,8 +147,82 @@ pub(crate) enum Command {
     },
     /// Consolidation épisodes → faits + graphe, via le meilleur LLM local détecté.
     Consolidate,
-    /// Vérifie un `.bmai` : conteneur valide, version de format attendue.
-    Verify,
+    /// Oubli adaptatif (VISION §5.2, ADR-037) : évince physiquement les
+    /// souvenirs actifs les moins bien notés (`importance + H/(H+age)`)
+    /// au-delà d'une capacité par agent. Une passe manuelle, ponctuelle — la
+    /// même politique tourne en tâche de fond via `AdaptiveForgettingTask`
+    /// (bindings/surfaces qui font tourner un `MaintenanceWorker`).
+    ForgetAdaptive {
+        /// Nombre maximum de souvenirs actifs conservés pour l'agent ; le
+        /// reste est évincé, du moins bien noté au mieux noté.
+        #[arg(long)]
+        capacity: usize,
+        /// Demi-vie de récence en secondes (`H` dans le score de rétention).
+        #[arg(long, default_value_t = 86_400)]
+        half_life_secs: i64,
+        /// N'évince rien : calcule et affiche ce qui serait évincé.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// GC temporel (ADR-038) : supprime physiquement les souvenirs de
+    /// l'agent dont `valid_until` est déjà passé (invalidés explicitement ou
+    /// expirés par leur fenêtre de validité). Traité par pages bornées.
+    /// N'affecte jamais les souvenirs actifs (aucun chevauchement avec
+    /// `forget-adaptive`).
+    Gc {
+        /// Taille de page du scan/de la suppression (bornée, jamais un
+        /// balayage non borné en un seul passage).
+        #[arg(long, default_value_t = basemyai::maintenance::DEFAULT_GC_PAGE_SIZE)]
+        page_size: usize,
+        /// Ne supprime rien : calcule et affiche ce qui serait supprimé.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Vérifie un `.bmai` : métadonnées de conteneur + intégrité moteur
+    /// (ADR-040). Par défaut `Quick` (O(métadonnées)) ; `--physical` décode
+    /// chaque bloc de données ; `--logical` (implique `--physical`) vérifie
+    /// en plus la cohérence inter-structures (record/vecmap/FTS/graphe).
+    Verify {
+        /// Décode chaque bloc de données (`VerifyMode::FullPhysical`).
+        #[arg(long)]
+        physical: bool,
+        /// Cohérence inter-structures complète (`VerifyMode::FullLogical`).
+        #[arg(long)]
+        logical: bool,
+    },
+    /// Analyse l'intégrité du conteneur et affiche le plan de réparation des
+    /// index dérivés (jamais les données primaires) — n'écrit rien
+    /// (ADR-040 §3). Sans `--dry-run`, applique le plan si aucune donnée
+    /// primaire n'est à risque (sinon refuse : restaurer depuis un export).
+    Repair {
+        /// N'applique rien : calcule et affiche le plan de réparation.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Reconstruit sans condition les index dérivés (vecmap/allocateur, FTS,
+    /// graphe DiskANN) depuis les souvenirs primaires (ADR-040 §3). Les
+    /// souvenirs dont le vecteur est perdu sont listés pour ré-embedding
+    /// plutôt que réinventés — le moteur n'a pas de modèle par design.
+    RebuildIndexes,
+    /// Compacte le store : fusion complète en un seul SST, tombstones purgés
+    /// (`Engine::compact_now`, ADR-040/N9.4).
+    Compact,
+    /// Recalcule et réécrit des vecteurs via le modèle d'embedding réel
+    /// (charge Candle, contrairement aux autres commandes de maintenance
+    /// d'intégrité). Sans flag : réembed tous les souvenirs actuellement
+    /// signalés `reembedding_required` par `repair`/`rebuild-indexes`
+    /// (relance ces deux commandes elle-même — inutile de les enchaîner à la
+    /// main), portée = tout le conteneur. Avec `--all` ou `--ids`, réembed
+    /// sans condition (ex. changement de modèle) — portée = l'agent résolu
+    /// (`--agent`/config), `--ids` seul un sous-ensemble.
+    Reembed {
+        /// Réembed tous les souvenirs de l'agent résolu, sans condition.
+        #[arg(long, conflicts_with = "ids")]
+        all: bool,
+        /// Réembed ces souvenirs de l'agent résolu, sans condition (liste séparée par des virgules).
+        #[arg(long, value_delimiter = ',')]
+        ids: Vec<String>,
+    },
     /// Applique les migrations de schéma en attente (idempotent).
     Migrate,
     /// Helpers de provisionnement LLM local (consolidation).

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 //! In-memory sorted table backing the write path. A `BTreeMap` keeps
-//! iteration order == key order for free, which `store::sst::SstFile::write_new`
-//! relies on when it turns a flushed memtable into a sorted SST file.
+//! iteration order == key order for free, which
+//! `store::sst_block::BlockSstFile::write_new` relies on when it turns a
+//! flushed memtable into a sorted, block-based SST file.
 
 use std::collections::BTreeMap;
 

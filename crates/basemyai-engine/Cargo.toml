@@ -25,6 +25,18 @@ name = "vector_bench"
 path = "src/bin/vector_bench.rs"
 required-features = ["test-util"]
 
+[[bin]]
+name = "engine_bench"
+path = "src/bin/engine_bench.rs"
+required-features = ["test-util"]
+
+# Spike N8.1 (ADR-039) — prototype jetable du format SST par blocs ;
+# supprimable une fois les codecs N8.2+ en place.
+[[bin]]
+name = "block_spike"
+path = "src/bin/block_spike.rs"
+required-features = ["test-util"]
+
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true

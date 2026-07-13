@@ -33,7 +33,29 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
         Command::Config { action } => config::run(action, format, cli.db.clone(), cli.agent.clone()),
         Command::Init { path } => container::init(&path, format).await,
         Command::Inspect => container::inspect(&resolve_path()?, format).await,
-        Command::Verify => container::verify(&resolve_path()?, format).await,
+        Command::Verify { physical, logical } => {
+            let mode = if logical {
+                basemyai::storage::integrity::VerifyMode::FullLogical
+            } else if physical {
+                basemyai::storage::integrity::VerifyMode::FullPhysical
+            } else {
+                basemyai::storage::integrity::VerifyMode::Quick
+            };
+            container::verify(&resolve_path()?, mode, format).await
+        }
+        Command::Repair { dry_run } => container::repair(&resolve_path()?, dry_run, format).await,
+        Command::RebuildIndexes => container::rebuild_indexes(&resolve_path()?, format).await,
+        Command::Compact => container::compact(&resolve_path()?, format).await,
+        Command::Reembed { all, ids } => {
+            let path = resolve_path()?;
+            let embedder = crate::context::load_embedder().await?;
+            if all || !ids.is_empty() {
+                let agent = resolve_agent()?;
+                container::reembed_scoped(&path, &agent, all, ids, embedder, format).await
+            } else {
+                container::reembed_missing(&path, embedder, format).await
+            }
+        }
         Command::Migrate => container::migrate(&resolve_path()?, format).await,
         Command::Stats => {
             let path = resolve_path()?;
@@ -143,6 +165,20 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
             let path = resolve_path()?;
             let agent = resolve_agent()?;
             maintenance::consolidate(&path, &agent, format).await
+        }
+        Command::ForgetAdaptive {
+            capacity,
+            half_life_secs,
+            dry_run,
+        } => {
+            let path = resolve_path()?;
+            let agent = resolve_agent()?;
+            maintenance::forget_adaptive(&path, &agent, capacity, half_life_secs, dry_run, format).await
+        }
+        Command::Gc { page_size, dry_run } => {
+            let path = resolve_path()?;
+            let agent = resolve_agent()?;
+            maintenance::gc(&path, &agent, page_size, dry_run, format).await
         }
         Command::Llm { action } => match action {
             LlmAction::Detect => provision::llm_detect(format).await,

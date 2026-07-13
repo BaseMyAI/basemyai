@@ -16,6 +16,12 @@ path = "src/lib.rs"
 name = "basemyai-rest"
 path = "src/main.rs"
 
+# Not distributed via `cargo-dist` (see root `dist-workspace.toml`): the REST
+# sidecar ships as a Docker image (`Dockerfile` in this crate), not a
+# standalone precompiled binary. Only `basemyai-cli` opts into `dist`.
+[package.metadata.dist]
+dist = false
+
 [features]
 default = ["embed"]
 embed   = ["basemyai/embed"]
@@ -24,7 +30,7 @@ test-util = ["basemyai/test-util"]
 
 [dependencies]
 basemyai      = { path = "../basemyai" }
-basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
+basemyai-core = { version = "0.2.0", path = "../basemyai-core" }
 
 axum         = { workspace = true }
 tower        = { workspace = true }

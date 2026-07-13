@@ -27,7 +27,7 @@ use uuid::Uuid;
 
 use event::DEFAULT_EVENT_CAPACITY;
 
-use crate::storage::{MemoryStore, NativeMemoryStore, NewMemory};
+use crate::storage::{DEFAULT_IMPORTANCE, MemoryStore, NativeMemoryStore, NewMemory};
 use crate::temporal::Validity;
 use crate::{MemoryError, RRF_K, Ranking, Result, now_unix, rrf_fuse};
 
@@ -264,11 +264,57 @@ impl Memory {
         validity: Validity,
         source: &str,
     ) -> Result<String> {
+        self.remember_full(text, layer, validity, DEFAULT_IMPORTANCE, source)
+            .await
+    }
+
+    /// Mémorise un texte avec une `importance` explicite (ADR-041 §7.1) —
+    /// composante du score d'oubli adaptatif `importance + H / (H + age)`
+    /// (ADR-012 §4). Sans cet appel, l'oubli adaptatif se réduit à un tri par
+    /// seule récence ([`DEFAULT_IMPORTANCE`] partout).
+    ///
+    /// # Errors
+    /// [`MemoryError::InvalidImportance`] si `importance` n'est pas fini
+    /// (NaN/infini — contaminerait tout tri d'oubli adaptatif). Une valeur
+    /// négative reste acceptée (signal explicite "évincer en premier").
+    /// [`MemoryError::TextTooLong`] si `text` dépasse [`MAX_TEXT_LEN`].
+    /// Propage aussi les erreurs d'embedding/stockage.
+    pub async fn remember_with_importance(
+        &self,
+        text: &str,
+        layer: MemoryLayer,
+        validity: Validity,
+        importance: f64,
+    ) -> Result<String> {
+        check_importance(importance)?;
+        self.remember_full(text, layer, validity, importance, SOURCE_USER).await
+    }
+
+    /// Réécrit la composante `importance` d'un souvenir existant, borné à cet
+    /// agent (ADR-041 §7.1). No-op silencieux si `id` est absent ou
+    /// appartient à un autre agent — même discipline que [`Memory::invalidate`].
+    ///
+    /// # Errors
+    /// [`MemoryError::InvalidImportance`] si `importance` n'est pas fini.
+    /// Propage aussi les erreurs de stockage.
+    pub async fn set_importance(&self, id: &str, importance: f64) -> Result<()> {
+        check_importance(importance)?;
+        self.engine.set_importance(&self.agent, id, importance).await
+    }
+
+    async fn remember_full(
+        &self,
+        text: &str,
+        layer: MemoryLayer,
+        validity: Validity,
+        importance: f64,
+        source: &str,
+    ) -> Result<String> {
         check_text_len(text)?;
         let vector = self.embedder.embed(text)?;
         let id = Uuid::new_v4().to_string();
         self.engine
-            .put_memory(&id, &self.agent, layer, text, validity, &vector, source)
+            .put_memory(&id, &self.agent, layer, text, validity, &vector, source, importance)
             .await?;
         // Émis après commit : un souvenir visible est annoncé, jamais l'inverse.
         // Un fait promu par consolidation (`source = "consolidation"`) porte le
@@ -344,6 +390,7 @@ impl Memory {
                 validity,
                 vector,
                 source,
+                importance: DEFAULT_IMPORTANCE,
             })
             .collect();
         self.engine.put_memory_batch(&self.agent, &items).await?;
@@ -551,6 +598,133 @@ impl Memory {
         Ok(())
     }
 
+    /// Passe d'oubli adaptatif (VISION §5.2, ADR-012 §4, portée sur le moteur
+    /// natif par ADR-037/038, **bornée en mémoire** par ADR-041 §7.3) :
+    /// scanne par pages les souvenirs **actifs** (ni invalidés ni expirés —
+    /// ceux-là sont hors périmètre, cf. [`Self::expired_gc`]) de cet agent,
+    /// retient les `policy.capacity` meilleurs scores de rétention
+    /// (`importance + H/(H+age)`) dans un tas borné, puis évince
+    /// physiquement tout le reste, par pages, en ordre d'id croissant et
+    /// **par lots atomiques bornés** (`forget_many`, ADR-041 §7.4 — jamais
+    /// une transaction moteur par victime), événements `Forgotten` émis
+    /// après commit — jamais toute la liste des victimes en mémoire. No-op
+    /// si l'agent a `capacity` souvenirs actifs ou moins.
+    ///
+    /// # Errors
+    /// Propage les erreurs de stockage (scan ou éviction).
+    pub async fn adaptive_forget(
+        &self,
+        policy: crate::maintenance::AdaptiveForgettingPolicy,
+    ) -> Result<crate::maintenance::ForgettingReport> {
+        use crate::maintenance::adaptive_forgetting::{SCAN_PAGE_SIZE, next_victim_page, select_survivors};
+
+        let selection = select_survivors(&self.engine(), &self.agent, policy, SCAN_PAGE_SIZE).await?;
+        let Some(survivors) = selection.survivors else {
+            return Ok(crate::maintenance::ForgettingReport {
+                scanned: selection.scanned,
+                evicted: 0,
+            });
+        };
+        let mut evicted = 0usize;
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = next_victim_page(
+                &self.engine(),
+                &self.agent,
+                selection.now,
+                &survivors,
+                cursor.as_deref(),
+                SCAN_PAGE_SIZE,
+            )
+            .await?;
+            evicted += self.forget_batch_with_events(&page.victims).await?;
+            if page.exhausted {
+                break;
+            }
+            cursor = page.cursor;
+        }
+        Ok(crate::maintenance::ForgettingReport {
+            scanned: selection.scanned,
+            evicted,
+        })
+    }
+
+    /// Supprime `ids` par lots bornés ([`MemoryStore::forget_many`], ADR-041
+    /// §7.4) en préservant le contrat événementiel de [`Self::forget`] : la
+    /// couche de chaque souvenir est capturée **avant** l'effacement (après,
+    /// la ligne a disparu), l'événement `Forgotten` émis **après** commit,
+    /// et uniquement pour les souvenirs qui existaient réellement pour cet
+    /// agent — jamais sur un no-op cross-agent. Renvoie le nombre d'ids qui
+    /// existaient (le compte des événements émis).
+    async fn forget_batch_with_events(&self, ids: &[String]) -> Result<usize> {
+        let mut existing: Vec<(String, MemoryLayer)> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(layer) = self.engine.layer_of(&self.agent, id).await? {
+                existing.push((id.clone(), layer));
+            }
+        }
+        self.engine
+            .forget_many(&self.agent, ids, crate::storage::ForgetBatchOptions::default())
+            .await?;
+        for (id, layer) in &existing {
+            self.emit(MemoryEventKind::Forgotten, *layer, id);
+        }
+        Ok(existing.len())
+    }
+
+    /// Passe de GC temporel (ADR-038) : supprime physiquement, par pages
+    /// bornées de `page_size` souvenirs, tous les souvenirs de cet agent dont
+    /// `valid_until <= now` (invalidés explicitement, ou expirés par leur
+    /// fenêtre de validité). Chaque page est supprimée **par lots atomiques
+    /// bornés** (`forget_many`, ADR-041 §7.4), événements `Forgotten` émis
+    /// après commit — idempotent et reprennable : une interruption entre
+    /// deux lots laisse chaque souvenir soit pleinement présent, soit
+    /// pleinement absent, jamais dans un état intermédiaire, et relancer
+    /// termine le travail restant (même discipline que `purge_agent`,
+    /// ADR-027 §6).
+    ///
+    /// Ne touche **jamais** un souvenir dont `valid_until` est `None` (pas de
+    /// chevauchement avec [`Self::adaptive_forget`], qui lui ne considère que
+    /// les souvenirs actifs).
+    ///
+    /// # Errors
+    /// [`MemoryError::InvalidGcPageSize`] si `page_size == 0` (une page vide
+    /// ne progresserait jamais). Propage aussi les erreurs de stockage (scan
+    /// ou suppression).
+    pub async fn expired_gc(&self, page_size: usize) -> Result<crate::maintenance::ExpiredGcReport> {
+        if page_size == 0 {
+            return Err(MemoryError::InvalidGcPageSize);
+        }
+        let now = now_unix();
+        let mut cursor: Option<String> = None;
+        let mut examined = 0usize;
+        let mut deleted = 0usize;
+        let mut pages = 0usize;
+        loop {
+            let page = self
+                .engine
+                .scan_expired(&self.agent, now, cursor.as_deref(), page_size)
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            pages += 1;
+            examined += page.len();
+            let ids: Vec<String> = page.iter().map(|c| c.id.clone()).collect();
+            deleted += self.forget_batch_with_events(&ids).await?;
+            let last_full_page = page.len() == page_size;
+            cursor = page.last().map(|c| c.id.clone());
+            if !last_full_page {
+                break;
+            }
+        }
+        Ok(crate::maintenance::ExpiredGcReport {
+            examined,
+            deleted,
+            pages,
+        })
+    }
+
     /// Purge **toutes** les données de cet agent : souvenirs, entités et
     /// relations. Irréversible (RGPD, droit à l'oubli). Idempotent : ne
     /// renvoie pas d'erreur si l'agent n'a aucune donnée.
@@ -601,6 +775,15 @@ fn check_text_len(text: &str) -> Result<()> {
     let len = text.len();
     if len > MAX_TEXT_LEN {
         return Err(MemoryError::TextTooLong { len, max: MAX_TEXT_LEN });
+    }
+    Ok(())
+}
+
+/// Rejette une importance non finie (ADR-041 §7.1) — voir
+/// [`MemoryError::InvalidImportance`].
+fn check_importance(importance: f64) -> Result<()> {
+    if !importance.is_finite() {
+        return Err(MemoryError::InvalidImportance { value: importance });
     }
     Ok(())
 }

@@ -8,6 +8,13 @@ license.workspace     = true
 authors.workspace     = true
 repository.workspace  = true
 
+# Not distributed via `cargo-dist` (see root `dist-workspace.toml`): the MCP
+# server ships via stdio/HTTP transports consumed by MCP clients (Claude
+# Desktop, etc.), not as a standalone precompiled binary. Only `basemyai-cli`
+# opts into `dist`.
+[package.metadata.dist]
+dist = false
+
 [features]
 default = ["embed", "stdio", "http"]
 embed   = ["basemyai/embed"]
@@ -19,7 +26,7 @@ test-util = ["basemyai/test-util", "rmcp/client"]
 
 [dependencies]
 basemyai      = { path = "../basemyai" }
-basemyai-core = { version = "0.1.0", path = "../basemyai-core" }
+basemyai-core = { version = "0.2.0", path = "../basemyai-core" }
 
 rmcp        = { version = "1.7", features = ["server", "macros"] }
 axum        = { version = "0.8", optional = true, features = ["macros"] }

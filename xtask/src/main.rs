@@ -112,6 +112,10 @@ const TEST: &[&[&str]] = &[
     // les deux flavors RAM/persistant), SANS `crash_consistency` (kill-loop
     // lent, job CI dédié / `test-crash-consistency`) ni `format_lock` (gate
     // dédié `FORMAT_LOCK`, inclus dans `check`/`ci`).
+    // + N7 : `engine_stats` (compteurs/jauges EngineStats), `failpoints`
+    // (injection d'erreurs aux frontières de durabilité) et
+    // `corruption_smoke` (bit-flip SST/WAL/crypto.meta → erreurs typées,
+    // gap manifest N9 pinné) — smoke tests du gate PR (PLAN §8.3).
     &[
         "test",
         "-p",
@@ -132,6 +136,12 @@ const TEST: &[&[&str]] = &[
         "graph_parity",
         "--test",
         "malformed_open",
+        "--test",
+        "engine_stats",
+        "--test",
+        "failpoints",
+        "--test",
+        "corruption_smoke",
     ],
     &["test", "-p", "basemyai", "--features", "test-util"],
     // `--test memory_tests` : runner déclaratif du contrat MemoryStore sur le
@@ -247,6 +257,43 @@ const TEST_CRASH_CONSISTENCY: &[&[&str]] = &[&[
     "--nocapture",
 ]];
 
+/// `engine-check` (N7.3) : validation moteur complète en une commande —
+/// clippy + TOUS les tests de `basemyai-engine` (y compris le kill-loop
+/// `crash_consistency`, ~10-15 s) + `format.lock`. Plus large que l'entrée
+/// moteur du gate (qui exclut le kill-loop, job CI dédié) : c'est le harnais
+/// unifié du plan, pas le gate rapide.
+const ENGINE_CHECK: &[&[&str]] = &[
+    &[
+        "clippy",
+        "-p",
+        "basemyai-engine",
+        "--all-targets",
+        "--features",
+        "test-util",
+        "--",
+        "-D",
+        "warnings",
+    ],
+    &["test", "-p", "basemyai-engine", "--features", "test-util"],
+    &["test", "-p", "basemyai-engine", "--test", "format_lock"],
+];
+
+/// `engine-corrupt` (N7.3) : les tests adversariaux de corruption seuls
+/// (déjà inclus dans le gate ; entrée dédiée pour itérer dessus).
+const ENGINE_CORRUPT: &[&[&str]] = &[&[
+    "test",
+    "-p",
+    "basemyai-engine",
+    "--features",
+    "test-util",
+    "--test",
+    "corruption_smoke",
+    "--test",
+    "malformed_open",
+    "--",
+    "--nocapture",
+]];
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
@@ -263,6 +310,15 @@ fn main() {
         "format-lock" => run_all(FORMAT_LOCK),
         "doc-drift" => doc_drift_check(),
         "test-crash-consistency" => run_all(TEST_CRASH_CONSISTENCY),
+        // ── Commandes moteur N7.3 (PLAN-NATIVE-ENGINE §4.3) ──────────────
+        // Lourdes ou à sortie chiffrée : jamais dans `ci`, mêmes invocations
+        // en local qu'en CI nightly quand elle existera.
+        "engine-check" => run_all(ENGINE_CHECK),
+        "engine-crash" => run_all(TEST_CRASH_CONSISTENCY),
+        "engine-corrupt" => run_all(ENGINE_CORRUPT),
+        "engine-bench" => engine_bench(&args.collect::<Vec<_>>()),
+        "engine-soak" => engine_soak(&args.collect::<Vec<_>>()),
+        "engine-fuzz" => engine_fuzz(),
         "ci" => {
             fmt_check();
             doc_drift_check();
@@ -294,6 +350,12 @@ fn usage(code: i32) -> ! {
          \x20 format-lock  vérifie basemyai-engine/format.lock contre les specs de format actuelles\n\
          \x20 doc-drift     refuse les mentions libSQL/SQLCipher obsolètes (ADR-033)\n\
          \x20 test-crash-consistency  kill/reopen/verify en boucle sur basemyai-engine (~20 cycles)\n\
+         \x20 engine-check  clippy + TOUS les tests basemyai-engine (kill-loop inclus) + format.lock\n\
+         \x20 engine-bench  banc canonique (release), clair PUIS chiffré — args passés au binaire\n\
+         \x20 engine-crash  alias de test-crash-consistency (nommage PLAN §4.3)\n\
+         \x20 engine-corrupt  tests adversariaux de corruption (corruption_smoke + malformed_open)\n\
+         \x20 engine-soak   boucle du banc (défaut 10 cycles à n=100000) — manuel/nightly\n\
+         \x20 engine-fuzz   cibles cargo-fuzz (WSL/Linux seulement — libFuzzer ≠ Windows natif)\n\
          \x20 ci           check + test (embed/crash-consistency restent des jobs séparés)\n\
          \x20 help         affiche cette aide\n\n\
          NB : `cargo clippy --workspace` ne reproduit PAS la CI (features par crate)."
@@ -312,13 +374,16 @@ fn fmt_check() {
     }
 }
 
-/// Refuse les mentions actives de libSQL/SQLCipher dans le code produit (ADR-033).
+/// Refuse les mentions actives de libSQL/SQLCipher dans le code produit
+/// (ADR-033). `"adaptive forgetting"` faisait partie de cette liste comme
+/// garde-fou anti-réintroduction silencieuse (le mécanisme avait été retiré
+/// sans portage, ADR-033) ; retiré depuis que ADR-037 documente son portage
+/// natif en bonne et due forme — le garde-fou a fait son travail.
 fn doc_drift_check() {
     let root = workspace_root();
     let patterns = [
         "libsqlmemorystore",
         "sqlcipher",
-        "adaptive forgetting",
         "libsql's built-in",
         "feature `crypto`",
     ];
@@ -401,6 +466,101 @@ fn check_file_doc_drift(
 fn run_all(cmds: &[&[&str]]) {
     for cmd in cmds {
         run(cmd);
+    }
+}
+
+/// `engine-bench` (N7.3) : le banc canonique `engine_bench` en release,
+/// **deux fois** — clair puis chiffré (le workload `encrypted-vs-clear` du
+/// plan est la paire de rapports). Arguments passés tels quels au binaire
+/// (`--n`, `--memory-n`, `--out` …) ; `--out chemin.json` produit
+/// `chemin.json` (clair) et `chemin.encrypted.json` (chiffré).
+fn engine_bench(extra: &[String]) {
+    let base: Vec<&str> = vec![
+        "run",
+        "--release",
+        "-p",
+        "basemyai-engine",
+        "--features",
+        "test-util",
+        "--bin",
+        "engine_bench",
+        "--",
+    ];
+    // Sépare un éventuel `--out` pour suffixer la variante chiffrée.
+    let mut clear_args: Vec<String> = Vec::new();
+    let mut out: Option<String> = None;
+    let mut it = extra.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--out" {
+            out = it.next().cloned();
+        } else {
+            clear_args.push(arg.clone());
+        }
+    }
+    for encrypted in [false, true] {
+        let mut args: Vec<String> = base.iter().map(ToString::to_string).collect();
+        args.extend(clear_args.iter().cloned());
+        if encrypted {
+            args.push("--encrypted".into());
+        }
+        if let Some(out) = &out {
+            args.push("--out".into());
+            args.push(if encrypted {
+                out.replace(".json", ".encrypted.json")
+            } else {
+                out.clone()
+            });
+        }
+        run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+}
+
+/// `engine-soak` (N7.3) : boucle du banc en continu (défaut : 10 cycles à
+/// n=100 000, clair+chiffré alternés). Usage manuel/nightly — jamais le gate.
+/// `cargo xtask engine-soak [cycles] [n]`.
+fn engine_soak(extra: &[String]) {
+    let cycles: u64 = extra.first().and_then(|v| v.parse().ok()).unwrap_or(10);
+    let n = extra.get(1).cloned().unwrap_or_else(|| "100000".to_string());
+    for cycle in 1..=cycles {
+        println!("── engine-soak cycle {cycle}/{cycles} (n={n}) ──");
+        engine_bench(&["--n".to_string(), n.clone()]);
+    }
+}
+
+/// `engine-fuzz` (N7.3) : pointeur d'exécution des cibles cargo-fuzz.
+/// libFuzzer ne linke pas sous Windows natif (contrainte documentée depuis
+/// N2, `crates/basemyai-engine/fuzz/README.md`) — sous Windows cette
+/// commande imprime la marche à suivre WSL et échoue explicitement plutôt
+/// que de prétendre avoir fuzzé.
+fn engine_fuzz() {
+    if cfg!(windows) {
+        eprintln!(
+            "engine-fuzz : libFuzzer ne linke pas sous Windows natif.\n\
+             Lancer sous WSL/Linux :\n\
+             \x20 cd crates/basemyai-engine/fuzz\n\
+             \x20 cargo +nightly fuzz run <cible> -- -max_total_time=300\n\
+             Cibles : voir crates/basemyai-engine/fuzz/fuzz_targets/ et fuzz/README.md."
+        );
+        exit(1);
+    }
+    let root = workspace_root().join("crates/basemyai-engine/fuzz");
+    println!("→ cargo +nightly fuzz list (dans {})", root.display());
+    let status = Command::new("cargo")
+        .args(["+nightly", "fuzz", "list"])
+        .current_dir(&root)
+        .status();
+    match status {
+        Ok(s) if s.success() => {
+            println!(
+                "Lancer chaque cible : cargo +nightly fuzz run <cible> -- -max_total_time=300\n\
+                 (depuis {})",
+                root.display()
+            );
+        }
+        _ => {
+            eprintln!("cargo-fuzz indisponible — installer : cargo install cargo-fuzz (toolchain nightly requise)");
+            exit(1);
+        }
     }
 }
 

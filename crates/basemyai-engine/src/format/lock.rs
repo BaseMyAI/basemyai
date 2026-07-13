@@ -114,10 +114,15 @@ impl fmt::Display for FormatSpec {
 pub fn all_specs() -> Vec<FormatSpec> {
     vec![
         super::wal::spec(),
-        super::sst::spec(),
         super::crypto::crypto_meta_spec(),
         super::crypto::wal_envelope_spec(),
-        super::crypto::sst_envelope_spec(),
+        super::crypto::encrypted_sst_block_spec(),
+        super::sst_block::sst_header_spec(),
+        super::sst_block::sst_data_block_spec(),
+        super::sst_block::sst_block_index_spec(),
+        super::sst_block::sst_bloom_filter_spec(),
+        super::sst_block::sst_footer_spec(),
+        super::store_meta::spec(),
         crate::idx::vector::node::spec(),
         crate::idx::vector::meta::spec(),
         crate::idx::graph::entity::spec(),
@@ -175,8 +180,8 @@ impl fmt::Display for Mismatch {
                  (a) you changed the wire format on purpose — bump the `*_VERSION` constant, \
                  update the byte-layout doc comment AND the `spec()` field list together, then \
                  update format.lock to `{current_line}`.\n  \
-                 (b) you didn't mean to change it — revert your change to `format/{{wal,sst}}.rs` \
-                 or `idx/vector/node.rs`."
+                 (b) you didn't mean to change it — revert your change to \
+                 `format/{{wal,sst_block,crypto,store_meta}}.rs` or `idx/vector/node.rs`."
             ),
         }
     }
@@ -311,17 +316,16 @@ mod tests {
     fn verify_file_detects_diverged_hash() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("format.lock");
-        fs::write(
-            &path,
-            "WalRecord:1(00000000)\nSstFile:1(00000000)\nCryptoMeta:1(00000000)\nWalEnvelope:1(00000000)\n\
-             SstEnvelope:1(00000000)\nVectorNode:1(00000000)\nVectorIndexMeta:1(00000000)\n\
-             GraphEntity:1(00000000)\nGraphEdge:1(00000000)\nMemoryRecord:1(00000000)\n\
-             MemoryVecMap:1(00000000)\nMemoryIndexMeta:1(00000000)\nFtsPosting:1(00000000)\n\
-             FtsDocTerms:1(00000000)\nFtsStats:1(00000000)\n",
-        )
-        .expect("write lock");
+        // Every current spec's name/version, paired with a hash that cannot
+        // match any real spec — every entry must diverge.
+        let specs = all_specs();
+        let lines: Vec<String> = specs
+            .iter()
+            .map(|spec| format!("{}:{}(00000000)", spec.name, spec.version))
+            .collect();
+        fs::write(&path, lines.join("\n")).expect("write lock");
         let mismatches = verify_file(&path).expect("verify");
-        assert_eq!(mismatches.len(), 15);
+        assert_eq!(mismatches.len(), specs.len());
         assert!(mismatches.iter().all(|m| matches!(m, Mismatch::HashDiverged { .. })));
     }
 
