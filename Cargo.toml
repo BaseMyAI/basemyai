@@ -45,7 +45,7 @@ tracing = "0.1"
 # Backend natif BaseMyAI (ADR-024/025/030) — vecteur, graphe, FTS, chiffrement pur Rust.
 async-trait = "0.1"
 # ML (Candle) — lourd, activé par la feature `embed` seulement.
-candle-core = "0.10"
+candle-core = "0.11"
 candle-nn = "0.10"
 candle-transformers = "0.11"
 # Tokenizer BERT — on désactive les features réseau (http) : le core ne télécharge jamais.
