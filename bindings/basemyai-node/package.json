@@ -25,7 +25,7 @@
     "jest": "^30",
     "@types/jest": "^30",
     "ts-jest": "^29",
-    "typescript": "^6"
+    "typescript": "^7"
   },
   "overrides": {
     "js-yaml": "^4.2.0"
