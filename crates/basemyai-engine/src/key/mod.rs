@@ -339,6 +339,31 @@ pub mod memory_index {
         String::from_utf8(suffix.to_vec()).ok()
     }
 
+    /// Exclusive upper bound of `agent`'s record keyspace: the smallest byte
+    /// string sorting strictly after **every** key
+    /// [`record_agent_prefix`]`(agent)` can prefix — the `end` argument a
+    /// paged [`crate::store::Engine::scan_range_page`] over one agent's
+    /// records needs (ADR-041 §7.3; a prefix alone can't bound a range
+    /// query, same constraint that motivated `temporal_index` in §7.2).
+    /// Computed as the prefix with its rightmost non-`0xff` byte incremented
+    /// and everything after it dropped.
+    pub fn record_agent_upper_bound(agent: &str) -> Result<Vec<u8>> {
+        let mut bound = record_agent_prefix(agent)?;
+        while let Some(last) = bound.pop() {
+            if last < 0xff {
+                bound.push(last + 1);
+                return Ok(bound);
+            }
+        }
+        // Unreachable in practice: the prefix starts with `RECORD_PREFIX`
+        // (ASCII, every byte < 0xff), so an incrementable byte always
+        // exists. Typed error rather than a silent empty bound, which would
+        // make every downstream range scan a silent no-op.
+        Err(EngineError::CorruptMemoryRecord {
+            reason: format!("no upper bound exists for the (agent={agent:?}) record prefix"),
+        })
+    }
+
     /// Key of the reverse mapping for vector id `vec_id`. Big-endian keeps
     /// numeric order equal to byte order (a `scan_prefix` yields mappings in
     /// ascending id order — how the allocator heals, ADR-027 §4).
@@ -480,6 +505,160 @@ pub mod fts_index {
     }
 }
 
+/// Keyspace reserved for the native temporal-expiry index (ADR-041 §7.2).
+/// Like [`memory_index`], a *reserved* prefix consumers must not write into
+/// directly — it is maintained by [`crate::idx::memory::PersistentMemoryIndex`]
+/// in the same atomic batch as every put/update/forget that touches
+/// `valid_until`.
+///
+/// Layout: `idx/temporal/expiry/<agent_len: u32 BE><agent><valid_until: sortable
+/// 8 bytes><id>` — one entry per memory record that currently has
+/// `valid_until.is_some()` (an eternal memory has no entry: nothing to ever
+/// expire). The value is an empty marker: `id` and `valid_until` are both
+/// already recoverable from the key, so there is nothing else to persist —
+/// no `format.lock` entry is needed (only value payloads are format-locked,
+/// key layouts are not).
+///
+/// `valid_until` is encoded via [`sortable`] (sign-bit flip) so that **byte
+/// order equals numeric order** even for the full `i64` range — this is
+/// exactly what makes [`crate::store::Engine::scan_range`] a genuine
+/// `valid_until <= now` range query instead of a full per-agent scan
+/// (ADR-038's known gap, closed here): the query is `[agent_prefix,
+/// expiry_upper_bound(agent, now))`, and `Engine::scan_range` skips whole
+/// SST blocks outside that range rather than decoding every entry.
+pub mod temporal_index {
+    use super::Key;
+    use crate::error::{EngineError, Result};
+
+    /// Prefix every temporal-expiry key starts with (reserved, see module doc).
+    pub const INDEX_PREFIX: &[u8] = b"idx/temporal/expiry/";
+
+    /// Appends a `u32`-length-prefixed field to `buf` — same contract as
+    /// `memory_index`'s helper, with this index's own error variant.
+    fn push_len_prefixed(buf: &mut Vec<u8>, field: &'static str, bytes: &[u8]) -> Result<()> {
+        let len = u32::try_from(bytes.len()).map_err(|_| EngineError::TemporalKeyTooLong {
+            field,
+            len: bytes.len(),
+        })?;
+        buf.extend_from_slice(&len.to_be_bytes());
+        buf.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// `i64` → byte-order-preserving `u64` (flip the sign bit): for any two
+    /// `i64` values `a < b`, `sortable(a) < sortable(b)` as raw bytes too —
+    /// the standard trick that lets a signed timestamp live inside a
+    /// byte-sorted key. Unix timestamps in this domain are always produced
+    /// by `now_unix()`/`Validity`, but the encoding stays correct for the
+    /// full `i64` range regardless.
+    fn sortable(value: i64) -> [u8; 8] {
+        ((value as u64) ^ (1u64 << 63)).to_be_bytes()
+    }
+
+    /// Inverse of [`sortable`].
+    fn from_sortable(bytes: [u8; 8]) -> i64 {
+        (u64::from_be_bytes(bytes) ^ (1u64 << 63)) as i64
+    }
+
+    /// Prefix scanning (the start of the range) covering every expiry entry
+    /// of `agent`, regardless of `valid_until`.
+    pub fn expiry_agent_prefix(agent: &str) -> Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(INDEX_PREFIX.len() + 4 + agent.len());
+        buf.extend_from_slice(INDEX_PREFIX);
+        push_len_prefixed(&mut buf, "agent", agent.as_bytes())?;
+        Ok(buf)
+    }
+
+    /// Key of the expiry-index entry for `(agent, valid_until, id)`.
+    pub fn expiry_key(agent: &str, valid_until: i64, id: &str) -> Result<Key> {
+        let mut buf = expiry_agent_prefix(agent)?;
+        buf.extend_from_slice(&sortable(valid_until));
+        buf.extend_from_slice(id.as_bytes());
+        Ok(Key::new(buf))
+    }
+
+    /// Exclusive upper bound of the range covering every entry of `agent`
+    /// with `valid_until <= at` — pair with [`expiry_agent_prefix`] as the
+    /// `[start, end)` arguments to [`crate::store::Engine::scan_range`].
+    /// Saturates at `i64::MAX` (a timestamp that large is out of scope for
+    /// this domain — Unix seconds never realistically approach it).
+    pub fn expiry_upper_bound(agent: &str, at: i64) -> Result<Vec<u8>> {
+        let mut buf = expiry_agent_prefix(agent)?;
+        buf.extend_from_slice(&sortable(at.saturating_add(1)));
+        Ok(buf)
+    }
+
+    /// Decodes `(valid_until, id)` from a full expiry key, given the byte
+    /// length of the exact agent prefix it was scanned under (i.e.
+    /// `expiry_agent_prefix(agent).len()`). `None` for malformed/foreign
+    /// keys — same wire-distrust discipline as `memory_index::record_id`.
+    #[must_use]
+    pub fn expiry_decode(prefix_len: usize, key_bytes: &[u8]) -> Option<(i64, String)> {
+        if !key_bytes.starts_with(INDEX_PREFIX) || key_bytes.len() < prefix_len + 8 {
+            return None;
+        }
+        let rest = key_bytes.get(prefix_len..)?;
+        let (valid_until_bytes, id_bytes) = rest.split_at(8);
+        let valid_until = from_sortable(valid_until_bytes.try_into().ok()?);
+        let id = String::from_utf8(id_bytes.to_vec()).ok()?;
+        Some((valid_until, id))
+    }
+}
+
+/// Keyspace reserved for the native agent registry (ADR-041 §7.5). Like the
+/// `idx/…` prefixes, a *reserved* prefix consumers must not write into
+/// directly — it is maintained by
+/// [`crate::idx::memory::PersistentMemoryIndex`] in the same atomic batch as
+/// the memory inserts that populate it.
+///
+/// Layout: `meta/agents/<agent_len: u32 BE><agent>` — one entry per agent
+/// that has ever had a memory written (and has not been purged). The value
+/// is an empty marker: the agent id is fully recoverable from the key, so
+/// nothing else is persisted — no `format.lock` entry is needed (only value
+/// payloads are format-locked, key layouts are not). The registry
+/// enumerates **identifiers only**, never any per-agent data — it can never
+/// leak one agent's contents to another (ADR-006 isolation stays structural
+/// for everything the id then unlocks).
+pub mod agent_registry {
+    use super::Key;
+    use crate::error::{EngineError, Result};
+
+    /// Prefix every agent-registry key starts with (reserved, see module doc).
+    pub const REGISTRY_PREFIX: &[u8] = b"meta/agents/";
+
+    /// Key of the registry entry for `agent`. The `u32` length prefix keeps
+    /// the layout self-describing and symmetric with every other reserved
+    /// keyspace (the agent id is the unbounded remainder, so no collision is
+    /// actually possible here — symmetry over cleverness).
+    pub fn agent_key(agent: &str) -> Result<Key> {
+        let len = u32::try_from(agent.len()).map_err(|_| EngineError::MemoryKeyTooLong {
+            field: "agent",
+            len: agent.len(),
+        })?;
+        let mut buf = Vec::with_capacity(REGISTRY_PREFIX.len() + 4 + agent.len());
+        buf.extend_from_slice(REGISTRY_PREFIX);
+        buf.extend_from_slice(&len.to_be_bytes());
+        buf.extend_from_slice(agent.as_bytes());
+        Ok(Key::new(buf))
+    }
+
+    /// Decodes the agent id from a full registry key. `None` for malformed
+    /// or foreign keys (wrong prefix, length prefix disagreeing with the
+    /// actual remainder, non-UTF-8 id) — same wire-distrust discipline as
+    /// every other key decoder.
+    #[must_use]
+    pub fn agent_decode(key_bytes: &[u8]) -> Option<String> {
+        let suffix = key_bytes.strip_prefix(REGISTRY_PREFIX)?;
+        let len_bytes: [u8; 4] = suffix.get(0..4)?.try_into().ok()?;
+        let len = u32::from_be_bytes(len_bytes) as usize;
+        let rest = suffix.get(4..)?;
+        if rest.len() != len {
+            return None;
+        }
+        String::from_utf8(rest.to_vec()).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +668,26 @@ mod tests {
         let a = Key::from(&b"aa"[..]);
         let b = Key::from(&b"ab"[..]);
         assert!(a < b);
+    }
+
+    #[test]
+    fn record_agent_upper_bound_caps_exactly_the_agents_record_keyspace() {
+        let prefix = memory_index::record_agent_prefix("agent-a").expect("prefix");
+        let bound = memory_index::record_agent_upper_bound("agent-a").expect("bound");
+        // Every key of this agent sorts below the bound — including ids made
+        // of high bytes — and the prefix itself does too.
+        assert!(prefix.as_slice() < bound.as_slice());
+        for id in ["", "m1", "zzz", "\u{10FFFF}"] {
+            let key = memory_index::record_key("agent-a", id).expect("key");
+            assert!(
+                key.as_bytes() < bound.as_slice(),
+                "record key for id {id:?} must sort below the upper bound"
+            );
+        }
+        // A *different* agent whose name sorts just after must land at or
+        // past the bound — the bound never leaks into a neighbour's keyspace.
+        let neighbour = memory_index::record_key("agent-b", "m1").expect("key");
+        assert!(neighbour.as_bytes() >= bound.as_slice());
     }
 
     #[test]
@@ -685,5 +884,107 @@ mod tests {
         let meta_b = fts_index::meta_key("agent-b").expect("encode");
         assert!(meta_a.as_bytes().starts_with(fts_index::META_PREFIX));
         assert_ne!(meta_a.as_bytes(), meta_b.as_bytes());
+    }
+
+    #[test]
+    fn temporal_expiry_key_byte_order_matches_valid_until_numeric_order_across_the_full_i64_range() {
+        // The whole point of the sign-bit-flip encoding: byte order must
+        // equal numeric order even across the negative/positive boundary,
+        // not just for the small positive timestamps this domain actually
+        // produces.
+        let values = [
+            i64::MIN,
+            i64::MIN + 1,
+            -1_000_000,
+            -1,
+            0,
+            1,
+            1_000_000,
+            i64::MAX - 1,
+            i64::MAX,
+        ];
+        for window in values.windows(2) {
+            let (a, b) = (window[0], window[1]);
+            assert!(a < b, "test data must be strictly increasing");
+            let key_a = temporal_index::expiry_key("agent", a, "id").expect("encode");
+            let key_b = temporal_index::expiry_key("agent", b, "id").expect("encode");
+            assert!(
+                key_a < key_b,
+                "sortable({a}) must sort before sortable({b}) as raw bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn temporal_expiry_key_roundtrips_and_scopes_by_agent() {
+        let key = temporal_index::expiry_key("agent-a", 12345, "m1").expect("encode");
+        assert!(key.as_bytes().starts_with(temporal_index::INDEX_PREFIX));
+        let prefix = temporal_index::expiry_agent_prefix("agent-a").expect("prefix");
+        assert!(key.as_bytes().starts_with(&prefix[..]));
+        let (valid_until, id) = temporal_index::expiry_decode(prefix.len(), key.as_bytes()).expect("decode");
+        assert_eq!(valid_until, 12345);
+        assert_eq!(id, "m1");
+
+        // Same length-prefix collision guard as every other reserved index.
+        let other_prefix = temporal_index::expiry_agent_prefix("agent-ab").expect("prefix");
+        assert!(!key.as_bytes().starts_with(&other_prefix[..]));
+    }
+
+    #[test]
+    fn temporal_expiry_decode_rejects_malformed_or_foreign_keys() {
+        let prefix = temporal_index::expiry_agent_prefix("agent-a").expect("prefix");
+        assert_eq!(
+            temporal_index::expiry_decode(prefix.len(), b"idx/memory/rec/short"),
+            None
+        );
+        // Truncated: shorter than prefix_len + 8 sortable bytes.
+        let mut truncated = prefix.clone();
+        truncated.extend_from_slice(&[0, 1, 2]);
+        assert_eq!(temporal_index::expiry_decode(prefix.len(), &truncated), None);
+    }
+
+    #[test]
+    fn temporal_expiry_upper_bound_excludes_the_boundary_and_includes_it_in_the_lower_key() {
+        // `expiry_upper_bound(agent, at)` is the exclusive end of the range
+        // covering `valid_until <= at`: a key with `valid_until == at` must
+        // sort strictly below the bound, and one with `valid_until == at+1`
+        // must sort at or above it.
+        let at = 1_000i64;
+        let key_at = temporal_index::expiry_key("agent-a", at, "m1").expect("encode");
+        let key_after = temporal_index::expiry_key("agent-a", at + 1, "m0").expect("encode");
+        let upper = temporal_index::expiry_upper_bound("agent-a", at).expect("upper bound");
+        assert!(key_at.as_bytes() < upper.as_slice());
+        assert!(key_after.as_bytes() >= upper.as_slice());
+    }
+
+    #[test]
+    fn agent_registry_key_roundtrips_and_rejects_malformed_keys() {
+        let key = agent_registry::agent_key("agent-a").expect("encode");
+        assert!(key.as_bytes().starts_with(agent_registry::REGISTRY_PREFIX));
+        assert_eq!(
+            agent_registry::agent_decode(key.as_bytes()),
+            Some("agent-a".to_string())
+        );
+        // Distinct agents, distinct keys — including the shared-textual-prefix pair.
+        assert_ne!(
+            agent_registry::agent_key("agent-a").expect("encode").as_bytes(),
+            agent_registry::agent_key("agent-ab").expect("encode").as_bytes()
+        );
+        // Foreign prefix, truncated length header, and a length prefix
+        // disagreeing with the remainder are all rejected.
+        assert_eq!(agent_registry::agent_decode(b"idx/memory/meta"), None);
+        assert_eq!(agent_registry::agent_decode(b"meta/agents/\x00\x00"), None);
+        let mut lying = agent_registry::REGISTRY_PREFIX.to_vec();
+        lying.extend_from_slice(&99u32.to_be_bytes());
+        lying.extend_from_slice(b"short");
+        assert_eq!(agent_registry::agent_decode(&lying), None);
+    }
+
+    #[test]
+    fn temporal_expiry_upper_bound_saturates_at_i64_max() {
+        // Out-of-scope edge case (Unix timestamps never realistically reach
+        // i64::MAX), but must not panic on overflow.
+        let upper = temporal_index::expiry_upper_bound("agent-a", i64::MAX).expect("upper bound");
+        assert!(!upper.is_empty());
     }
 }

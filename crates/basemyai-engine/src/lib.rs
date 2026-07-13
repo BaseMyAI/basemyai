@@ -75,7 +75,10 @@ pub(crate) use fail_point;
 pub use error::{EngineError, Result};
 pub use idx::fts::{FtsStats, PersistentFts};
 pub use idx::graph::{GraphEdgeMeta, GraphEntity, PersistentGraph, RamGraph, Reached};
-pub use idx::memory::{MemoryRecord, NewMemoryRecord, PersistentMemoryIndex, VecMapEntry};
+pub use idx::memory::{ForgetBatchOptions, MemoryRecord, NewMemoryRecord, PersistentMemoryIndex, VecMapEntry};
 pub use idx::vector::{PersistentVectorIndex, VectorIndex, VectorIndexParams};
 pub use key::Key;
-pub use store::{Batch, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, EngineStats, Value};
+pub use store::{
+    Batch, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, EngineStats, IntegrityIssue, IssueKind, RebuildReport,
+    RepairAction, RepairPlan, ScanPage, Value, VerifyMode, VerifyReport, plan_repair, rebuild_indexes, verify_store,
+};

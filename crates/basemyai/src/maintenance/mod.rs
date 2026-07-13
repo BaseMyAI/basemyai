@@ -7,11 +7,13 @@
 //! `ROW_NUMBER() OVER (PARTITION BY ...)` pour le premier, `DELETE ...
 //! WHERE valid_until <= ?` pour le second), retirés du workspace par
 //! ADR-033. Les deux ont été **portés** sur le moteur natif : l'oubli
-//! adaptatif par ADR-037 ([`adaptive_forgetting`], scan applicatif +
-//! sélection pure), le GC temporel par ADR-038 ([`expired_gc`], scan
-//! applicatif paginé par curseur). Les deux mécanismes opèrent sur des
-//! ensembles disjoints par construction (actifs vs. expirés) — voir la doc
-//! de [`expired_gc`] pour le détail du non-chevauchement.
+//! adaptatif par ADR-037 puis borné en mémoire par ADR-041 §7.3
+//! ([`adaptive_forgetting`], deux passes paginées + tas borné à la
+//! capacité), le GC temporel par ADR-038 puis indexé par ADR-041 §7.2
+//! ([`expired_gc`], scan paginé par curseur sur l'index temporel). Les deux
+//! mécanismes opèrent sur des ensembles disjoints par construction (actifs
+//! vs. expirés) — voir la doc de [`expired_gc`] pour le détail du
+//! non-chevauchement.
 //!
 //! `ConsolidationTask`, `AdaptiveForgettingTask` et `ExpiredMemoryGcTask`
 //! partagent le même pattern : auto-suffisantes via `Arc<Memory>`, aucun

@@ -4,10 +4,13 @@
 //! corrompu doit produire une **erreur typée** à l'ouverture — jamais un
 //! panic, jamais des données silencieusement fausses. Clair et chiffré.
 //!
-//! Ce fichier documente aussi, en tant que test, le **gap connu pré-N9** :
-//! sans manifest, une SST supprimée du disque disparaît silencieusement
-//! (l'ouverture réussit, les données sont juste absentes). `verify`/N9 doit
-//! transformer ça en diagnostic — le test est le marqueur exécutable du gap.
+//! Ce fichier documente aussi, en tant que test, un **gap connu et toujours
+//! ouvert** : sans manifest, une SST supprimée du disque disparaît
+//! silencieusement (l'ouverture réussit, les données sont juste absentes).
+//! N9/ADR-040 a livré `verify`, mais confirmé empiriquement (N11.3) que
+//! `verify` ne le détecte pas non plus — aucun mode n'a de source
+//! indépendante listant les SSTs attendues. Le test est le marqueur
+//! exécutable du gap, pas une promesse que N9 le ferme.
 
 use std::path::{Path, PathBuf};
 
@@ -153,27 +156,33 @@ fn crypto_meta_bit_flip_is_typed_error_never_garbage() {
     );
 }
 
-/// **Gap connu, assumé, pré-N9 (ADR-040)** : le moteur n'a pas de manifest,
-/// donc l'ensemble des SSTs vivantes n'est connu que par scan du répertoire.
-/// Une SST supprimée (rm accidentel, ransomware, disque partiel) ne fait
-/// **pas** échouer l'ouverture — les données qu'elle portait sont juste
-/// absentes, silencieusement. Ce test pinne ce comportement pour que N9 le
-/// fasse échouer *sciemment* (le futur `verify` devra le diagnostiquer).
+/// **Gap connu, assumé, toujours ouvert après N9 (ADR-040)** : le moteur n'a
+/// aucun manifest listant les SSTs attendues — ni `Engine::open` (toujours
+/// O(métadonnées), par design) ni `verify_store` en mode `FullLogical`
+/// (confirmé empiriquement, N11.3 : `verify_store` rapporte `healthy: true`
+/// sans warning sur un store dont une SST vivante a été supprimée — la passe
+/// logique reconstruit la vue KV à partir des SSTs *présentes*, elle n'a
+/// aucune source indépendante pour savoir qu'il en manque une). Une SST
+/// supprimée (rm accidentel, ransomware, disque partiel) ne fait donc échouer
+/// **ni** l'ouverture **ni** `verify` — les données qu'elle portait sont
+/// juste absentes, silencieusement. Ce test pinne ce comportement ; le
+/// fermer réclame un manifest/version-set (candidat naturel : N13/ADR-043),
+/// pas juste `verify`.
 #[test]
-fn deleted_sst_is_currently_silent_data_loss_known_n9_gap() {
+fn deleted_sst_is_currently_silent_data_loss_no_manifest_yet() {
     let dir = tempfile::tempdir().expect("tempdir");
     build_store(dir.path(), false);
     let ssts = sst_files(dir.path());
     std::fs::remove_file(&ssts[0]).expect("delete the only SST");
 
     let engine = reopen(dir.path(), false).expect(
-        "pre-N9: open succeeds without the SST — once a manifest exists (ADR-040), \
-         flip this test to expect a typed integrity error",
+        "sans manifest, open réussit sans la SST manquante — voir le commentaire du test \
+         pour la portée exacte du gap (N13/ADR-043 est le candidat naturel pour le fermer)",
     );
     assert_eq!(
         engine.get(b"k0").expect("get"),
         None,
-        "flushed data silently gone — the exact failure mode N9's verify must catch"
+        "flushed data silently gone — aucun manifest pour le détecter, ni à l'open ni via verify"
     );
     // La queue WAL, elle, survit (fichier séparé).
     assert_eq!(engine.get(b"tail").expect("get").as_deref(), Some(&b"unflushed"[..]));

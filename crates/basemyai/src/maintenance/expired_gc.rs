@@ -83,10 +83,16 @@ pub async fn run(
         pages += 1;
         examined += page.len();
         if !dry_run {
-            for candidate in &page {
-                store.forget(agent, &candidate.id).await?;
-                deleted += 1;
-            }
+            // Suppression par lot borné (ADR-041 §7.4) plutôt qu'une
+            // transaction moteur par souvenir — le curseur par id reste
+            // correct alors que le lot vient de vider la page (ADR-038).
+            let ids: Vec<String> = page.iter().map(|c| c.id.clone()).collect();
+            deleted += usize::try_from(
+                store
+                    .forget_many(agent, &ids, crate::storage::ForgetBatchOptions::default())
+                    .await?,
+            )
+            .unwrap_or(usize::MAX);
         }
         let last_full_page = page.len() == page_size;
         cursor = page.last().map(|c| c.id.clone());

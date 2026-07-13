@@ -74,14 +74,15 @@ free-text messages. Defined in `crates/basemyai-cli/src/exit.rs` /
 | 7 | Destructive action refused without explicit confirmation (`purge` without `--yes`). |
 | 8 | Embedding model not provisioned — run `basemyai setup --fetch`. |
 | 9 | No local LLM backend detected — run `basemyai llm detect`. |
-| 10 | `verify`: container opens but doesn't match the expected `.bmai` format/version. |
+| 10 | `verify`: container opens but doesn't match the expected `.bmai` format/version, or the engine integrity audit (`--physical`/`--logical`) found an error. |
+| 11 | `repair` (without `--dry-run`): primary data is at risk — refusing to auto-repair (ADR-040 §3). |
 
 In `--format json`, every error is also printed on stderr as a single object
 with a stable `code` string (the same categories as the table above, e.g.
 `KEY_REQUIRED`, `KEY_INSECURE`, `NOT_CONFIGURED`, `INVALID_AGENT`, `ALREADY_EXISTS`,
 `CONFIRMATION_REQUIRED`, `MODEL_NOT_PROVISIONED`, `LLM_NOT_AVAILABLE`,
-`VERIFICATION_FAILED`) and a human `message` that **is not** part of the
-contract and may reword across releases:
+`VERIFICATION_FAILED`, `REPAIR_REFUSED`) and a human `message` that **is not**
+part of the contract and may reword across releases:
 
 ```json
 {"error":{"code":"KEY_REQUIRED","message":"encryption key required: …"}}
@@ -141,10 +142,35 @@ explicit consent in the SDKs). See
 ```bash
 basemyai init ./agent.bmai      # create an encrypted native .bmai container (metadata)
 basemyai inspect                # container metadata + memory count
-basemyai verify                 # validate container: opens, expected format/engine/dim
+basemyai verify                 # container metadata + engine integrity audit, mode Quick (default)
+basemyai verify --physical      # + decode every data block (VerifyMode::FullPhysical)
+basemyai verify --logical       # + cross-structure consistency (VerifyMode::FullLogical)
+basemyai repair --dry-run       # audit (FullLogical) + print the derived-index repair plan, write nothing
+basemyai repair                 # apply the plan if no primary data is at risk (else exit 11, REPAIR_REFUSED)
+basemyai rebuild-indexes        # unconditionally rebuild derived indexes (vecmap/allocator, FTS, vector graph)
+basemyai compact                # full compaction: merge into one SST, purge tombstones (Engine::compact_now)
+basemyai reembed                 # fix every memory store-wide currently missing its vector (loads the embedder)
+basemyai reembed --agent X --ids a,b   # re-embed specific memories of X unconditionally
+basemyai reembed --agent X --all       # re-embed every memory of X unconditionally (e.g. embedding model change)
 basemyai migrate                # idempotent open (native format applied at open time)
 basemyai stats                  # per-layer valid-memory counts for the resolved agent
 ```
+
+`verify`'s engine-level audit (ADR-040) runs strictly read-only, before the
+normal container open that follows to read `format`/`format_version`/
+`storage_engine` — a normal open recovers a torn WAL tail, which would erase
+the exact anomaly a `Quick` audit exists to surface. `repair`/`rebuild-indexes`
+never rewrite memory or graph records (primary data) — only derived
+structures (vecmap, allocator, FTS, the DiskANN graph). Memories whose vector
+was lost are reported (never reinvented — the engine has no embedding model
+by design, ADR-010); `reembed` is the command that actually recomputes them,
+which is why (unlike `verify`/`repair`/`rebuild-indexes`/`compact`) it loads
+the Candle embedder, same as `remember`/`recall`. Without `--all`/`--ids` it
+targets exactly the memories `rebuild-indexes` currently reports under
+`reembedding_required`, across every agent; with `--agent` + `--all`/`--ids`
+it re-embeds unconditionally (whether or not a live vector already exists —
+useful after an embedding model change), scoped to one agent. A requested id
+that no longer exists lands in the report's `missing` list, never an error.
 
 ## Memory lifecycle
 
@@ -266,11 +292,16 @@ basemyai --db ./agent.bmai --agent demo recall "UI preference" --hybrid | jq '.r
   source today.
 - `assert_cmd` integration tests (`crates/basemyai-cli/tests/cli.rs`,
   `cargo test -p basemyai-cli`, **wired in CI gate**) cover every command that
-  doesn't need the Candle embedder — `init`/`inspect`/`verify`/`migrate`/
-  `list`/`forget`/`invalidate`/`purge`/`graph`/`forget-adaptive`/`gc`, plus
+  doesn't need the Candle embedder — `init`/`inspect`/`verify`/`repair`/
+  `rebuild-indexes`/`compact`/`migrate`/`list`/`forget`/`invalidate`/`purge`/
+  `graph`/`forget-adaptive`/`gc`, plus
   key/agent/confirmation/already-exists/not-configured paths and the explicit
   absence of the `maintenance` subcommand group (both maintenance commands are
   flat root commands today, see above). `remember`/`recall`/`stats`/`export`/
-  `import`/`consolidate` are still untested in CI (they load the embedding
-  model, unavailable offline in CI) — `forget-adaptive`/`gc` do **not** need
-  the embedder (raw store access, `open_engine`) so they're fully covered.
+  `import`/`consolidate`/`reembed` are still untested in CI (they load the
+  embedding model, unavailable offline in CI) — `forget-adaptive`/`gc` do
+  **not** need the embedder (raw store access, `open_engine`) so they're
+  fully covered. `reembed` was manually verified end-to-end against the real
+  Candle model (missing-vector no-op on a healthy store, `--ids`/`--all`
+  unconditional re-embed, `recall` still surfaces the right memory
+  afterwards, `--all --ids` correctly rejected as a usage error).

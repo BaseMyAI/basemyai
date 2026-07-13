@@ -178,8 +178,51 @@ pub(crate) enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Vérifie un `.bmai` : conteneur valide, version de format attendue.
-    Verify,
+    /// Vérifie un `.bmai` : métadonnées de conteneur + intégrité moteur
+    /// (ADR-040). Par défaut `Quick` (O(métadonnées)) ; `--physical` décode
+    /// chaque bloc de données ; `--logical` (implique `--physical`) vérifie
+    /// en plus la cohérence inter-structures (record/vecmap/FTS/graphe).
+    Verify {
+        /// Décode chaque bloc de données (`VerifyMode::FullPhysical`).
+        #[arg(long)]
+        physical: bool,
+        /// Cohérence inter-structures complète (`VerifyMode::FullLogical`).
+        #[arg(long)]
+        logical: bool,
+    },
+    /// Analyse l'intégrité du conteneur et affiche le plan de réparation des
+    /// index dérivés (jamais les données primaires) — n'écrit rien
+    /// (ADR-040 §3). Sans `--dry-run`, applique le plan si aucune donnée
+    /// primaire n'est à risque (sinon refuse : restaurer depuis un export).
+    Repair {
+        /// N'applique rien : calcule et affiche le plan de réparation.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Reconstruit sans condition les index dérivés (vecmap/allocateur, FTS,
+    /// graphe DiskANN) depuis les souvenirs primaires (ADR-040 §3). Les
+    /// souvenirs dont le vecteur est perdu sont listés pour ré-embedding
+    /// plutôt que réinventés — le moteur n'a pas de modèle par design.
+    RebuildIndexes,
+    /// Compacte le store : fusion complète en un seul SST, tombstones purgés
+    /// (`Engine::compact_now`, ADR-040/N9.4).
+    Compact,
+    /// Recalcule et réécrit des vecteurs via le modèle d'embedding réel
+    /// (charge Candle, contrairement aux autres commandes de maintenance
+    /// d'intégrité). Sans flag : réembed tous les souvenirs actuellement
+    /// signalés `reembedding_required` par `repair`/`rebuild-indexes`
+    /// (relance ces deux commandes elle-même — inutile de les enchaîner à la
+    /// main), portée = tout le conteneur. Avec `--all` ou `--ids`, réembed
+    /// sans condition (ex. changement de modèle) — portée = l'agent résolu
+    /// (`--agent`/config), `--ids` seul un sous-ensemble.
+    Reembed {
+        /// Réembed tous les souvenirs de l'agent résolu, sans condition.
+        #[arg(long, conflicts_with = "ids")]
+        all: bool,
+        /// Réembed ces souvenirs de l'agent résolu, sans condition (liste séparée par des virgules).
+        #[arg(long, value_delimiter = ',')]
+        ids: Vec<String>,
+    },
     /// Applique les migrations de schéma en attente (idempotent).
     Migrate,
     /// Helpers de provisionnement LLM local (consolidation).

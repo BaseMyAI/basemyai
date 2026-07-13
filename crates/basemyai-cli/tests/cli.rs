@@ -651,3 +651,105 @@ fn rotate_key_rewraps_dek_and_old_key_stops_working() {
         .failure()
         .stderr(predicate::str::contains("WRONG_ENCRYPTION_KEY"));
 }
+
+#[test]
+fn verify_physical_and_logical_report_healthy_on_a_fresh_container() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    for mode_flag in ["--physical", "--logical"] {
+        let out = isolated(home.path())
+            .env("BASEMYAI_DB_KEY", KEY)
+            .args([
+                "--format",
+                "json",
+                "--db",
+                db.to_str().expect("utf-8 path"),
+                "verify",
+                mode_flag,
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON on stdout");
+        assert_eq!(v["valid"], true, "mode {mode_flag}: {v}");
+        assert_eq!(v["integrity"]["healthy"], true, "mode {mode_flag}: {v}");
+    }
+}
+
+#[test]
+fn repair_dry_run_on_a_healthy_container_proposes_nothing_and_writes_nothing() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    let out = isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .args([
+            "--format",
+            "json",
+            "--db",
+            db.to_str().expect("utf-8 path"),
+            "repair",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON on stdout");
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["actions"], serde_json::json!([]));
+    assert_eq!(v["applied"], serde_json::Value::Null);
+}
+
+#[test]
+fn rebuild_indexes_on_a_fresh_container_is_a_noop_report() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    let out = isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .args([
+            "--format",
+            "json",
+            "--db",
+            db.to_str().expect("utf-8 path"),
+            "rebuild-indexes",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON on stdout");
+    assert_eq!(v["memory_mappings_rebuilt"], 0);
+    assert_eq!(v["reembedding_required"], serde_json::json!([]));
+}
+
+#[test]
+fn compact_on_a_fresh_container_reports_before_and_after_stats() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+    init_container(home.path(), &db);
+
+    let out = isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .args(["--format", "json", "--db", db.to_str().expect("utf-8 path"), "compact"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON on stdout");
+    // `init` seeds container metadata into the memtable but never flushes
+    // it: no SST exists yet. `compact` flushes then merges, so exactly one
+    // SST exists afterwards.
+    assert_eq!(v["before"]["sst_count"], 0);
+    assert_eq!(v["after"]["sst_count"], 1);
+}

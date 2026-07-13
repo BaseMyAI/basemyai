@@ -75,6 +75,17 @@ pub enum MemoryError {
     /// n'était expiré".
     #[error("gc page_size must be greater than zero")]
     InvalidGcPageSize,
+
+    /// Importance non finie (NaN/infini) passée à `remember_with_importance`
+    /// ou `set_importance` (ADR-041 §7.1) : `score = importance + H/(H+age)`
+    /// (ADR-012) contaminerait tout tri d'oubli adaptatif dès qu'un NaN entre
+    /// en compétition. Une importance négative reste acceptée (signal
+    /// explicite "évincer en premier"), seule la non-finitude est rejetée.
+    #[error("importance must be a finite number, got {value}")]
+    InvalidImportance {
+        /// Valeur rejetée.
+        value: f64,
+    },
 }
 
 /// Alias de résultat de la couche mémoire.

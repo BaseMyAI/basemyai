@@ -243,3 +243,71 @@ fn index_coexists_with_unrelated_keys() {
     assert!(engine.get(meta_key().as_bytes()).expect("get meta").is_some());
     assert!(engine.get(node_key(0).as_bytes()).expect("get node 0").is_some());
 }
+
+/// `delete_many_with` (ADR-041 §7.4): several tombstones + ONE refreshed
+/// metadata record + the caller's companion batch, all in one atomic group —
+/// with absent, duplicate and already-tombstoned ids skipped (never an
+/// error), and the `delete_with` asymmetry preserved: a no-op tombstone pass
+/// still applies a non-empty `extra`.
+#[test]
+fn delete_many_with_tombstones_a_group_atomically_and_applies_extra_on_noop() {
+    use basemyai_engine::Batch;
+
+    let dir = tempdir().expect("tempdir");
+    let mut engine = Engine::open(dir.path()).expect("open");
+    let mut index = PersistentVectorIndex::open(&mut engine, VectorIndexParams::with_dim(16)).expect("open index");
+    for id in 0..6u64 {
+        let v: Vec<f32> = (0..16).map(|c| ((id * 31 + c) % 7) as f32 - 3.0).collect();
+        index.insert(&mut engine, id, v).expect("insert");
+    }
+    assert_eq!(index.len(), 6);
+
+    // Group delete: {1, 3} live, 3 duplicated, 99 absent — plus a companion op.
+    let mut extra = Batch::new();
+    extra.put(b"user/marker-1", b"rode the same batch");
+    let removed = index
+        .delete_many_with(&mut engine, &[1, 3, 3, 99], &extra)
+        .expect("delete_many_with");
+    assert_eq!(removed, 2, "only the two live ids count");
+    assert_eq!(index.len(), 4);
+    assert_eq!(
+        engine.get(b"user/marker-1").expect("get"),
+        Some(b"rode the same batch".to_vec()),
+        "the companion op must ride the same atomic batch"
+    );
+
+    // Tombstoned ids never surface in results again.
+    let query: Vec<f32> = (0..16).map(|c| ((31 + c) % 7) as f32 - 3.0).collect();
+    let hits = index.search(&engine, &query, 6).expect("search");
+    assert!(!hits.contains(&1) && !hits.contains(&3));
+
+    // Re-deleting the same group is a no-op tombstone pass — but a non-empty
+    // extra must still be applied (leftover companion deletes of an
+    // interrupted earlier attempt must not survive, same as delete_with).
+    let mut extra2 = Batch::new();
+    extra2.put(b"user/marker-2", b"applied on noop");
+    let removed = index
+        .delete_many_with(&mut engine, &[1, 3], &extra2)
+        .expect("re-delete");
+    assert_eq!(removed, 0);
+    assert_eq!(index.len(), 4, "count must not double-decrement");
+    assert_eq!(
+        engine.get(b"user/marker-2").expect("get"),
+        Some(b"applied on noop".to_vec())
+    );
+
+    // Nothing tombstoned AND empty extra: writes nothing, still Ok(0).
+    assert_eq!(
+        index
+            .delete_many_with(&mut engine, &[99], &Batch::new())
+            .expect("absent-only"),
+        0
+    );
+
+    // Metadata written by the group survives a reopen without a rebuild.
+    engine.close().expect("close");
+    let mut engine = Engine::open(dir.path()).expect("reopen");
+    let index = PersistentVectorIndex::open(&mut engine, VectorIndexParams::with_dim(16)).expect("reopen index");
+    assert!(!index.rebuilt_on_open(), "clean reopen after a group delete");
+    assert_eq!(index.len(), 4);
+}

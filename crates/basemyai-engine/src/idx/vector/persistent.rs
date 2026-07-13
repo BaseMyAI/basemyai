@@ -482,6 +482,80 @@ impl PersistentVectorIndex {
         Ok(true)
     }
 
+    /// Tombstones **several** ids in one single [`Engine::apply_batch`] —
+    /// the deletion sibling of [`Self::insert_many_with`] (ADR-041 §7.4):
+    /// every tombstoned block, one single refreshed metadata record (live
+    /// count decremented by the whole group) and the caller's companion
+    /// `extra` batch commit together or vanish together under a crash.
+    ///
+    /// Absent or already-tombstoned ids (including duplicates within `ids`)
+    /// are skipped, never an error — same idempotence as [`Self::delete`].
+    /// And same asymmetry as [`Self::delete_with`]: when **nothing** ends up
+    /// tombstoned, a non-empty `extra` is still applied (as its own batch) —
+    /// the caller's companion deletes must not survive a no-op tombstone
+    /// pass. Returns how many ids *this call* tombstoned.
+    pub fn delete_many_with(&mut self, engine: &mut Engine, ids: &[u64], extra: &Batch) -> Result<u64> {
+        let mut pending: Vec<(u64, VectorNode)> = Vec::new();
+        let mut seen: HashSet<u64> = HashSet::with_capacity(ids.len());
+        for &id in ids {
+            if !seen.insert(id) {
+                continue;
+            }
+            let existing = {
+                let mut provider = EngineProvider {
+                    engine,
+                    cache: &self.cache,
+                };
+                provider.node(id)?
+            };
+            if let Some(node) = existing
+                && !node.deleted
+            {
+                pending.push((id, VectorNode { deleted: true, ..node }));
+            }
+        }
+        if pending.is_empty() {
+            if !extra.is_empty() {
+                engine.apply_batch(extra)?;
+            }
+            return Ok(0);
+        }
+
+        let removed = pending.len() as u64;
+        let mut batch = Batch::new();
+        for (id, tombstoned) in &pending {
+            batch.put(node_key(*id).as_bytes(), &node::encode(tombstoned)?);
+        }
+        let new_meta = VectorIndexMeta {
+            params: self.params,
+            epoch: self.epoch,
+            // saturating: same drifted-metadata healing posture as
+            // `delete_with`.
+            count: self.count.saturating_sub(removed),
+            entry_point: self.entry_point,
+        };
+        batch.put(META_KEY, &meta::encode(&new_meta)?);
+        batch.extend_from(extra);
+        engine.apply_batch(&batch)?;
+
+        self.count = self.count.saturating_sub(removed);
+        for (id, tombstoned) in pending {
+            cache_put(&self.cache, id, tombstoned);
+        }
+        Ok(removed)
+    }
+
+    /// Approximate wire bytes one tombstone rewrite stages (node key + the
+    /// re-encoded block: vector + up to `max_degree` neighbors + framing) —
+    /// the byte-budget estimate behind `forget_many`'s `max_wal_bytes` bound
+    /// (ADR-041 §7.4). An upper-ish bound from the index parameters, not a
+    /// per-node read: the bound is a batch-sizing target, block-level
+    /// precision is not required.
+    #[must_use]
+    pub fn approx_tombstone_wire_bytes(&self) -> usize {
+        node_key(0).as_bytes().len() + self.params.dim * 4 + self.params.max_degree * 8 + 64
+    }
+
     /// Returns the ids of (up to) the `k` approximate nearest **live**
     /// neighbors of `query`, ordered by ascending cosine distance, reading
     /// node blocks on demand through `Engine::get` (never a full load — see

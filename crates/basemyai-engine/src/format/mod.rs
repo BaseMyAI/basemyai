@@ -8,7 +8,11 @@
 //! doc comment together whenever a layout changes — never silently.
 
 pub(crate) mod checksum;
-pub(crate) mod crypto;
+// `pub`, not `pub(crate)`: the module is otherwise self-contained encoding
+// (see the module doc), but its three `decode_*` fns need to be reachable
+// from the external `fuzz/` crate — same reasoning that already made every
+// other decoder in this module (`sst_block`, `store_meta`, `wal`) `pub`.
+pub mod crypto;
 pub mod lock;
 pub mod sst_block;
 pub mod store_meta;

@@ -68,6 +68,7 @@ async fn bench_recall_vector(n: usize, num_queries: usize, k: usize) {
                 Validity::since(0),
                 &vec_for(i as u64, DIM),
                 "bench",
+                1.0,
             )
             .await
             .expect("put_memory");

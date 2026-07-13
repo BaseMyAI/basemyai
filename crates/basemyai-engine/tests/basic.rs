@@ -245,6 +245,136 @@ fn scan_prefix_with_no_matches_is_empty() {
     assert!(engine.scan_prefix(b"nothing/").expect("scan").is_empty());
 }
 
+/// Chains [`Engine::scan_range_page`] pages (ADR-041 §7.3) until
+/// `next_start` is `None` and returns the concatenation — the paging
+/// protocol every consumer follows. Panics if paging stops making progress.
+fn drain_pages(engine: &Engine, start: &[u8], end: &[u8], limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut cursor: Vec<u8> = start.to_vec();
+    loop {
+        let page = engine.scan_range_page(&cursor, end, limit).expect("scan page");
+        out.extend(page.entries.into_iter().map(|(k, v)| (k.as_bytes().to_vec(), v)));
+        match page.next_start {
+            Some(next) => {
+                assert!(next > cursor, "each page must strictly advance the cursor");
+                cursor = next;
+            }
+            None => return out,
+        }
+    }
+}
+
+#[test]
+fn scan_range_page_chained_pages_equal_the_full_range_scan() {
+    let dir = tempdir().expect("tempdir");
+    let mut engine = Engine::open(dir.path()).expect("open");
+    // Three layers: two SSTs (via explicit flushes) + a memtable tail, with
+    // cross-layer overwrites and tombstones — the merge cases that matter.
+    for i in 0..30u32 {
+        engine.put(format!("r/{i:04}").as_bytes(), b"sst1").expect("put");
+    }
+    engine.flush().expect("flush 1");
+    for i in 10..20u32 {
+        engine.put(format!("r/{i:04}").as_bytes(), b"sst2").expect("put");
+    }
+    engine.delete(b"r/0005").expect("delete in sst2");
+    engine.flush().expect("flush 2");
+    engine.put(b"r/0025", b"memtable").expect("put");
+    engine.delete(b"r/0012").expect("memtable tombstone");
+
+    let full = engine.scan_range(b"r/", b"r0").expect("full scan");
+    let expected: Vec<(Vec<u8>, Vec<u8>)> = full.into_iter().map(|(k, v)| (k.as_bytes().to_vec(), v)).collect();
+    for limit in [1usize, 3, 7, 100] {
+        assert_eq!(
+            drain_pages(&engine, b"r/", b"r0", limit),
+            expected,
+            "chained pages at limit={limit} must equal the one-shot range scan"
+        );
+    }
+}
+
+#[test]
+fn scan_range_page_empty_page_advances_instead_of_terminating() {
+    let dir = tempdir().expect("tempdir");
+    let mut engine = Engine::open(dir.path()).expect("open");
+    // A whole stretch of keys whose newest layer is a tombstone: pages over
+    // it are empty yet must keep advancing (`next_start = Some`), never be
+    // read as exhaustion.
+    for i in 0..20u32 {
+        engine.put(format!("t/{i:04}").as_bytes(), b"v").expect("put");
+    }
+    engine.flush().expect("flush");
+    for i in 0..20u32 {
+        engine.delete(format!("t/{i:04}").as_bytes()).expect("delete");
+    }
+    engine.put(b"t/9999", b"survivor").expect("put survivor");
+
+    let mut pages = 0usize;
+    let mut cursor: Vec<u8> = b"t/".to_vec();
+    let mut live = Vec::new();
+    loop {
+        let page = engine.scan_range_page(&cursor, b"t0", 4).expect("scan page");
+        pages += 1;
+        live.extend(page.entries.into_iter().map(|(k, _)| k.as_bytes().to_vec()));
+        match page.next_start {
+            Some(next) => cursor = next,
+            None => break,
+        }
+    }
+    assert_eq!(live, vec![b"t/9999".to_vec()]);
+    assert!(
+        pages > 1,
+        "the tombstoned stretch must have produced intermediate pages"
+    );
+}
+
+#[test]
+fn scan_range_page_truncated_memtable_defers_shadowed_sst_key_to_the_next_page() {
+    let dir = tempdir().expect("tempdir");
+    let mut engine = Engine::open(dir.path()).expect("open");
+    // SST layer: old values for "s/a" and "s/c". Memtable layer: a fresher
+    // "s/a" and a tombstone for "s/c". At limit=1 the memtable truncates
+    // right after "s/a": the page frontier must stop there — if it slid to
+    // "s/c" (the largest merged key), the page would resurrect the SST's
+    // stale "s/c" that the not-yet-merged memtable tombstone shadows.
+    engine.put(b"s/a", b"old-a").expect("put");
+    engine.put(b"s/c", b"old-c").expect("put");
+    engine.flush().expect("flush");
+    engine.put(b"s/a", b"new-a").expect("overwrite");
+    engine.delete(b"s/c").expect("tombstone");
+
+    let first = engine.scan_range_page(b"s/", b"s0", 1).expect("scan page");
+    assert_eq!(
+        first
+            .entries
+            .iter()
+            .map(|(k, v)| (k.as_bytes().to_vec(), v.clone()))
+            .collect::<Vec<_>>(),
+        vec![(b"s/a".to_vec(), b"new-a".to_vec())],
+        "the first page must carry the fresh value and nothing past the frontier"
+    );
+    assert!(first.next_start.is_some());
+
+    let total = drain_pages(&engine, b"s/", b"s0", 1);
+    assert_eq!(
+        total,
+        vec![(b"s/a".to_vec(), b"new-a".to_vec())],
+        "the tombstoned SST key must never resurface on any page"
+    );
+}
+
+#[test]
+fn scan_range_page_degenerate_inputs_are_empty_and_exhausted() {
+    let dir = tempdir().expect("tempdir");
+    let mut engine = Engine::open(dir.path()).expect("open");
+    engine.put(b"x/1", b"v").expect("put");
+    for (start, end, limit) in [(&b"x0"[..], &b"x/"[..], 5usize), (b"x/", b"x0", 0)] {
+        let page = engine.scan_range_page(start, end, limit).expect("scan page");
+        assert!(page.entries.is_empty());
+        assert!(page.next_start.is_none());
+    }
+}
+
 #[test]
 fn later_op_in_same_batch_wins_for_same_key() {
     let dir = tempdir().expect("tempdir");

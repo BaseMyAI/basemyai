@@ -48,9 +48,15 @@ pub(crate) enum CliError {
     #[error("{0}")]
     MutuallyExclusive(&'static str),
 
-    /// `verify` : conteneur lisible mais format/version/engine inattendus.
+    /// `verify` : conteneur lisible mais format/version/engine inattendus,
+    /// ou audit d'intégrité moteur en défaut.
     #[error("verification failed")]
     VerificationFailed,
+
+    /// `repair` (sans `--dry-run`) : des données primaires sont à risque —
+    /// refus explicite de réparation automatique (ADR-040 §3).
+    #[error("repair refused: primary data is at risk (run with --dry-run to see the plan)")]
+    RepairRefused,
 
     /// Modèle d'embedding non provisionné — message + hint vers `setup --fetch`.
     #[error("{0}\nhint: run `basemyai setup --fetch` to provision the baseline model")]
@@ -91,6 +97,7 @@ impl CliError {
             Self::ConfirmationRequired(_) => "CONFIRMATION_REQUIRED",
             Self::MutuallyExclusive(_) => "USAGE_ERROR",
             Self::VerificationFailed => "VERIFICATION_FAILED",
+            Self::RepairRefused => "REPAIR_REFUSED",
             Self::ModelNotProvisioned(_) => "MODEL_NOT_PROVISIONED",
             Self::LlmNotAvailable(_) => "LLM_NOT_AVAILABLE",
             Self::Memory(e) => memory_error_code(e),
@@ -111,6 +118,7 @@ impl CliError {
             Self::ConfirmationRequired(_) => exit::CONFIRMATION_REQUIRED,
             Self::MutuallyExclusive(_) => exit::USAGE,
             Self::VerificationFailed => exit::VERIFICATION_FAILED,
+            Self::RepairRefused => exit::REPAIR_REFUSED,
             Self::ModelNotProvisioned(_) => exit::MODEL_NOT_PROVISIONED,
             Self::LlmNotAvailable(_) => exit::LLM_NOT_AVAILABLE,
             Self::Memory(e) => memory_error_exit(e),

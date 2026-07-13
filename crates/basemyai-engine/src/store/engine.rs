@@ -34,6 +34,17 @@ pub const DEFAULT_BLOCK_SIZE: u32 = 16 * 1024;
 /// brief: "no speculative sophistication").
 pub const DEFAULT_BLOCK_CACHE_CAPACITY_BYTES: usize = 32 * 1024 * 1024;
 
+/// One page of [`Engine::scan_range_page`] (ADR-041 §7.3): the definitive
+/// live entries of the page in ascending key order, plus the inclusive
+/// `start` to resume from — `None` when the range is exhausted. `entries`
+/// can legitimately be empty while `next_start` is `Some` (a tombstone-only
+/// stretch): callers loop on `next_start`, never on `entries.is_empty()`.
+#[derive(Debug, Clone)]
+pub struct ScanPage {
+    pub entries: Vec<(Key, Value)>,
+    pub next_start: Option<Vec<u8>>,
+}
+
 /// A group of `put`/`delete` operations applied atomically by
 /// [`Engine::apply_batch`]: on reopen after a crash mid-batch, either every
 /// operation in the batch is visible or none are — see that method's doc for
@@ -82,6 +93,19 @@ impl Batch {
     /// together.
     pub fn extend_from(&mut self, other: &Batch) {
         self.ops.extend(other.ops.iter().cloned());
+    }
+
+    /// Approximate size of the WAL record this batch would produce: key +
+    /// value payloads plus a small per-op framing constant. An estimate, not
+    /// the exact encoded length — the byte-budget accounting behind bounded
+    /// multi-record deletion (ADR-041 §7.4) needs a sizing target, not
+    /// wire-format precision.
+    #[must_use]
+    pub fn approx_wire_bytes(&self) -> usize {
+        self.ops
+            .iter()
+            .map(|(key, value)| key.as_bytes().len() + value.as_ref().map_or(0, Vec::len) + 16)
+            .sum()
     }
 }
 
@@ -431,13 +455,16 @@ impl Engine {
     /// fine for its current caller, the vector-index rebuild path
     /// (`idx::vector::persistent`), which needs every node block anyway;
     /// a streaming scan is deliberately deferred until something needs it.
+    ///
+    /// Per SST, only the data blocks overlapping the prefix range are
+    /// decoded, via binary search on the block index
+    /// ([`BlockSstFile::entries_with_prefix`]) — never a full-file decode.
     pub fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Key, Value)>> {
         let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
         for s in &self.ssts {
-            for (k, v) in s.entries()? {
-                if k.as_bytes().starts_with(prefix) {
-                    merged.insert(k, v);
-                }
+            let (matches, _blocks_read) = s.entries_with_prefix(prefix)?;
+            for (k, v) in matches {
+                merged.insert(k, v);
             }
         }
         for (k, v) in self.memtable.iter() {
@@ -449,6 +476,125 @@ impl Engine {
             .into_iter()
             .filter_map(|(k, v)| v.map(|value| (k, value)))
             .collect())
+    }
+
+    /// Every live entry with a key in `[start, end)` — the genuine
+    /// range-query counterpart to [`Self::scan_prefix`] (ADR-041 §7.2):
+    /// unlike a prefix scan, `end` bounds the query on both sides, so SST
+    /// blocks entirely below `start` or at/past `end` are skipped without
+    /// being decoded ([`BlockSstFile::entries_with_range`]), not just
+    /// filtered after a full read. `start >= end` is an empty range, not an
+    /// error.
+    pub fn scan_range(&self, start: &[u8], end: &[u8]) -> Result<Vec<(Key, Value)>> {
+        if start >= end {
+            return Ok(Vec::new());
+        }
+        let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
+        for s in &self.ssts {
+            let (matches, _blocks_read) = s.entries_with_range(start, end)?;
+            for (k, v) in matches {
+                merged.insert(k, v);
+            }
+        }
+        for (k, v) in self.memtable.iter() {
+            if k.as_bytes() >= start && k.as_bytes() < end {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        Ok(merged
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|value| (k, value)))
+            .collect())
+    }
+
+    /// One bounded page of [`Self::scan_range`] (ADR-041 §7.3): at most
+    /// ~`limit` live entries from `[start, end)`, in ascending key order,
+    /// with memory bounded by `O(sources × limit)` instead of the full
+    /// matching set — the primitive a paged full-population scan needs
+    /// (`scan_range` materializes everything, which is exactly what a
+    /// bounded-memory maintenance pass must avoid).
+    ///
+    /// Paging protocol: re-invoke with `start = next_start` until
+    /// `next_start` is `None`. **An empty `entries` with a `Some(next_start)`
+    /// means progress, not exhaustion** — a stretch of keys whose newest
+    /// layer is a tombstone yields no live entries yet still advances the
+    /// cursor. Loop on `next_start`, never on `entries.is_empty()`.
+    ///
+    /// How the bound stays correct under LSM layering: each source (every
+    /// SST, plus the memtable) is read up to at most `limit` in-range
+    /// entries. A source that got truncated is only complete up to its last
+    /// returned key, so the page's *frontier* is the smallest such key
+    /// across truncated sources — every key `<= frontier` has been seen by
+    /// every source (each one returned all its keys at least that far), so
+    /// last-write-wins merging is definitive there. Merged keys past the
+    /// frontier are discarded (a not-yet-read older layer can't change them,
+    /// but a not-yet-read *newer* one could) and re-read by the next page.
+    pub fn scan_range_page(&self, start: &[u8], end: &[u8], limit: usize) -> Result<ScanPage> {
+        if start >= end || limit == 0 {
+            return Ok(ScanPage {
+                entries: Vec::new(),
+                next_start: None,
+            });
+        }
+        let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
+        // Frontier = min over truncated sources of "the last key that source
+        // returned". `None` until some source truncates.
+        let mut frontier: Option<Vec<u8>> = None;
+        let clip = |candidate: Option<Vec<u8>>, current: Option<Vec<u8>>| match (candidate, current) {
+            (Some(c), Some(f)) => Some(c.min(f)),
+            (Some(c), None) => Some(c),
+            (None, f) => f,
+        };
+        for s in &self.ssts {
+            let (matches, truncated, _blocks_read) = s.entries_with_range_limited(start, end, limit)?;
+            if truncated {
+                let last = matches.last().map(|(k, _)| k.as_bytes().to_vec());
+                frontier = clip(last, frontier);
+            }
+            for (k, v) in matches {
+                merged.insert(k, v);
+            }
+        }
+        let mut taken = 0usize;
+        let mut last_taken: Option<Vec<u8>> = None;
+        for (k, v) in self.memtable.iter() {
+            if k.as_bytes() < start || k.as_bytes() >= end {
+                continue;
+            }
+            if taken == limit {
+                // The memtable is complete only up to the last key actually
+                // taken — the key we stopped at may shadow (overwrite or
+                // tombstone) a same-key entry an older SST already merged,
+                // so it must fall past the frontier and into the next page.
+                frontier = clip(last_taken.take(), frontier);
+                break;
+            }
+            last_taken = Some(k.as_bytes().to_vec());
+            merged.insert(k.clone(), v.clone());
+            taken += 1;
+        }
+        match frontier {
+            None => Ok(ScanPage {
+                entries: merged
+                    .into_iter()
+                    .filter_map(|(k, v)| v.map(|value| (k, value)))
+                    .collect(),
+                next_start: None,
+            }),
+            Some(f) => {
+                let entries = merged
+                    .into_iter()
+                    .take_while(|(k, _)| k.as_bytes() <= f.as_slice())
+                    .filter_map(|(k, v)| v.map(|value| (k, value)))
+                    .collect();
+                let mut next = f;
+                next.push(0x00);
+                Ok(ScanPage {
+                    entries,
+                    next_start: Some(next),
+                })
+            }
+        }
     }
 
     /// Forces the memtable out to a new SST regardless of the configured
@@ -477,6 +623,24 @@ impl Engine {
             self.compact()?;
         }
         Ok(())
+    }
+
+    /// Operator-triggered compaction (ADR-040 §3, N9.4 — the engine half of
+    /// the `basemyai compact` CLI surface): flushes any pending memtable
+    /// data, then runs the full-merge compaction unconditionally — unlike
+    /// the automatic path, which only fires past
+    /// `EngineOptions::compaction_sst_threshold`. Useful below the
+    /// threshold too: merging even a single SST rewrites it without its
+    /// tombstones (safe here for the same reason as the automatic path —
+    /// the merge covers *all* existing data, so a deleted key has no older
+    /// layer left to resurrect from). A no-op on a store with no SSTs and
+    /// nothing to flush.
+    pub fn compact_now(&mut self) -> Result<()> {
+        self.flush()?;
+        if self.ssts.is_empty() {
+            return Ok(());
+        }
+        self.compact()
     }
 
     /// Naive full-merge compaction: folds every existing SST (oldest to
@@ -783,6 +947,44 @@ mod tests {
         assert!(!engine.is_encrypted());
         let err = engine.rotate_key(b"whatever").expect_err("nothing to rotate");
         assert!(matches!(err, EngineError::NotEncrypted { .. }));
+    }
+
+    #[test]
+    fn compact_now_merges_below_threshold_and_purges_tombstones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut engine = Engine::open_encrypted_with_options(dir.path(), KEY, small_options()).expect("open");
+        for i in 0..8u32 {
+            engine
+                .put(format!("key-{i:03}").as_bytes(), format!("value-{i}").as_bytes())
+                .expect("put");
+        }
+        engine.delete(b"key-002").expect("delete");
+        engine.delete(b"key-005").expect("delete");
+        // Leave an unflushed tail too: compact_now must fold it in.
+        engine.put(b"tail", b"unflushed").expect("put tail");
+
+        engine.compact_now().expect("compact");
+        let stats = engine.stats().expect("stats");
+        assert_eq!(stats.sst_count, 1, "everything folds into one SST");
+        assert_eq!(stats.tombstone_count, 0, "a full merge drops every tombstone");
+        assert_eq!(stats.wal_bytes, 0, "flushed before compacting");
+
+        drop(engine);
+        let engine = Engine::open_encrypted_with_options(dir.path(), KEY, small_options()).expect("reopen");
+        assert_eq!(engine.get(b"key-000").expect("get").as_deref(), Some(&b"value-0"[..]));
+        assert_eq!(engine.get(b"key-002").expect("get"), None);
+        assert_eq!(engine.get(b"key-005").expect("get"), None);
+        assert_eq!(engine.get(b"tail").expect("get").as_deref(), Some(&b"unflushed"[..]));
+    }
+
+    #[test]
+    fn compact_now_on_an_empty_store_is_a_noop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut engine = Engine::open(dir.path()).expect("open");
+        engine.compact_now().expect("compact empty");
+        let stats = engine.stats().expect("stats");
+        assert_eq!(stats.sst_count, 0);
+        assert_eq!(stats.compaction_count, 0, "nothing to compact, nothing counted");
     }
 
     #[test]

@@ -25,3 +25,6 @@ pub(crate) const MODEL_NOT_PROVISIONED: u8 = 8;
 pub(crate) const LLM_NOT_AVAILABLE: u8 = 9;
 /// `verify` : le conteneur s'ouvre mais ne respecte pas le format `.bmai` attendu.
 pub(crate) const VERIFICATION_FAILED: u8 = 10;
+/// `repair` (sans `--dry-run`) : des données primaires sont à risque — le
+/// CLI refuse toute réparation automatique (ADR-040 §3).
+pub(crate) const REPAIR_REFUSED: u8 = 11;

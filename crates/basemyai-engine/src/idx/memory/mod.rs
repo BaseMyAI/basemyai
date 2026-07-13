@@ -18,6 +18,6 @@ pub mod persistent;
 pub mod record;
 pub mod vecmap;
 
-pub use persistent::{NewMemoryRecord, PersistentMemoryIndex};
+pub use persistent::{ForgetBatchOptions, NewMemoryRecord, PersistentMemoryIndex};
 pub use record::MemoryRecord;
 pub use vecmap::VecMapEntry;

@@ -229,7 +229,7 @@ async fn adaptive_forgetting_runs_through_worker_background_loop() {
 }
 
 /// Capacité zéro : tout ce qui est actif est évincé, y compris via le
-/// `MaintenanceTask` (pas seulement au niveau de `select_victims`, déjà
+/// `MaintenanceTask` (pas seulement au niveau de la sélection bornée, déjà
 /// testé unitairement dans `maintenance::adaptive_forgetting::tests`).
 #[tokio::test]
 async fn adaptive_forgetting_zero_capacity_evicts_everything_via_task() {
@@ -396,7 +396,7 @@ async fn adaptive_forgetting_is_resumable_after_a_partial_previous_pass() {
     // Simule un crash qui a eu le temps d'évincer UN souvenir avant de
     // s'interrompre : on force sa suppression physique directement via le
     // store, hors de tout passage `Memory::adaptive_forget` (n'importe quel
-    // souvenir convient — `select_victims` évincera le reste au prochain
+    // souvenir convient — la sélection bornée évincera le reste au prochain
     // passage, quel qu'il soit, puisque la capacité est de 1).
     let any_id = store
         .list_memories(&agent_id, None, 1, false, now())
@@ -414,6 +414,78 @@ async fn adaptive_forgetting_is_resumable_after_a_partial_previous_pass() {
     let report = mem.adaptive_forget(policy).await.expect("resumed adaptive_forget");
     assert_eq!(report.scanned, 3, "le souvenir pré-évincé n'est plus scanné");
     assert_eq!(mem.stats().await.expect("stats after resume").total(), 1);
+}
+
+/// Contrat paginé de `scan_for_forgetting` sur le vrai store (ADR-041 §7.3) :
+/// pages triées par id croissant, curseur `after_id` exclusif, bornées à
+/// `limit` **candidats** (une page pleine de bruts dont certains sont
+/// invalides ne raccourcit jamais la page vue du consommateur), page courte
+/// ⇔ agent épuisé, et l'union des pages == exactement la population active.
+#[tokio::test]
+async fn scan_for_forgetting_paginates_only_active_memories() {
+    let (mem, store) = open_memory_with_store("a").await;
+    let agent_id = agent("a");
+
+    // 7 actifs, entrelacés (par ordre d'insertion) avec des invalidés et un
+    // expiré — les pages brutes contiennent donc des non-candidats à sauter.
+    let mut active_ids: Vec<String> = Vec::new();
+    for i in 0..7 {
+        let id = mem
+            .remember(&format!("actif {i}"), MemoryLayer::Semantic)
+            .await
+            .expect("actif");
+        active_ids.push(id);
+        if i % 2 == 0 {
+            let dead = mem
+                .remember(&format!("invalidé {i}"), MemoryLayer::Semantic)
+                .await
+                .expect("invalidé");
+            mem.invalidate(&dead).await.expect("invalidate");
+        }
+    }
+    mem.remember_with(
+        "expiré",
+        MemoryLayer::Semantic,
+        Validity {
+            valid_from: 0,
+            valid_until: Some(1),
+        },
+    )
+    .await
+    .expect("expiré");
+    active_ids.sort();
+
+    let now = now();
+    let mut paged: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let limit = 3usize;
+    loop {
+        let page = store
+            .scan_for_forgetting(&agent_id, now, cursor.as_deref(), limit)
+            .await
+            .expect("scan page");
+        assert!(page.len() <= limit, "une page ne dépasse jamais sa limite");
+        let ids: Vec<String> = page.iter().map(|c| c.id.clone()).collect();
+        assert!(ids.windows(2).all(|w| w[0] < w[1]), "page triée par id croissant");
+        let len = page.len();
+        paged.extend(ids);
+        if len < limit {
+            break;
+        }
+        cursor = paged.last().cloned();
+    }
+    assert_eq!(
+        paged, active_ids,
+        "l'union des pages doit être exactement la population active, en ordre d'id"
+    );
+
+    // Curseur exclusif : reprendre après le 2e actif ne renvoie que la suite.
+    let resumed = store
+        .scan_for_forgetting(&agent_id, now, Some(active_ids[1].as_str()), 100)
+        .await
+        .expect("scan resumed");
+    let resumed_ids: Vec<String> = resumed.into_iter().map(|c| c.id).collect();
+    assert_eq!(resumed_ids, active_ids[2..].to_vec());
 }
 
 /// GC temporel : supprime les souvenirs expirés (`valid_until <= now`) et

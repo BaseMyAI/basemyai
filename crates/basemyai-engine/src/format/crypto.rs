@@ -447,6 +447,29 @@ pub(crate) fn decode_encrypted_sst_block<'a>(buf: &'a [u8], path: &Path) -> Resu
     Ok((Nonce::from_wire(nonce_wire), &buf[pos..]))
 }
 
+// Thin fuzz-only entry points (N11 §8.4): the three `decode_*` above stay
+// `pub(crate)` — their return types (`CryptoMeta`, `Nonce`, `WalEnvelopeRef`)
+// are deliberately crate-private (this module's own doc: crypto internals
+// are guarded, only `crate::crypto` and this file touch them), and making
+// the decoders themselves `pub` would leak those types into the public API
+// (`private_interfaces`). These wrappers instead run the exact same decode
+// and discard the result — everything a fuzz target needs (panic-freedom,
+// no UB) without widening what `basemyai-engine` exposes.
+#[doc(hidden)]
+pub fn fuzz_decode_crypto_meta(buf: &[u8], path: &Path) {
+    let _ = decode_crypto_meta(buf, path);
+}
+
+#[doc(hidden)]
+pub fn fuzz_decode_wal_envelope(buf: &[u8], path: &Path) {
+    let _ = decode_wal_envelope(buf, path);
+}
+
+#[doc(hidden)]
+pub fn fuzz_decode_encrypted_sst_block(buf: &[u8], path: &Path) {
+    let _ = decode_encrypted_sst_block(buf, path);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

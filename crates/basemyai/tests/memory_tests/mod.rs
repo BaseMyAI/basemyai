@@ -238,7 +238,7 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
             } => {
                 let agent = resolve(*agent);
                 store
-                    .put_memory(id, &agent, *layer, text, *validity, &vec_for(*vector_seed), source)
+                    .put_memory(id, &agent, *layer, text, *validity, &vec_for(*vector_seed), source, 1.0)
                     .await
                     .unwrap_or_else(|e| panic!("{}: put_memory a échoué: {e}", step_ctx(scenario.name, i, "remember")));
             }
@@ -255,6 +255,7 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
                         validity: it.validity,
                         vector: v.as_slice(),
                         source: it.source,
+                        importance: 1.0,
                     })
                     .collect();
                 store.put_memory_batch(&agent, &news).await.unwrap_or_else(|e| {

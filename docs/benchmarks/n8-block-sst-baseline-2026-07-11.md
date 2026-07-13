@@ -135,6 +135,29 @@ réel à ne pas cacher. **Candidat de suivi documenté** (pas engagé dans ce
 chantier) : router `scan_prefix`/la compaction par la plage de blocs de
 l'index plutôt qu'un `entries()` complet.
 
+### Addendum (même jour) : régression corrigée avant N9
+
+Le suivi ci-dessus a été implémenté juste après la clôture N8 :
+`BlockSstFile::entries_with_prefix` (recherche binaire `partition_point`
+sur `last_key` → décodage des seuls blocs chevauchant la plage du préfixe,
+arrêt au premier bloc dont `first_key` sort de la plage), branché dans
+`Engine::scan_prefix`. Aucun changement de format on-disk (`format.lock`
+inchangé) ; le cache de blocs reste réservé aux point lookups (N8.7).
+Re-mesuré sur la même machine, mêmes commandes :
+
+| n | mode | avant fix | après fix | vs N7.5 |
+|---|---|---|---|---|
+| 100k | clair | 59,65 ms | **1,58 ms** | ×4,2 (était ×157) |
+| 1M | clair | 360,84 ms | **1,47 ms** | **0,36× — 2,8× plus rapide** (était ×88) |
+| 1M | chiffré | 447,04 ms | **1,74 ms** | ~0,42× (était ×109) |
+
+À 1M le scan préfixé est désormais *plus rapide* qu'en N7.5 : l'ancien
+format gardait tout le SST décodé en RAM mais filtrait linéairement toutes
+les entrées ; le nouveau chemin ne décode que ~1-3 blocs par SST (AEAD
+compris en chiffré). Épinglé par tests (`entries_with_prefix_*` dans
+`store/sst_block.rs`), dont le comptage des blocs décodés.
+La compaction reste sur `entries()` (elle doit voir toutes les clés).
+
 ## Bilan face aux critères de sortie ADR-039 §8
 
 1. ✅ Ouverture 1 Gio (extrapolé depuis 1M/127 Mo, linéaire confirmé

@@ -47,3 +47,5 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-037](adr/ADR-037-native-adaptive-forgetting.md) | Oubli adaptatif porté sur le moteur natif (scan applicatif, sans fenêtrage SQL) | ✅ Accepted |
 | [ADR-038](adr/ADR-038-native-expired-memory-gc.md) | GC temporel porté sur le moteur natif (`ExpiredMemoryGc`, scan applicatif paginé par curseur) | ✅ Accepted |
 | [ADR-039](adr/ADR-039-block-based-sst.md) | Format SST par blocs : AEAD par bloc, index, bloom filters, block cache (N8) | ✅ Accepted |
+| [ADR-040](adr/ADR-040-integrity-and-repair.md) | Intégrité physique, intégrité logique et modèle de réparation (N9) | ✅ Accepted |
+| [ADR-041](adr/ADR-041-native-maintenance-indexes.md) | Index d'importance, index temporel (`Engine::scan_range`) et maintenance bornée (N10) | ✅ Accepted |

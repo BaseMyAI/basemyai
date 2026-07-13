@@ -364,6 +364,14 @@ pub enum EngineError {
         .path.display()
     )]
     UnsupportedStoreFormat { path: PathBuf, expected: u16, found: u16 },
+
+    /// A string handed to the temporal-expiry-index key encoder
+    /// (`key::temporal_index`, ADR-041 §7.2) would overflow that field's
+    /// `u32` length prefix. Sibling of
+    /// [`EngineError::GraphKeyTooLong`]/[`EngineError::MemoryKeyTooLong`]/
+    /// [`EngineError::FtsKeyTooLong`], same rationale.
+    #[error("temporal index key field {field} is {len} bytes, exceeding the u32 length-prefix wire field")]
+    TemporalKeyTooLong { field: &'static str, len: usize },
 }
 
 impl EngineError {

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **N10 — scalable maintenance (ADR-041, §7.1→§7.5).**
+  - Importance API: `Memory::remember_with_importance` / `Memory::set_importance`
+    (NaN/infinite rejected via `MemoryError::InvalidImportance`); `NewMemory`
+    and `MemoryStore::put_memory` gain an `importance: f64` field
+    (`DEFAULT_IMPORTANCE = 1.0`).
+  - Temporal expiry index (`idx/temporal/expiry/`) + `Engine::scan_range`:
+    expired-memory GC is now a bounded range query instead of a full
+    per-agent scan (no `MemoryRecord` decoding at all).
+  - Memory-bounded adaptive forgetting: two paged passes over
+    `Engine::scan_range_page`, survivor selection in `O(capacity)` memory.
+  - `MemoryStore::forget_many` + engine `PersistentMemoryIndex::forget_many`
+    (`ForgetBatchOptions { max_items, max_wal_bytes }`): batched physical
+    deletion in bounded atomic chunks (aggregated FTS stats, grouped vector
+    tombstones, one WAL record per chunk), idempotent resume between chunks.
+    Wired into both eviction paths (GC + adaptive forgetting, CLI and
+    event-emitting `Memory` facade — `Forgotten` events still emitted
+    post-commit, per existing memory).
+  - Agent registry (`meta/agents/`): `NativeMemoryStore::list_agents()` —
+    identifiers only, registered on first insert, unregistered by
+    `purge_agent` (never by a mere forget). Not retroactive for stores
+    written before this change.
+
+### Changed
+
+- **Breaking (trait `MemoryStore`)**: `scan_for_forgetting` is now paginated
+  (`after_id`/`limit`, active-only candidates) and `forget_many` is a new
+  required method.
+
 ## [0.2.0] - 2026-07-10
 
 First native-only release. **Breaking**: no libSQL/V1 compatibility — see
