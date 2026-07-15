@@ -58,12 +58,21 @@ use basemyai_engine::{
 };
 
 /// Matches the earlier N1 spike's rigor (20 cycles) — see
-/// `docs/benchmarks/n1-storage-engine-spike-2026-07-04.md`.
-const CYCLES: u32 = 20;
+/// `docs/benchmarks/n1-storage-engine-spike-2026-07-04.md`. Overridable via
+/// `BASEMYAI_CRASH_CYCLES` (§8.3: the PR gate stays at the default 20 —
+/// "crash smoke test" — while a nightly job can opt into a longer "crash
+/// loops prolongés" run without a second copy of this file). Unset in the
+/// PR gate, so its behavior there is exactly unchanged.
+fn cycles() -> u32 {
+    std::env::var("BASEMYAI_CRASH_CYCLES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20)
+}
 
 #[test]
 fn kill_reopen_verify_loop() {
-    run_cycles(CYCLES);
+    run_cycles(cycles());
 }
 
 /// Batch-mode counterpart of [`kill_reopen_verify_loop`]: same spawn/kill
@@ -72,7 +81,7 @@ fn kill_reopen_verify_loop() {
 /// checked without trusting the writer's own claims about what landed.
 #[test]
 fn batch_kill_reopen_verify_loop() {
-    run_batch_cycles(CYCLES, false);
+    run_batch_cycles(cycles(), false);
 }
 
 /// Encrypted variant of [`batch_kill_reopen_verify_loop`] (N5.4, ADR-030):
@@ -85,7 +94,7 @@ fn batch_kill_reopen_verify_loop() {
 /// the crash guarantees.
 #[test]
 fn encrypted_batch_kill_reopen_verify_loop() {
-    run_batch_cycles(CYCLES, true);
+    run_batch_cycles(cycles(), true);
 }
 
 /// Vector-index counterpart (N3, ADR-026 §3/§4): same spawn/kill machinery,
@@ -93,7 +102,7 @@ fn encrypted_batch_kill_reopen_verify_loop() {
 /// exactly what is asserted after each kill.
 #[test]
 fn vector_kill_reopen_verify_loop() {
-    run_vector_cycles(CYCLES);
+    run_vector_cycles(cycles());
 }
 
 /// Graph-index counterpart (N4): same spawn/kill machinery, `crash_writer`
@@ -101,7 +110,7 @@ fn vector_kill_reopen_verify_loop() {
 /// after each kill.
 #[test]
 fn graph_kill_reopen_verify_loop() {
-    run_graph_cycles(CYCLES);
+    run_graph_cycles(cycles());
 }
 
 /// Memory-triplet counterpart (N5.5, ADR-027 §3/ADR-028 §4): same spawn/kill
@@ -110,7 +119,7 @@ fn graph_kill_reopen_verify_loop() {
 /// See [`run_memory_cycles`] for exactly what is asserted after each kill.
 #[test]
 fn memory_kill_reopen_verify_loop() {
-    run_memory_cycles(CYCLES, false);
+    run_memory_cycles(cycles(), false);
 }
 
 /// Encrypted variant (N5.4, ADR-030) of [`memory_kill_reopen_verify_loop`] —
@@ -120,7 +129,7 @@ fn memory_kill_reopen_verify_loop() {
 /// transparent to crash guarantees" left untried by `encrypted_batch_*`.
 #[test]
 fn encrypted_memory_kill_reopen_verify_loop() {
-    run_memory_cycles(CYCLES, true);
+    run_memory_cycles(cycles(), true);
 }
 
 /// Exposed at a small cycle count so this file can also serve as a fast

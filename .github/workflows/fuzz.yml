@@ -18,12 +18,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Une entrée par cible réelle de crates/basemyai-engine/fuzz/fuzz_targets/
+        # (N11.1, §8.4) — aucune exception, pas de sous-échantillon "représentatif".
         target:
           - key_roundtrip
           - wal_decode
-          - sst_decode_structured
+          - wal_envelope_decode
           - vector_node_decode
+          - vector_node_decode_structured
+          - vector_meta_decode
           - graph_entity_decode
+          - graph_edge_decode
+          - sst_header_decode
+          - sst_data_block_decode
+          - sst_data_block_decode_structured
+          - sst_block_index_decode
+          - sst_block_index_decode_structured
+          - sst_bloom_filter_decode
+          - sst_footer_decode
+          - store_meta_decode
+          - crypto_meta_decode
+          - encrypted_sst_block_decode
+          - fts_docterms_decode
+          - fts_postings_decode
+          - fts_stats_decode
+          - memory_index_meta_decode
+          - memory_record_decode
+          - memory_vecmap_decode
     steps:
       - uses: actions/checkout@v7
 

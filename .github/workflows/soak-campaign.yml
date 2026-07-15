@@ -1,0 +1,55 @@
+name: Soak campaign (long, weekly)
+
+# PLAN-NATIVE-ENGINE.md §8.3, palier "Campagne longue régulière" : soak
+# continu, compaction répétée, clair/chiffré, Windows/Linux/macOS. macOS n'est
+# pas dans le gate de PR ni le nightly (coût ×10 sur le plan Actions gratuit,
+# décision déjà documentée dans ci.yml) — acceptable ici, cadence
+# hebdomadaire. `cargo xtask engine-soak` boucle `engine_bench` (clair+chiffré
+# à chaque cycle), donc chaque cycle exerce déjà flush/compaction répétées.
+#
+# Volontairement PAS couvert par ce chantier (pas de fausse promesse) :
+# rotation de clé pendant le soak, disque presque plein, comptage de handles
+# — aucun de ces trois n'a d'instrumentation moteur/xtask existante à câbler ;
+# ce sont des chantiers de code séparés, pas de la config CI. Voir le suivi
+# dans PLAN-NATIVE-ENGINE.md §8.3/N11.
+
+on:
+  schedule:
+    - cron: "0 4 * * 0" # dimanche 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      cycles:
+        description: "Cycles engine-soak (chaque cycle = 1 engine_bench clair + 1 chiffré)"
+        default: "3"
+      n:
+        description: "Taille du workload par cycle (1000000 pour une vraie campagne 1M à la demande)"
+        default: "200000"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  soak:
+    name: engine-soak (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: soak-campaign
+
+      - name: engine-soak
+        run: |
+          set -euxo pipefail
+          cargo run --manifest-path xtask/Cargo.toml -- engine-soak \
+            "${{ github.event.inputs.cycles || '3' }}" \
+            "${{ github.event.inputs.n || '200000' }}"
