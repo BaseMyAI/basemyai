@@ -66,7 +66,7 @@ sha2 = "0.11"
 # AEAD XChaCha20-Poly1305 (ADR-030 : chiffrement au repos du moteur natif).
 # Pur Rust (RustCrypto), sans feature gate côté moteur — contrairement au
 # `crypto` libSQL, il n'y a aucun coût d'installation (CMake) à éviter.
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 # Effacement mémoire des clés DEK (ADR-030, basemyai-engine).
 zeroize = { version = "1", features = ["derive"] }
 # HTTP framework — basemyai-mcp (transport HTTP) et basemyai-rest.
