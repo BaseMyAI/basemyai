@@ -1,0 +1,77 @@
+name: Nightly (crash loops prolongés + bench 100k)
+
+# PLAN-NATIVE-ENGINE.md §8.3, palier "Nightly" : crash loops prolongés (au-delà
+# du smoke test 20 cycles du gate de PR) + workloads 100k clair/chiffré. Le
+# fuzzing par codec est déjà couvert par `fuzz.yml` (même palier, cron séparé).
+# "delete/reinsert churn" et "tests avec failpoints" sont déjà exercés à
+# chaque PR (`vector_churn`/`failpoints` dans le gate) — aucune raison de les
+# refaire ici à l'identique tant qu'ils ne réclament pas plus de cycles.
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      crash_cycles:
+        description: "Cycles kill/reopen/verify par mode (défaut 200, vs 20 au gate)"
+        default: "200"
+      bench_n:
+        description: "Taille du workload engine_bench (clair+chiffré)"
+        default: "100000"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  crash-consistency-long:
+    name: crash-consistency long (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      BASEMYAI_CRASH_CYCLES: ${{ github.event.inputs.crash_cycles || '200' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-crash-consistency
+
+      - name: Kill/reopen/verify loop (long, basemyai-engine)
+        run: |
+          set -euxo pipefail
+          cargo test -p basemyai-engine --features test-util --test crash_consistency -- --nocapture
+
+  bench-100k:
+    name: engine_bench 100k (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-bench-100k
+
+      - name: engine_bench (clair+chiffré, via cargo xtask engine-bench)
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts
+          cargo run --manifest-path xtask/Cargo.toml -- engine-bench \
+            --n "${{ github.event.inputs.bench_n || '100000' }}" \
+            --out artifacts/engine-bench-nightly.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-bench-nightly-${{ matrix.os }}-${{ github.run_id }}
+          path: artifacts/*.json
+          retention-days: 30

@@ -94,8 +94,11 @@ jobs:
           # persistant), SANS crash_consistency (kill-loop lent, job dédié ci-dessous).
           # + N7 : engine_stats (EngineStats), failpoints (injection d'erreurs aux
           # frontières de durabilité), corruption_smoke (bit-flip SST/WAL/crypto.meta
-          # → erreurs typées, gap manifest N9 pinné).
-          cargo test -p basemyai-engine --features test-util --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test malformed_open --test engine_stats --test failpoints --test corruption_smoke --test format_lock
+          # → erreurs typées, gap manifest ouvert pinné, cf. N11.3).
+          # + N11.2/N11.3 : model_based (BTreeMap de référence vs Engine réel sur
+          # séquences aléatoires déterministes), io_faults (accès refusé + tmp
+          # orphelin déjà présent).
+          cargo test -p basemyai-engine --features test-util --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test malformed_open --test engine_stats --test failpoints --test corruption_smoke --test model_based --test io_faults --test format_lock
           cargo test -p basemyai --features test-util
           # --test memory_tests : runner déclaratif du contrat MemoryStore sur
           # le backend natif (clair + chiffré), zéro divergence tolérée.
