@@ -76,7 +76,7 @@ tower-http  = { version = "0.7", features = ["timeout", "trace", "request-id", "
 # Stream combinators (SSE : relaie `MemorySubscription::recv` en flux axum).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # MCP (Model Context Protocol) — server + macros.
-rmcp        = { version = "1.7", features = ["server", "macros"] }
+rmcp        = { version = "2.2", features = ["server", "macros"] }
 # JSON Schema pour les macros #[tool] de rmcp.
 schemars    = "1.2"
 # Comparaison de tokens en temps constant (auth Bearer anti timing-attack).
