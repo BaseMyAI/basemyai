@@ -42,6 +42,23 @@ test('recallHybrid surfaces exact term via BM25', async () => {
   expect(hits.some((h) => h.text.includes('ACME-42'))).toBe(true);
 });
 
+test('compileContext returns a bounded typed bundle', async () => {
+  const mem = await Memory.openInMemory('agent-context');
+  const id = await mem.remember('BaseMyAI stores local agent memory.', 'semantic');
+
+  const bundle = await mem.compileContext({
+    query: 'local agent memory',
+    tokenBudget: 128,
+    explain: true,
+  });
+
+  expect(bundle.estimatedTokens).toBeLessThanOrEqual(128);
+  expect(bundle.rendered).toContain('BaseMyAI stores local agent memory.');
+  expect(bundle.citations.some((citation) => citation.memoryId === id)).toBe(true);
+  expect(bundle.sections[0].kind).toBe('current_facts');
+  expect(bundle.sections[0].items[0].validFrom).toBeGreaterThan(0);
+});
+
 test('isolation between agents', async () => {
   const a = await Memory.openInMemory('a');
   const b = await Memory.openInMemory('b');

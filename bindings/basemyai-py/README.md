@@ -15,6 +15,7 @@ BaseMyAI gives agents persistent, temporal, multi-layered memory: vector search,
 - Four memory layers: `short_term`, `episodic`, `procedural`, `semantic`
 - Temporal RAG — only memories that are still valid are returned
 - Hybrid recall — vector similarity + BM25 full-text, fused with Reciprocal Rank Fusion
+- Bounded context compilation — typed sections, Markdown rendering, citations, and optional exclusion trace
 - Knowledge graph — entities, relations, multi-hop traversal
 - Per-agent isolation enforced structurally
 - Encryption at rest (native envelope, XChaCha20-Poly1305) — passphrase at open time ([ADR-034](https://github.com/basemyai/basemyai/blob/main/docs/adr/ADR-034-user-key-resolution.md))
@@ -23,14 +24,16 @@ BaseMyAI gives agents persistent, temporal, multi-layered memory: vector search,
 ## Requirements
 
 - Python **3.10+**
-- A local embedding model (`all-MiniLM-L6-v2`, 384d) — provisioned once via the CLI or an explicit path
+- A local embedding model (`all-MiniLM-L6-v2`, 384d) — the only piece that needs one explicit gesture, because fetching it is a real network operation
 
-There is **no silent download at first run**. Fetch the model explicitly:
+There is **no silent download, ever**. Either fetch it once via the CLI:
 
 ```bash
 # Install the CLI from the main repo, or use basemyai setup after distribution
 basemyai setup --fetch
 ```
+
+or consent inline, in code, the first time you call `Memory.open(consent_to_fetch=True)` (see below) — it's cached after that. Everything else (`path`, `agent_id`, the encryption key) needs no setup at all.
 
 ## Installation
 
@@ -42,22 +45,24 @@ Precompiled wheels are provided for Linux, Windows, and macOS (x86_64 and Apple 
 
 ## Quick start
 
-```bash
-# Local dev: create ~/.basemyai/key once (value never printed — back it up)
-basemyai config key generate
-```
+No setup step required — `pip install basemyai` and go:
 
 ```python
 import asyncio
 from basemyai import Memory
 
 async def main():
-    mem = await Memory.open(
-        path="./agent.bmai",
-        agent_id="assistant-42",
-        # encryption_key optional — resolves BASEMYAI_DB_KEY, ~/.basemyai/key, etc.
-        model_dir="~/.basemyai/models/all-MiniLM-L6-v2",
-    )
+    # path defaults to "./basemyai.bmai", agent_id to "default", and the
+    # encryption key is generated at ~/.basemyai/key on first use if none
+    # exists yet (a notice is printed to stderr — back that file up, it's the
+    # only copy). consent_to_fetch=True consents to the one real network op —
+    # fetching the embedding model once; it's cached after that.
+    mem = await Memory.open(consent_to_fetch=True)
+
+    # Running multiple agents, or want everything explicit/scripted? Override
+    # any of these, or run `basemyai config set db-path|agent` once so every
+    # Memory.open() on this machine picks up the same store/agent by default:
+    #   mem = await Memory.open(path="./agent.bmai", agent_id="assistant-42")
 
     # Store a semantic fact
     memory_id = await mem.remember(
@@ -72,6 +77,14 @@ async def main():
 
     # Hybrid recall (vector + full-text)
     hybrid = await mem.recall_hybrid("billing plan", k=10)
+
+    # Bounded prompt context with inspectable provenance
+    context = await mem.compile_context(
+        "billing plan",
+        token_budget=512,
+        explain=True,
+    )
+    print(context.rendered, context.citations)
 
     # Knowledge graph
     await mem.add_graph_entity("alice", "person", "Alice")
@@ -100,9 +113,11 @@ asyncio.run(main())
 |---|---|
 | `Memory.open(...)` | Open an encrypted `.bmai` store with a local embedder |
 | `remember(text, layer)` | Store a memory; returns its UUID |
+| `observe(turns)` | Ingest raw conversation turns (`list[tuple[role, content]]`) as episodic memories in one batch; returns their UUIDs |
 | `recall(query, k)` | Temporal semantic recall |
 | `recall_by_layer(query, layer, k)` | Recall scoped to one layer |
 | `recall_hybrid(query, k)` | Vector + BM25 fused with RRF |
+| `compile_context(query, token_budget, ...)` | Bounded Markdown context plus typed sections, citations, merges, and optional exclusions |
 | `invalidate(id)` | Soft-delete (sets `valid_until` to now) |
 | `forget(id)` | Physical delete (GDPR right to erasure) |
 | `stats()` | Count of valid memories per layer |
@@ -113,12 +128,13 @@ asyncio.run(main())
 
 | Parameter | Required | Description |
 |---|---|---|
-| `path` | yes | Path to the `.bmai` container file |
-| `agent_id` | yes | Tenant identifier (per-agent isolation) |
-| `encryption_key` | no | Passphrase override; if omitted, [ADR-034](https://github.com/basemyai/basemyai/blob/main/docs/security/key-resolution.md) resolution applies (`BASEMYAI_DB_KEY`, `BASEMYAI_DB_KEY_FILE`, `~/.basemyai/key`, …) |
+| `path` | no | Path to the `.bmai` container file. Resolution order: explicit → `~/.basemyai/config.toml` / `BASEMYAI_DB_PATH` (`basemyai config set db-path <path>`) → built-in default `./basemyai.bmai` (relative to the process's working directory) |
+| `agent_id` | no | Tenant identifier (per-agent isolation). Same resolution order, built-in default `"default"` |
+| `encryption_key` | no | Explicit credential. Without it, [ADR-034](https://github.com/basemyai/basemyai/blob/main/docs/security/key-resolution.md) resolution applies (`BASEMYAI_DB_KEY`, `BASEMYAI_DB_KEY_FILE`, `~/.basemyai/key`, …); if no source exists **anywhere**, a key is generated and persisted to `~/.basemyai/key` automatically (stderr notice — back that file up, it's the only copy and losing it makes existing data unrecoverable) |
+| `credential_mode` | no | Interpretation of an explicit credential: `raw` (default) or `passphrase` (Argon2id) |
 | `model_dir` | no | Path to `all-MiniLM-L6-v2` model files |
 | `device` | no | `"auto"`, `"cpu"`, `"cuda"`, or `"metal"` (default: `"auto"`) |
-| `consent_to_fetch` | no | If `model_dir` is omitted, allow explicit model download (default: `false`) |
+| `consent_to_fetch` | no | Consent to fetch the model if it isn't cached and `model_dir` is omitted (default: `False`) — the one operation this SDK will never do silently, because it's a real network call |
 
 ## Test-only API
 

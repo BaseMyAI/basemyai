@@ -11,6 +11,14 @@ export declare class Memory {
   agent(): string
   /** Mémorise `text` dans une couche (défaut `semantic`). Résout vers l'UUID. */
   remember(text: string, layer?: string | undefined | null): Promise<string>
+  /**
+   * Ingère une conversation brute : chaque tour devient un souvenir
+   * épisodique (`"{role}: {content}"`), en un seul batch. Aucune extraction
+   * de faits ici — c'est la consolidation (tâche de fond) qui promeut plus
+   * tard des faits durables en couche `semantic` à partir de ces épisodes.
+   * Résout vers les UUID créés, dans l'ordre des tours.
+   */
+  observe(turns: Array<ConversationTurn>): Promise<Array<string>>
   /** Recall temporel sémantique : résout vers un tableau de `Record`. */
   recall(query: string, k?: number | undefined | null, includeProcedural?: boolean | undefined | null, excludeImported?: boolean | undefined | null): Promise<Array<Record>>
   /** Recall limité à une couche mémoire (`short_term`, `episodic`, `procedural`, `semantic`). */
@@ -20,6 +28,8 @@ export declare class Memory {
    * un tableau de `Record` (le `score` porte le score RRF fusionné).
    */
   recallHybrid(query: string, k?: number | undefined | null, includeProcedural?: boolean | undefined | null, excludeImported?: boolean | undefined | null): Promise<Array<Record>>
+  /** Compile a bounded, traceable Markdown context from hybrid recall. */
+  compileContext(options: ContextOptions): Promise<ContextBundle>
   /** Invalide (soft-delete) un souvenir par son id. */
   invalidate(id: string): Promise<void>
   /** Supprime physiquement un souvenir (droit à l'effacement). */
@@ -102,13 +112,34 @@ export interface MemoryEventPayload {
   id: string
 }
 
-/** Options de production pour ouvrir une mémoire persistée. */
+/**
+ * Options de production pour ouvrir une mémoire persistée. Tout est
+ * optionnel : `path`/`agentId` retombent sur `~/.basemyai/config.toml` /
+ * `BASEMYAI_DB_PATH` / `BASEMYAI_AGENT` (même résolution que la CLI) puis sur
+ * un défaut intégré (`./basemyai.bmai`, agent `"default"`) ; sans
+ * `encryptionKey` ni source configurée, une clé est générée et persistée
+ * dans `~/.basemyai/key`. Seul le téléchargement du modèle
+ * (`allowModelDownload`) reste soumis à consentement explicite — jamais
+ * silencieux (ADR-010).
+ */
 export interface MemoryOpenOptions {
-  path: string
-  agentId: string
+  path?: string
+  agentId?: string
   encryptionKey?: string
+  /** `raw` (default for an explicit key) or `passphrase` (Argon2id). */
+  credentialMode?: 'raw' | 'passphrase'
   modelPath?: string
   allowModelDownload?: boolean
+}
+
+/**
+ * Un tour de conversation brut (rôle + contenu) à ingérer via
+ * `Memory.observe()`. `role` n'est pas validé : libellé libre (`"user"`,
+ * `"assistant"`, `"system"`, ...), simplement reporté dans le texte mémorisé.
+ */
+export interface ConversationTurn {
+  role: string
+  content: string
 }
 
 /** Un souvenir retourné par `recall`. */
@@ -123,4 +154,70 @@ export interface Record {
   source: string
   /** Provenance typée (ADR-036). */
   trust: string
+  /** Inclusive validity start as a Unix UTC timestamp. */
+  validFrom: number
+  /** Exclusive validity end, when bounded. */
+  validUntil?: number
+}
+
+export type ContextSourcePolicy = 'allow_all' | 'exclude_imported' | 'user_and_consolidation_only'
+export type ContextSectionKind = 'working_context' | 'current_facts' | 'procedures' | 'recent_events' | 'unknown'
+export type ContextTemporalStatus = 'current' | 'scheduled' | 'expired' | 'unknown'
+export type ExclusionReason = 'source_filtered' | 'not_currently_valid' | 'token_budget' | 'unknown'
+
+export interface ContextOptions {
+  query: string
+  tokenBudget: number
+  candidateLimit?: number
+  includeProcedural?: boolean
+  sourcePolicy?: ContextSourcePolicy
+  explain?: boolean
+}
+
+export interface ContextItem {
+  text: string
+  sourceMemoryIds: Array<string>
+  layer: string
+  trust: string
+  validFrom: number
+  validUntil?: number
+  temporalStatus: ContextTemporalStatus
+  retrievalScore: number
+  retrievalRank: number
+  estimatedTokens: number
+  utilityScore: number
+  valuePerToken: number
+  freshnessScore: number
+}
+
+export interface ContextSection {
+  kind: ContextSectionKind
+  items: Array<ContextItem>
+}
+
+export interface ContextCitation {
+  memoryId: string
+  section: ContextSectionKind
+}
+
+export interface ExcludedMemory {
+  memoryId: string
+  reason: ExclusionReason
+  temporalStatus: ContextTemporalStatus
+}
+
+export interface MergedMemory {
+  memoryId: string
+  representativeMemoryId: string
+}
+
+export interface ContextBundle {
+  sections: Array<ContextSection>
+  rendered: string
+  estimatedTokens: number
+  compiledAt: number
+  totalUtility: number
+  citations: Array<ContextCitation>
+  merged: Array<MergedMemory>
+  excluded: Array<ExcludedMemory>
 }

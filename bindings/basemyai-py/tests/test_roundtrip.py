@@ -45,6 +45,20 @@ async def test_recall_hybrid_surfaces_exact_term():
 
 
 @pytest.mark.asyncio
+async def test_compile_context_returns_bounded_typed_bundle():
+    mem = await basemyai.Memory.open_in_memory("agent-context")
+    memory_id = await mem.remember("BaseMyAI stores local agent memory.", layer="semantic")
+
+    bundle = await mem.compile_context("local agent memory", token_budget=128, explain=True)
+
+    assert bundle.estimated_tokens <= 128
+    assert "BaseMyAI stores local agent memory." in bundle.rendered
+    assert any(citation.memory_id == memory_id for citation in bundle.citations)
+    assert bundle.sections[0].kind == "current_facts"
+    assert bundle.sections[0].items[0].valid_from > 0
+
+
+@pytest.mark.asyncio
 async def test_recall_by_layer_filters_results():
     mem = await basemyai.Memory.open_in_memory("agent-1")
     semantic_id = await mem.remember("layered content shared token", layer="semantic")
@@ -207,6 +221,8 @@ def test_exports_and_typing_marker_present():
     assert hasattr(basemyai.Memory, "recall_by_layer")
     assert hasattr(basemyai.Memory, "add_graph_entity")
     assert hasattr(basemyai.Memory, "add_graph_edge")
+    assert hasattr(basemyai.Memory, "compile_context")
+    assert "ContextBundle" in basemyai.__all__
     package_dir = Path(basemyai.__path__[0])
     assert (package_dir / "__init__.pyi").is_file()
     assert (package_dir / "py.typed").is_file()

@@ -23,10 +23,9 @@ use basemyai_core::{CandleEmbedder, Device, Embedder};
 
 #[cfg(feature = "embed")]
 use crate::errors::EncryptionError;
-#[cfg(feature = "embed")]
 use crate::errors::ValidationError;
 use crate::errors::to_pyerr;
-use crate::types::{AgentStats, Entity, Record, WatchEvent};
+use crate::types::{AgentStats, ContextBundle, Entity, Record, WatchEvent, parse_source_policy};
 
 /// Mémoire d'un agent (tenant). Construite via une fabrique asynchrone, puis
 /// interrogée par `remember`/`recall`/... (toutes asynchrones).
@@ -49,23 +48,40 @@ impl Memory {
     /// Ouvre une mémoire persistante chiffrée (moteur natif, ADR-032) avec
     /// l'embedder Candle local.
     ///
-    /// Si `encryption_key` est omis, la résolution ADR-034 s'applique (`BASEMYAI_DB_KEY`,
-    /// `BASEMYAI_DB_KEY_FILE`, `~/.basemyai/key`, etc.).
+    /// `path`/`agent_id` sont optionnels : omis, ils retombent sur
+    /// `~/.basemyai/config.toml` / `BASEMYAI_DB_PATH` / `BASEMYAI_AGENT`
+    /// (même résolution que la CLI, `basemyai config set db-path|agent`),
+    /// puis sur un défaut intégré (`./basemyai.bmai`, agent `"default"`) —
+    /// jamais d'erreur pour absence de configuration.
+    /// Si `encryption_key` est omis, la résolution ADR-034 s'applique
+    /// (`BASEMYAI_DB_KEY`, `BASEMYAI_DB_KEY_FILE`, `~/.basemyai/key`, etc.) ;
+    /// si aucune source n'existe nulle part, une clé est générée et persistée
+    /// automatiquement (avis imprimé sur stderr — sauvegardez ce fichier).
+    /// Une credential explicite utilise `credential_mode="raw"` par défaut ;
+    /// choisir `"passphrase"` active Argon2id pour cet appel.
     /// Si `model_dir` est absent, le provisioning ne télécharge le modèle que si
     /// `consent_to_fetch=True`. Par défaut, aucun accès réseau n'est déclenché.
     #[cfg(feature = "embed")]
     #[staticmethod]
-    #[pyo3(signature = (path, agent_id, *, encryption_key = None, model_dir = None, device = "auto".to_string(), consent_to_fetch = false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (path = None, agent_id = None, *, encryption_key = None, credential_mode = None, model_dir = None, device = "auto".to_string(), consent_to_fetch = false))]
     fn open(
         py: Python<'_>,
-        path: String,
-        agent_id: String,
+        path: Option<String>,
+        agent_id: Option<String>,
         encryption_key: Option<String>,
+        credential_mode: Option<String>,
         model_dir: Option<String>,
         device: String,
         consent_to_fetch: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
+            let defaults = basemyai::ConfigDefaults::load();
+            let path = defaults
+                .resolve_open_path(path.map(PathBuf::from))
+                .display()
+                .to_string();
+            let agent_id = defaults.resolve_open_agent(agent_id);
             let agent =
                 AgentId::new(agent_id).ok_or_else(|| ValidationError::new_err("a valid agent_id is required"))?;
             let parsed_device = parse_device(&device)?;
@@ -83,8 +99,7 @@ impl Memory {
                     .map_err(basemyai::MemoryError::from)
                     .map_err(to_pyerr)?,
             );
-            let key = EncryptionKey::resolve(encryption_key.as_deref())
-                .map_err(|e| EncryptionError::new_err(e.to_string()))?;
+            let key = resolve_encryption_key(encryption_key, credential_mode.as_deref())?;
             let mem = basemyai::Memory::open_native(PathBuf::from(path), &key, embedder, agent)
                 .await
                 .map_err(to_pyerr)?;
@@ -115,6 +130,23 @@ impl Memory {
         future_into_py(py, async move {
             let layer = MemoryLayer::from_table(&layer).map_err(to_pyerr)?;
             inner.remember(&text, layer).await.map_err(to_pyerr)
+        })
+    }
+
+    /// Ingère une conversation brute : chaque tour `(role, content)` devient
+    /// un souvenir épisodique (`"{role}: {content}"`), en un seul batch.
+    /// Aucune extraction de faits ici — c'est la consolidation (tâche de
+    /// fond) qui promeut plus tard des faits durables en couche `semantic`
+    /// à partir de ces épisodes. Rend la `list[str]` des UUID créés, dans
+    /// l'ordre des tours.
+    fn observe<'p>(&self, py: Python<'p>, turns: Vec<(String, String)>) -> PyResult<Bound<'p, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        future_into_py(py, async move {
+            let turns: Vec<basemyai::ConversationTurn> = turns
+                .into_iter()
+                .map(|(role, content)| basemyai::ConversationTurn::new(role, content))
+                .collect();
+            inner.observe(&turns).await.map_err(to_pyerr)
         })
     }
 
@@ -178,6 +210,36 @@ impl Memory {
                 .await
                 .map_err(to_pyerr)?;
             Ok(records.into_iter().map(Record::from_hybrid).collect::<Vec<_>>())
+        })
+    }
+
+    /// Compile un recall hybride en contexte Markdown borné et traçable.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (query, token_budget, *, candidate_limit = 64, include_procedural = false, source_policy = "exclude_imported".to_string(), explain = false))]
+    fn compile_context<'p>(
+        &self,
+        py: Python<'p>,
+        query: String,
+        token_budget: usize,
+        candidate_limit: usize,
+        include_procedural: bool,
+        source_policy: String,
+        explain: bool,
+    ) -> PyResult<Bound<'p, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let source_policy = parse_source_policy(&source_policy).map_err(ValidationError::new_err)?;
+        future_into_py(py, async move {
+            let mut request = basemyai::ContextRequest::new(&query, token_budget)
+                .candidate_limit(candidate_limit)
+                .source_policy(source_policy);
+            if include_procedural {
+                request = request.include_procedural();
+            }
+            if explain {
+                request = request.explain();
+            }
+            let bundle = inner.compile_context(request).await.map_err(to_pyerr)?;
+            Ok(ContextBundle::from(bundle))
         })
     }
 
@@ -274,6 +336,65 @@ impl Memory {
         Ok(MemoryWatch {
             subscription: Arc::new(AsyncMutex::new(subscription)),
         })
+    }
+}
+
+#[cfg(feature = "embed")]
+/// Résout la clé de chiffrement. Sans credential explicite et sans source
+/// configurée nulle part (env, fichier), **génère et persiste** une clé dans
+/// `~/.basemyai/key` plutôt que d'échouer ([`EncryptionKey::resolve_or_generate`])
+/// — générer une clé est une opération locale hors-ligne, contrairement au
+/// téléchargement de modèle (ADR-010) qui lui reste soumis à consentement
+/// explicite. Imprime un avis sur stderr quand une clé vient d'être créée :
+/// c'est la seule copie, sa perte rend les données existantes irrécupérables.
+fn resolve_encryption_key(encryption_key: Option<String>, credential_mode: Option<&str>) -> PyResult<EncryptionKey> {
+    match encryption_key {
+        Some(material) => match credential_mode.unwrap_or("raw") {
+            "raw" | "raw-key" | "raw_key" => Ok(EncryptionKey::raw(material)),
+            "passphrase" => Ok(EncryptionKey::passphrase(material)),
+            other => Err(ValidationError::new_err(format!(
+                "credential_mode must be 'raw' or 'passphrase', got {other:?}"
+            ))),
+        },
+        None => {
+            let (key, generated_at) =
+                EncryptionKey::resolve_or_generate(None).map_err(|e| EncryptionError::new_err(e.to_string()))?;
+            if let Some(path) = generated_at {
+                eprintln!(
+                    "basemyai: generated a new encryption key at {} — back this file up, it cannot be recovered if lost",
+                    path.display()
+                );
+            }
+            Ok(key)
+        }
+    }
+}
+
+#[cfg(all(test, feature = "embed"))]
+mod credential_tests {
+    use basemyai_core::EncryptionKeyMode;
+
+    use super::resolve_encryption_key;
+
+    #[test]
+    fn explicit_credentials_use_the_per_call_mode() {
+        assert_eq!(
+            resolve_encryption_key(Some("secret".to_string()), Some("raw"))
+                .expect("raw credential")
+                .mode(),
+            EncryptionKeyMode::RawKey
+        );
+        assert_eq!(
+            resolve_encryption_key(Some("secret".to_string()), Some("passphrase"))
+                .expect("passphrase credential")
+                .mode(),
+            EncryptionKeyMode::Passphrase
+        );
+    }
+
+    #[test]
+    fn explicit_credentials_reject_unknown_modes() {
+        assert!(resolve_encryption_key(Some("secret".to_string()), Some("automatic")).is_err());
     }
 }
 
