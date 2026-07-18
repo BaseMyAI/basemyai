@@ -54,6 +54,8 @@ serde_json = { workspace = true }
 # Client HTTP async — détection des serveurs LLM locaux (Ollama, llama.cpp).
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+# Parsing de ~/.basemyai/config.toml (défauts db_path/agent partagés CLI+bindings).
+toml = { workspace = true }
 # Détection GPU NVIDIA (NVML) — optionnelle, feature `cuda-detect`.
 nvml-wrapper = { workspace = true, optional = true }
 
@@ -68,6 +70,13 @@ basemyai-core = { path = "../basemyai-core" }
 # invisible puisque ce crate n'est ni en `cfg(test)` ni construit avec sa
 # propre feature `test-util`.
 basemyai-engine = { path = "../basemyai-engine", features = ["test-util"] }
+# Dev-dependency sur soi-même avec `test-util` : les tests d'intégration
+# (`tests/`) appellent `NativeMemoryStore::open`/`open_ephemeral` (gardés
+# `cfg(any(test, feature = "test-util"))`) mais ne sont PAS en `cfg(test)` du
+# crate — sans ceci, seul un `--features test-util` explicite (matrice
+# xtask/CI) les fait compiler, et `cargo check --workspace --all-targets` nu
+# casse (E0599). Path-only, donc strippée à la publication.
+basemyai = { path = ".", features = ["test-util"] }
 tempfile.workspace = true
 
 [lints]

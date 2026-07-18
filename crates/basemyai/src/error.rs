@@ -86,6 +86,21 @@ pub enum MemoryError {
         /// Valeur rejetée.
         value: f64,
     },
+
+    /// Un budget nul ne peut contenir aucun contexte et masque généralement
+    /// une erreur de configuration de l'appelant.
+    #[error("context token budget must be greater than zero")]
+    InvalidContextTokenBudget,
+
+    /// Le pool de candidats doit etre non nul et borne afin que la compilation
+    /// conserve un cout CPU/memoire previsible.
+    #[error("context candidate limit must be between 1 and {max}, got {value}")]
+    InvalidContextCandidateLimit {
+        /// Valeur rejetee.
+        value: usize,
+        /// Limite publique acceptee.
+        max: usize,
+    },
 }
 
 /// Alias de résultat de la couche mémoire.

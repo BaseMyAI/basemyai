@@ -7,7 +7,7 @@
 
 /// Fenêtre de validité d'une mémoire. `valid_until = None` => valide jusqu'à
 /// invalidation explicite.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Validity {
     /// Timestamp Unix (UTC) de début de validité.
     pub valid_from: i64,

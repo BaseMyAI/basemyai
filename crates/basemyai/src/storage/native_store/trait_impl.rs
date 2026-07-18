@@ -288,6 +288,10 @@ impl MemoryStore for NativeMemoryStore {
                     layer: MemoryLayer::from_table(&record.layer)?,
                     score: distance,
                     source: record.source,
+                    validity: Validity {
+                        valid_from: record.valid_from,
+                        valid_until: record.valid_until,
+                    },
                 })
             })
             .collect()
@@ -344,6 +348,10 @@ impl MemoryStore for NativeMemoryStore {
                     layer: MemoryLayer::from_table(&record.layer)?,
                     score: distance,
                     source: record.source,
+                    validity: Validity {
+                        valid_from: record.valid_from,
+                        valid_until: record.valid_until,
+                    },
                 })
             })
             .collect()
@@ -439,6 +447,10 @@ impl MemoryStore for NativeMemoryStore {
                             text: record.content,
                             layer: MemoryLayer::from_table(&record.layer)?,
                             source: record.source,
+                            validity: Validity {
+                                valid_from: record.valid_from,
+                                valid_until: record.valid_until,
+                            },
                         });
                     }
                 }
