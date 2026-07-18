@@ -1,0 +1,1277 @@
+{
+  "report_version": 1,
+  "dataset": "recall-core.jsonl",
+  "dataset_fingerprint": "fnv1a64:bca133f8726b6383",
+  "deterministic_timings": true,
+  "cases": [
+    {
+      "id": "direct-release-id",
+      "suite": "direct_relevance",
+      "description": "A rare release identifier must win hybrid retrieval and remain cited in the bundle.",
+      "seed": 101,
+      "query": "REL-020-NATIVE",
+      "retrieval": {
+        "vector": {
+          "ids": [
+            "release-noise",
+            "release-nearby",
+            "release-target"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.6666666666666666,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_k": 0.5413402936435214,
+            "exact_id_hit_rate": 1.0
+          }
+        },
+        "hybrid": {
+          "ids": [
+            "release-target",
+            "release-noise",
+            "release-nearby"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.6666666666666666,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 0.9828422279067397,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "Release REL-020-NATIVE requires the native format compatibility check before publish.",
+            "source_ids": [
+              "release-target"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 43
+          },
+          {
+            "section": "current_facts",
+            "text": "The release checklist includes changelog and package metadata review.",
+            "source_ids": [
+              "release-nearby"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 38
+          },
+          {
+            "section": "recent_events",
+            "text": "The office maintenance window is Friday afternoon.",
+            "source_ids": [
+              "release-noise"
+            ],
+            "layer": "episodic",
+            "provenance": "user",
+            "estimated_tokens": 31
+          }
+        ],
+        "included_ids": [
+          "release-nearby",
+          "release-noise",
+          "release-target"
+        ],
+        "excluded": [],
+        "merged": [],
+        "estimated_tokens": 107,
+        "token_budget": 512,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.14285714285714285,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "retrieval.vector.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.vector.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "temporal-stale-replacement",
+      "suite": "temporal_stale",
+      "description": "An expired rollout value must stay absent while its current replacement is recalled.",
+      "seed": 102,
+      "query": "ROLLOUT-PERCENT-9",
+      "retrieval": {
+        "hybrid": {
+          "ids": [
+            "rollout-current",
+            "rollout-note"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 1.0,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "ROLLOUT-PERCENT-9 is 35 percent for the desktop ring.",
+            "source_ids": [
+              "rollout-current"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 33
+          },
+          {
+            "section": "recent_events",
+            "text": "The rollout owner reviews telemetry each morning.",
+            "source_ids": [
+              "rollout-note"
+            ],
+            "layer": "episodic",
+            "provenance": "user",
+            "estimated_tokens": 31
+          }
+        ],
+        "included_ids": [
+          "rollout-current",
+          "rollout-note"
+        ],
+        "excluded": [],
+        "merged": [],
+        "estimated_tokens": 64,
+        "token_budget": 512,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.17647058823529413,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "poisoning-import-filter",
+      "suite": "poisoning_trust",
+      "description": "Imported and unknown hostile instructions remain observable in raw recall provenance but cannot leak through a strict bundle policy.",
+      "seed": 103,
+      "query": "DEPLOY-TRUST-77",
+      "retrieval": {
+        "hybrid": {
+          "ids": [
+            "deploy-hostile-unknown",
+            "deploy-safe",
+            "deploy-hostile-import",
+            "deploy-context"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 0.5,
+            "ndcg_at_k": 0.6352023920551748,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "DEPLOY-TRUST-77 requires signed artifacts and a passing offline test gate.",
+            "source_ids": [
+              "deploy-safe"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 39
+          },
+          {
+            "section": "recent_events",
+            "text": "The deployment is performed from an isolated release workstation.",
+            "source_ids": [
+              "deploy-context"
+            ],
+            "layer": "episodic",
+            "provenance": "user",
+            "estimated_tokens": 37
+          }
+        ],
+        "included_ids": [
+          "deploy-context",
+          "deploy-safe"
+        ],
+        "excluded": [
+          {
+            "id": "deploy-hostile-import",
+            "reason": "source_filtered",
+            "temporal_status": "current"
+          },
+          {
+            "id": "deploy-hostile-unknown",
+            "reason": "source_filtered",
+            "temporal_status": "current"
+          }
+        ],
+        "merged": [],
+        "estimated_tokens": 75,
+        "token_budget": 512,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.0,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "procedure-exact-id",
+      "suite": "procedures_ids",
+      "description": "An explicitly enabled procedure with a rare incident ID must be retrieved and represented in the procedure section.",
+      "seed": 104,
+      "query": "RUNBOOK-DB-481",
+      "retrieval": {
+        "hybrid": {
+          "ids": [
+            "runbook-reference",
+            "runbook-procedure",
+            "runbook-noise"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 0.8339912323981488,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "RUNBOOK-DB-481 is owned by the storage on-call rotation.",
+            "source_ids": [
+              "runbook-reference"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 35
+          },
+          {
+            "section": "current_facts",
+            "text": "The dashboard refresh interval is five minutes.",
+            "source_ids": [
+              "runbook-noise"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 30
+          },
+          {
+            "section": "procedures",
+            "text": "RUNBOOK-DB-481: stop writes, verify the WAL, snapshot the store, then resume traffic.",
+            "source_ids": [
+              "runbook-procedure"
+            ],
+            "layer": "procedural",
+            "provenance": "user",
+            "estimated_tokens": 43
+          }
+        ],
+        "included_ids": [
+          "runbook-noise",
+          "runbook-procedure",
+          "runbook-reference"
+        ],
+        "excluded": [],
+        "merged": [],
+        "estimated_tokens": 102,
+        "token_budget": 512,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.21875,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "exact-dedup-citations",
+      "suite": "deduplication",
+      "description": "Whitespace and case equivalent facts collapse into one item while preserving both source IDs.",
+      "seed": 105,
+      "query": "DEDUP-NATIVE-44",
+      "retrieval": {
+        "hybrid": {
+          "ids": [
+            "dedup-b",
+            "dedup-a",
+            "dedup-other"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 1.0,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "dedup-native-44 CONFIRMS the store is native only.",
+            "source_ids": [
+              "dedup-a",
+              "dedup-b"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 32
+          },
+          {
+            "section": "current_facts",
+            "text": "A separate migration note covers old package names.",
+            "source_ids": [
+              "dedup-other"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 31
+          }
+        ],
+        "included_ids": [
+          "dedup-a",
+          "dedup-b",
+          "dedup-other"
+        ],
+        "excluded": [],
+        "merged": [
+          {
+            "id": "dedup-a",
+            "representative_id": "dedup-b"
+          }
+        ],
+        "estimated_tokens": 57,
+        "token_budget": 512,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.058823529411764705,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "budget-512",
+      "suite": "budgets",
+      "description": "The smallest canonical budget remains a hard upper bound.",
+      "seed": 106,
+      "query": "BUDGET-512-TARGET",
+      "retrieval": {
+        "hybrid": {
+          "ids": [
+            "budget-512-target",
+            "budget-512-context"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 1.0,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "BUDGET-512-TARGET requires the compact rollback command and the owner ID.",
+            "source_ids": [
+              "budget-512-target"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 40
+          },
+          {
+            "section": "recent_events",
+            "text": "Rollback validation checks the active generation and the recovery marker.",
+            "source_ids": [
+              "budget-512-context"
+            ],
+            "layer": "episodic",
+            "provenance": "user",
+            "estimated_tokens": 41
+          }
+        ],
+        "included_ids": [
+          "budget-512-context",
+          "budget-512-target"
+        ],
+        "excluded": [],
+        "merged": [],
+        "estimated_tokens": 81,
+        "token_budget": 512,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.22727272727272727,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "budget-2000",
+      "suite": "budgets",
+      "description": "A 2000 token context budget remains a hard upper bound.",
+      "seed": 107,
+      "query": "BUDGET-2000-TARGET",
+      "retrieval": {
+        "hybrid": {
+          "ids": [
+            "budget-2000-target",
+            "budget-2000-context"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 1.0,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "BUDGET-2000-TARGET preserves citations for each selected operational fact.",
+            "source_ids": [
+              "budget-2000-target"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 41
+          },
+          {
+            "section": "recent_events",
+            "text": "The operator checks package versions before publishing the release.",
+            "source_ids": [
+              "budget-2000-context"
+            ],
+            "layer": "episodic",
+            "provenance": "user",
+            "estimated_tokens": 39
+          }
+        ],
+        "included_ids": [
+          "budget-2000-context",
+          "budget-2000-target"
+        ],
+        "excluded": [],
+        "merged": [],
+        "estimated_tokens": 80,
+        "token_budget": 2000,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.05263157894736842,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "budget-8000",
+      "suite": "budgets",
+      "description": "An 8000 token context budget remains a hard upper bound.",
+      "seed": 108,
+      "query": "BUDGET-8000-TARGET",
+      "retrieval": {
+        "hybrid": {
+          "ids": [
+            "budget-8000-target",
+            "budget-8000-context"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 1.0,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "BUDGET-8000-TARGET keeps current facts ahead of unrelated historical events.",
+            "source_ids": [
+              "budget-8000-target"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 42
+          },
+          {
+            "section": "recent_events",
+            "text": "Historical release notes remain available as episodic context.",
+            "source_ids": [
+              "budget-8000-context"
+            ],
+            "layer": "episodic",
+            "provenance": "user",
+            "estimated_tokens": 37
+          }
+        ],
+        "included_ids": [
+          "budget-8000-context",
+          "budget-8000-target"
+        ],
+        "excluded": [],
+        "merged": [],
+        "estimated_tokens": 79,
+        "token_budget": 8000,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.05263157894736842,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "budget-32000",
+      "suite": "budgets",
+      "description": "A 32000 token context budget remains a hard upper bound.",
+      "seed": 109,
+      "query": "BUDGET-32000-TARGET",
+      "retrieval": {
+        "hybrid": {
+          "ids": [
+            "budget-32000-target",
+            "budget-32000-context"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 1.0,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "BUDGET-32000-TARGET still reports the exact estimated token count of the rendered bundle.",
+            "source_ids": [
+              "budget-32000-target"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 46
+          },
+          {
+            "section": "recent_events",
+            "text": "Large budgets do not weaken provenance or temporal filtering.",
+            "source_ids": [
+              "budget-32000-context"
+            ],
+            "layer": "episodic",
+            "provenance": "user",
+            "estimated_tokens": 37
+          }
+        ],
+        "included_ids": [
+          "budget-32000-context",
+          "budget-32000-target"
+        ],
+        "excluded": [],
+        "merged": [],
+        "estimated_tokens": 84,
+        "token_budget": 32000,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.043478260869565216,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "graph-two-hop",
+      "suite": "graph",
+      "description": "Graph-filtered recall surfaces memories mentioning entities connected across two hops.",
+      "seed": 110,
+      "query": "GRAPH-ACME-71",
+      "retrieval": {
+        "hybrid": {
+          "ids": [
+            "graph-alice",
+            "graph-beta",
+            "graph-noise"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 1.0,
+            "exact_id_hit_rate": 1.0
+          }
+        },
+        "graph": {
+          "ids": [
+            "graph-beta",
+            "graph-alice"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.4,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 0.8339912323981488,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "GRAPH-ACME-71 Alice leads the Acme migration.",
+            "source_ids": [
+              "graph-alice"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 29
+          },
+          {
+            "section": "current_facts",
+            "text": "Beta supplies the archive service used by Acme.",
+            "source_ids": [
+              "graph-beta"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 29
+          },
+          {
+            "section": "current_facts",
+            "text": "The cafeteria closes at six.",
+            "source_ids": [
+              "graph-noise"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 23
+          }
+        ],
+        "included_ids": [
+          "graph-alice",
+          "graph-beta",
+          "graph-noise"
+        ],
+        "excluded": [],
+        "merged": [],
+        "estimated_tokens": 70,
+        "token_budget": 512,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.19047619047619047,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.graph.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.graph.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    },
+    {
+      "id": "deterministic-repeat",
+      "suite": "determinism",
+      "description": "Two isolated executions produce the same normalized ranking, bundle and quality metrics.",
+      "seed": 111,
+      "query": "DETERMINISM-991",
+      "retrieval": {
+        "vector": {
+          "ids": [
+            "deterministic-secondary",
+            "deterministic-target"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.6666666666666666,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 0.7098097413968655,
+            "exact_id_hit_rate": 1.0
+          }
+        },
+        "hybrid": {
+          "ids": [
+            "deterministic-target",
+            "deterministic-secondary"
+          ],
+          "metrics": {
+            "hit_at_k": 1.0,
+            "recall_at_k": 1.0,
+            "precision_at_k": 0.6666666666666666,
+            "mean_reciprocal_rank": 1.0,
+            "ndcg_at_k": 1.0,
+            "exact_id_hit_rate": 1.0
+          }
+        }
+      },
+      "bundle": {
+        "items": [
+          {
+            "section": "current_facts",
+            "text": "DETERMINISM-991 selects the same cited fact on every isolated run.",
+            "source_ids": [
+              "deterministic-target"
+            ],
+            "layer": "semantic",
+            "provenance": "user",
+            "estimated_tokens": 39
+          },
+          {
+            "section": "recent_events",
+            "text": "A deterministic report omits wall-clock latency by default.",
+            "source_ids": [
+              "deterministic-secondary"
+            ],
+            "layer": "episodic",
+            "provenance": "user",
+            "estimated_tokens": 38
+          }
+        ],
+        "included_ids": [
+          "deterministic-secondary",
+          "deterministic-target"
+        ],
+        "excluded": [],
+        "merged": [],
+        "estimated_tokens": 77,
+        "token_budget": 512,
+        "metrics": {
+          "must_include_coverage": 1.0,
+          "forbidden_inclusion_rate": 0.0,
+          "budget_compliant": true,
+          "duplicate_token_ratio": 0.0,
+          "provenance_coverage": 1.0,
+          "stale_fact_rate": 0.0,
+          "source_filtered_leakage_rate": 0.0,
+          "procedure_coverage": 1.0,
+          "unreported_conflicts": 0
+        }
+      },
+      "assertions": [
+        {
+          "name": "bundle.budget",
+          "passed": true,
+          "details": "budget compliant: true"
+        },
+        {
+          "name": "bundle.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs included: []"
+        },
+        {
+          "name": "bundle.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "determinism",
+          "passed": true,
+          "details": "normalized outputs and quality metrics must match a second isolated run"
+        },
+        {
+          "name": "provenance",
+          "passed": true,
+          "details": "mismatches: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.hybrid.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        },
+        {
+          "name": "retrieval.vector.must_exclude",
+          "passed": true,
+          "details": "forbidden IDs returned: []"
+        },
+        {
+          "name": "retrieval.vector.must_include",
+          "passed": true,
+          "details": "missing IDs: []"
+        }
+      ],
+      "passed": true
+    }
+  ],
+  "aggregate": {
+    "total_cases": 11,
+    "passed_cases": 11,
+    "failed_cases": 0,
+    "retrieval": {
+      "vector": {
+        "cases": 2,
+        "hit_at_k": 1.0,
+        "recall_at_k": 1.0,
+        "precision_at_k": 0.6666666666666666,
+        "mean_reciprocal_rank": 0.75,
+        "ndcg_at_k": 0.6255750175201935,
+        "exact_id_hit_rate": 1.0
+      },
+      "hybrid": {
+        "cases": 11,
+        "hit_at_k": 1.0,
+        "recall_at_k": 1.0,
+        "precision_at_k": 0.4484848484848485,
+        "mean_reciprocal_rank": 0.9545454545454546,
+        "ndcg_at_k": 0.9501850774872785,
+        "exact_id_hit_rate": 1.0
+      },
+      "graph": {
+        "cases": 1,
+        "hit_at_k": 1.0,
+        "recall_at_k": 1.0,
+        "precision_at_k": 0.4,
+        "mean_reciprocal_rank": 1.0,
+        "ndcg_at_k": 0.8339912323981488,
+        "exact_id_hit_rate": 1.0
+      }
+    },
+    "bundle": {
+      "must_include_coverage": 1.0,
+      "forbidden_inclusion_rate": 0.0,
+      "budget_compliance_rate": 1.0,
+      "duplicate_token_ratio": 0.10576287245612921,
+      "provenance_coverage": 1.0,
+      "stale_fact_rate": 0.0,
+      "source_filtered_leakage_rate": 0.0,
+      "procedure_coverage": 1.0,
+      "unreported_conflicts": 0
+    }
+  }
+}
