@@ -1,6 +1,9 @@
 # BaseMyAI — Implementation Status Matrix
 
-**Date : 2026-07-08** (dernière mise à jour : migration natif-only ADR-033)
+**Date : 2026-07-17** (dernière mise à jour : clôture N11 — campagne 1M archivée
+2026-07-15 —, chantier **N12/ADR-042 en cours non committé**, nouveaux Context
+Engine + Recall Quality Lab non committés ; le fichier était daté 2026-07-08 et
+ne couvrait rien de tout cela)
 **Statut : SOURCE DE VÉRITÉ.** Ce fichier réconcilie les contradictions entre les
 docs internes (TODO.md — archivé depuis sous `docs/archive/TODO-2026-06.md` —,
 CLAUDE.md, VISION.md, ADR-019, la recherche stratégique
@@ -20,6 +23,24 @@ foi** et l'écart est noté.
   dual-backend supprimés ;
 - `.bmai` actif = format natif ;
 - chiffrement au repos = enveloppe native ADR-030.
+
+**Mise à jour 2026-07-17** (raison : réconcilier status.md avec l'état réel du
+code, y compris l'état **non committé** du working tree — audit fichier par
+fichier, HEAD = `d58923a`, clôture N11) :
+
+- **N7→N11 (production-hardening) : tous clos** — dernier jalon : campagne 1M
+  archivée 2026-07-15 (`docs/benchmarks/n11-soak-1m-2026-07-15.md`) ;
+- **chantier actif : N12/ADR-042** (passphrase Argon2id, zeroization, rotation
+  complète DEK) — ADR **Accepted 2026-07-15**, code présent dans le working tree
+  mais **non committé, non clos** (voir §10) ;
+- **nouveaux, non committés** : **Context Engine** (`basemyai::context`,
+  `compile_context`) et **Recall Quality Lab** (`crates/basemyai-eval`,
+  crate **standalone hors workspace racine**) — voir §12 ;
+- ⚠ **le working tree contient ~90 fichiers modifiés/ajoutés non committés**
+  (N12 + context + eval + surfaces passphrase CLI/bindings). Au moment de cet
+  audit (2026-07-17), **la compilation des tests du workspace était cassée**
+  (réparation en cours par ailleurs) — les lignes marquées « non committé »
+  ci-dessous décrivent du **code présent**, pas un état vert en CI.
 
 **Légende statut :**
 
@@ -44,8 +65,8 @@ prêt prod ». La colonne Notes le précise systématiquement.
 | Index vectoriel LM-DiskANN | ✅ | `basemyai-engine/src/idx/vector/` ; `tests/vector_recall.rs`, `vector_churn.rs` | Recall@10 = 1.0 (10k/100k, persistant, après churn). ADR-026. |
 | Index graphe natif (BFS) | ✅ | `basemyai-engine/src/idx/graph/` ; `tests/graph_parity.rs` | Isolation agent structurelle dans le layout de clé. ADR-027/N4. |
 | Index FTS/BM25 natif | ✅ | `basemyai-engine/src/idx/fts/` ; scénarios `memory_tests` | Tokenizer casefold+accents ; Porter différé (gap documenté). ADR-028. |
-| `MemoryStore` / `NativeMemoryStore` | ✅ | `basemyai/src/storage/native_store.rs` ; `tests/memory_tests.rs`, `storage_contract.rs` | Contrat ADR-020 ; unique implémentation active. Clair + chiffré (`native_encrypted`). |
-| Chiffrement au repos natif | ✅ | ADR-030 ; `crypto.meta`, enveloppes WAL/SST ; `NativeMemoryStore::rotate_key` | XChaCha20-Poly1305 pur Rust, **pas de CMake**. Rotation O(1) (re-scellement DEK). |
+| `MemoryStore` / `NativeMemoryStore` | ✅ | `basemyai/src/storage/native_store/` (module-répertoire : `mod.rs`, `trait_impl.rs`, `inner.rs`, `porting.rs` — committé) ; `tests/memory_tests.rs`, `storage_contract.rs` | Contrat ADR-020 ; unique implémentation active. Clair + chiffré (`native_encrypted`). |
+| Chiffrement au repos natif | ✅ | ADR-030 ; `crypto.meta`, enveloppes WAL/SST ; `NativeMemoryStore::rotate_key` | XChaCha20-Poly1305 pur Rust, **pas de CMake**. Rotation O(1) (re-scellement DEK). **Extension en cours (non committée) : N12/ADR-042** — passphrase Argon2id, zeroization, rotation complète — voir §10. |
 | Métrique vectorielle (`Metric` enum) | ✅ | `basemyai-core/src/storage/vector.rs` | Cosine/Euclidean/Hamming — mécanisme pur, sans SQL. |
 | `MaintenanceWorker` + tâches injectées | ✅ | `maintenance.rs` ; `tests/maintenance_worker.rs` (dans `basemyai`) | Mécanisme d'injection ; le sens (GC, oubli, consolidation) vit dans `basemyai`. |
 | Embedder trait (object-safe, sync) | ✅ | `embed/mod.rs` (`Embedder`, `Device`) ; `tests/embed.rs` | Ne télécharge jamais (invariant ADR-010). |
@@ -151,7 +172,7 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 
 | Feature | Statut | Preuve (vérifiée) | Notes |
 |---|---|---|---|
-| Métadonnées conteneur (`bmai_meta` KV) | ✅ | `basemyai/src/storage/native_store.rs` ; `tests/format.rs` (`native_store_writes_bmai_container_metadata`) | `format=basemyai-memory`, `format_version=1`, `storage_engine=native`, `embedding_dim=384`. |
+| Métadonnées conteneur (`bmai_meta` KV) | ✅ | `basemyai/src/storage/native_store/` ; `tests/format.rs` (`native_store_writes_bmai_container_metadata`) | `format=basemyai-memory`, `format_version=1`, `storage_engine=native`, `embedding_dim=384`. |
 | `BMAI_FORMAT_VERSION` constante | ✅ | `basemyai::storage::BMAI_FORMAT_VERSION` | |
 | Spec format documentée | ✅ | `docs/format/bmai-v1.md` ; ADR-019/ADR-033 | Spec native (répertoire moteur, `format_version=2`, `storage_engine=native`). **Statut : expérimental** — aucune compatibilité entre revisions internes garantie avant le gel du format (`docs/format/bmai-v1.md` §Format stability), voir `PLAN-NATIVE-ENGINE.md` pour la politique de remplacement. |
 | Extension `.bmai` | ✅ | répertoire moteur natif (WAL/SST/`crypto.meta`) | Conteneur natif chiffré ADR-030. **Pas de compatibilité** avec les `.bmai` V1/libSQL (export JSONL avant migration). |
@@ -209,10 +230,11 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | N11.3 — Tests de panne I/O | ✅ | `crates/basemyai-engine/tests/io_faults.rs` | **Clos 2026-07-13** : la majorité de §8.2 était déjà couverte (`failpoints.rs`/`crash_consistency.rs`/`corruption_smoke.rs`) — ce chantier ferme accès refusé (tmp cible en lecture-seule, `EngineError::Io` typé, retry propre après levée de l'obstruction) et fichier temporaire déjà présent (tmp périmé écrasé proprement, `create+truncate` jamais `create_new`). Corrige au passage le commentaire pré-N9 obsolète de `corruption_smoke.rs` : vérifié empiriquement que `verify_store` en `FullLogical` ne détecte pas non plus une SST vivante supprimée (aucun manifest) — gap toujours ouvert, candidat naturel N13/ADR-043. |
 | §8.3 — Matrice de tests (gate/nightly/campagne) | ✅ partiel | `.github/workflows/{ci,fuzz,nightly,soak-campaign}.yml` ; `BASEMYAI_CRASH_CYCLES` (`tests/crash_consistency.rs`) | **2026-07-13** : 3 bugs CI trouvés et corrigés (gate n'exécutait ni `model_based` ni `io_faults` ; `fuzz.yml` référençait une cible supprimée en N8.5 et ne couvrait que 5/24 cibles ; `engine-soak` documenté "nightly" depuis N7.3 mais jamais câblé). `nightly.yml` (crash loops 200 cycles via `BASEMYAI_CRASH_CYCLES`, défaut gate inchangé à 20 ; bench 100k clair+chiffré archivé en artefact). `soak-campaign.yml` (hebdomadaire, Linux/Windows/macOS, `engine-soak`, `workflow_dispatch` pour un run 1M à la demande). **Non fait, documenté comme tel** : rotation de clé pendant soak, disque presque plein, comptage de handles — nécessitent une instrumentation moteur nouvelle, pas de la config CI. |
 | N11 — Campagne 1M réellement exécutée et archivée | ✅ | `docs/benchmarks/n11-soak-1m-2026-07-15.md` ; `docs/benchmarks/data/n11-soak-1m/*.json` (8 rapports) + `campaign.log` ; nouveau flag `--verify` sur `engine_bench` (`crates/basemyai-engine/src/bin/engine_bench.rs`) | **Clos 2026-07-15** : le "reste de suivi hors clôture" laissé par N10/§8.3 (`soak-campaign.yml` jamais réellement déclenché à 1M) est maintenant fait pour de vrai — 4 cycles à `n=1 000 000`, clair **et** chiffré à chaque cycle (8 invocations), plus `cargo xtask test-crash-consistency` (7 variantes × 20 cycles kill réel) dans la même session. `verify_store(FullLogical)` (le mode le plus profond, ADR-040 §2 — le plan dit `--deep`, le code/CLI disent `FullLogical`/`--logical`) branché directement dans `engine_bench` via `--verify` pour auditer chaque store juste après sa fermeture, avant suppression du répertoire temporaire (les stores de `engine_bench` sont des répertoires `Engine` bruts, pas des conteneurs `.bmai` — `verify_store` s'applique directement dessus, pas besoin de la surface CLI). **14/14 audits `healthy=true`, 0 erreur, 0 warning** ; RSS peak stable 553,5-561,7 Mo sur les 8 runs (aucune tendance monotone) ; `sst_bytes`/`wal_bytes`/`tombstone_count`/`compaction_count` identiques bit-pour-bit entre cycles clairs entre eux et cycles chiffrés entre eux (workload déterministe, aucune dérive) ; `test-crash-consistency` 7/7 vert. Aucun bug trouvé. Seul critère de sortie R1 non vérifié positivement : comptage de handles fichier (pas d'instrumentation existante, documenté comme tel plutôt que déclaré clos par omission — voir le rapport). **N11 formellement clos** : les 4 chantiers (N11.1 fuzz, N11.2 model-based, N11.3 pannes I/O, campagne 1M) sont maintenant tous archivés avec preuve mesurée. |
+| N12 — Passphrase KDF + zeroization + rotation complète DEK (ADR-042) | 🟡 en cours | ADR **Accepted 2026-07-15** : `docs/adr/ADR-042-passphrase-kdf-zeroization-full-rotation.md` (committé, amendé dans le working tree). Code présent **non committé** : `basemyai-engine/src/crypto.rs` (Argon2id via `argon2` 0.5.3 + feature `zeroize`, profils `Default`/`LowMemory`, KEK/sortie `Zeroizing`), `format/crypto.rs` + `format/generation_meta.rs` (nouveau — générations logiques, `resolve_active_generation`, legacy = génération 0), `Engine::{open_with_passphrase*, rotate_passphrase*, rotate_key_full, rotate_passphrase_full*}` ; côté produit : `EncryptionKeyMode::Passphrase` (`basemyai-core/src/storage/key.rs`), `NativeMemoryStore::{open_with_passphrase, open_with_passphrase_and_profile, rotate_passphrase*, rotate_key_full, rotate_passphrase_full_with_profile}` ; surfaces CLI (`commands/config_key.rs`, `commands/container.rs`) et bindings py/node (passphrase exposée) ; test contrat `basemyai-engine/tests/adr042_contract.rs` (nouveau) ; fuzz `crypto_meta_decode_structured.rs` (nouvelle cible) ; baseline mesurée `docs/benchmarks/n12-argon2id-baseline-2026-07-15.md` (Argon2id m=64 MiB, t=3, p=4, bin `argon2_bench`) | **En cours dans le working tree (constat 2026-07-17), non committé, non clos.** Au moment de l'audit la compilation des tests était **cassée** (réparation en cours par ailleurs) — code présent ≠ testé. Ne pas déclarer ✅ tant que le gate `cargo xtask ci` n'est pas vert et le tout committé. |
 | Sync P2P (change-capture WAL) | 📋 | `TODO-NATIVE-ENGINE.md` §N6 | V2. Primitive WAL posée. |
 | Langage de requête (Couche 4) | 📋 | ADR-024 §vision | Décision produit préalable. |
 | Multi-modèles d'embedding | ⏸️ | — | V2 (baseline unique en V1). |
-| Key rotation native (`rotate_key`) | ✅ | ADR-030 ; `NativeMemoryStore::rotate_key` | Re-scellement O(1). Ré-encryption complète DEK = chantier de suivi. |
+| Key rotation native (`rotate_key`) | ✅ | ADR-030 ; `NativeMemoryStore::rotate_key` | Re-scellement O(1). Ré-encryption complète DEK = **N12/ADR-042, en cours non committé** (voir ligne N12 ci-dessus). |
 | Bench KNN 100k+ (MemoryStore) | 🟡 | `native_memory_store_bench.rs` (`#[ignore]` N=10k) | Item de suivi post-N5.5. |
 | Licence BUSL-1.1 unifiée | ✅ | ADR-031 | Tout le workspace. `0.1.0` crates.io/PyPI reste MIT pour les early adopters. |
 
@@ -231,6 +253,23 @@ agent locale, pas une base vectorielle de plus », liés depuis `README.md`
 | Test adversarial d'isolation (`tests/p1_isolation_adversarial.rs`) | ✅ | voir §8 | Ferme le gap « pas de test d'injection dédié » de la recherche stratégique. |
 | Démo remplacement temporel (`crates/basemyai/examples/temporal_replacement.rs` + `examples/node/temporal_replacement.ts` + `examples/python/temporal_replacement.py`) | ✅ | trois langages, même scénario (invalidate ancien fait → nouveau fait seul rappelé) | Pas encore dans une suite d'exemples testée en CI (risque de dérive si l'API SDK bouge). |
 | Benchmark concurrentiel BaseMyAI vs Mem0+Qdrant (`benchmarks/p1-market/`, `docs/benchmarks/n6-native-vs-mem0-qdrant-2026-07-10.md`) | ✅ | harnais Python (`run.py`/`summarize.py`) ; `out/basemyai-n6.json`, `out/mem0-qdrant-n6.json`, `out/mem0-noinfer-n6.json` | Rejoué 2026-07-10 sur le moteur natif (le bench 2026-06-21 mesurait encore libSQL, retiré ADR-033). Chiffres réels : `remember` BaseMyAI (317.8 ms mean) ~10.8× plus rapide que Mem0 `infer=True` (3420.6 ms mean, coût LLM par `.add()`) — le P1 claim central tient. Honnêteté : `recall` Mem0/Qdrant (~94 ms mean) est plus rapide que `recall`/`recall_hybrid` BaseMyAI (~351–358 ms) dans ce run, et `remember` Mem0 `infer=False` (133.7 ms, stockage seul) est plus rapide que `remember` BaseMyAI — écarts documentés, pas maquillés. **Déviation de protocole disclosed** : Qdrant en mode embedded local (pas de Docker dispo dans l'environnement), donc pas directement comparable au chiffre Docker de 2026-06-21 pour le coût propre de Qdrant. |
+
+---
+
+## 12. Context Engine & Recall Quality Lab (nouveaux, 2026-07-17 — non committés)
+
+Plan de référence : `docs/PLAN-CONTEXT-ENGINE.md` (statut déclaré par le plan :
+« R1.4, socle R1.5 et SDK Python/Node livrés »). **Tout ce qui suit est présent
+dans le working tree mais non committé** (HEAD = clôture N11) ; au moment de
+l'audit la compilation des tests était cassée (réparation en cours) — statuts
+plafonnés à 🟡 tant que le gate CI n'est pas vert.
+
+| Feature | Statut | Preuve (vérifiée) | Notes |
+|---|---|---|---|
+| Module `basemyai::context` (`Memory::compile_context`) | 🟡 | `crates/basemyai/src/context/{mod,types,token,compile,selection,temporal,render}.rs` ; exports `lib.rs` (`ContextBundle`, `ContextRequest`, `ContextItem`, `ContextCitation`, `ContextSourcePolicy`, `ExcludedMemory`, `TokenEstimator`, …) ; `crates/basemyai/tests/context.rs` | Pipeline déterministe **sans LLM** : recall hybride borné → filtres layer/provenance/validité → normalisation + estimation tokens → dédup → sélection sous budget dur → sections/rendu + citations + exclusions observables. R1.0→R1.4 + socle R1.5 (temporalité) livrés selon le plan ; **R1.6 (profils), R1.7 (rendus), R1.8 (surfaces) ouverts**. |
+| Support côté domaine (provenance/config) | 🟡 | `memory/trust.rs` (`TrustLevel`), `config.rs` (`ConfigDefaults`), `RecallOptions`/`ConversationTurn`/`SOURCE_*` exportés par `lib.rs` | Non committé (sauf provenance ADR-036 déjà en place) ; nouveau module racine `config.rs`. |
+| SDK Python/Node `compile_context`/`compileContext` | 🟡 | `bindings/basemyai-py/src/memory.rs` + `__init__.pyi` ; `bindings/basemyai-node/src/memory.rs` + `index.d.ts` ; tests roundtrip des deux bindings mis à jour | Non committé. **Pas de surface MCP/REST context** (vérifié : zéro occurrence `compile_context`/`ContextRequest` dans `basemyai-mcp`/`basemyai-rest`) — cohérent avec R1.8 ouvert. |
+| Crate `basemyai-eval` (Recall Quality Lab) | 🟡 | `crates/basemyai-eval/` (9 fichiers `src/`, `tests/cli.rs`, **son propre `Cargo.lock`**) ; assets `eval/README.md`, `eval/datasets/recall-core.jsonl`, rapports générés `eval/reports/{recall-core,comparison}.{json,md}` ; doc `docs/recall-quality-lab.md` | **Volontairement HORS workspace racine** : son `Cargo.toml` déclare son propre `[workspace]` et `publish = false` (« intentionally standalone until the root workspace, xtask and CI wiring is approved »). Le workspace racine reste donc à **6 crates** + ce standalone. Éval déterministe, offline, sans modèle ni réseau (`HashEmbedder` + store éphémère via feature `test-util`) ; couvre recall, recall_hybrid, recall filtré graphe et `compile_context`. Premier livrable R2. Câblage workspace/xtask/CI = décision d'intégration séparée. |
 
 ---
 
@@ -288,18 +327,32 @@ agent locale, pas une base vectorielle de plus », liés depuis `README.md`
 
 ## Synthèse exécutive
 
-- **Moteur natif (N0→N5.6 + ADR-033) : ✅ clos.** Backend unique `basemyai-engine`
-  dans tout le workspace. libSQL/V1 retirés. `cargo xtask ci` vert.
+- **Moteur natif : ✅ clos jusqu'à N11 inclus.** N0→N5.6 (ADR-033, backend unique,
+  libSQL/V1 retirés), production-hardening N7→N10 (observabilité, SST par blocs,
+  verify/repair/reembed, maintenance scalable), campagne N11 (fuzz 24 cibles,
+  model-based, pannes I/O, soak 1M archivé 2026-07-15). **HEAD = clôture N11**
+  (`d58923a`).
+- **Chantier actif : N12/ADR-042** (passphrase Argon2id, zeroization, rotation
+  complète DEK par générations) — ADR Accepted 2026-07-15, **code présent non
+  committé**, compilation des tests cassée au moment de l'audit (2026-07-17).
+  Voir §10.
+- **Nouveaux, non committés** : **Context Engine** (`compile_context` — R1.4 +
+  socle R1.5 + SDK py/node livrés selon le plan) et **Recall Quality Lab**
+  (`crates/basemyai-eval`, standalone hors workspace). Voir §12.
 - **Mémoire (Phase 1 + 2) : ✅** — remember/recall/hybrid/graphe/consolidation/oubli,
   toutes surfaces (MCP, REST, CLI, bindings).
 - **Publication : `0.1.0` sur crates.io + PyPI** (2026-06-22, encore libSQL).
-  **Prochaine étape : release `0.2.0` native-only** (breaking). npm à vérifier.
+  **Prochaine étape : release `0.2.0` native-only** (breaking —
+  `workspace.package.version` déjà bumpé à `0.2.0` et committé, publication pas
+  faite). npm à vérifier.
 - **CLI : ✅ surface complète** ; tests partiels en CI ; **cargo-dist configuré**
   (2026-07-10, `dist plan` vert) — `dist build`/publication réelle restent une
   décision humaine séparée (§6).
-- **Reste ouvert (priorité)** : release 0.2.0. Image Docker REST écrite (build
-  non vérifié, cf. §5). CUDA/NVML : détection ajoutée (feature `cuda-detect`)
-  — validation sur GPU NVIDIA réel encore à faire. (NAPI live subscriptions,
+- **Reste ouvert (priorité)** : stabiliser + committer le working tree
+  (N12 + context + eval, tests à remettre au vert). Release 0.2.0. R1.6→R1.8 et
+  R2.x restants du plan Context Engine. Image Docker REST écrite (build non
+  vérifié, cf. §5). CUDA/NVML : détection ajoutée (feature `cuda-detect`) —
+  validation sur GPU NVIDIA réel encore à faire. (NAPI live subscriptions,
   bench Mem0+Qdrant, oubli adaptatif natif ADR-037 et GC temporel natif
   ADR-038 tous faits 2026-07-10 — voir §3/§5/§6/§11.)
 - **V2 reporté** : Studio, Tauri, sync P2P, multi-modèles, langage de requête.

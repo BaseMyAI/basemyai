@@ -2,10 +2,15 @@
 
 Moteur de mémoire local pour agents IA. Le cœur du workspace est le **duo**
 `basemyai-core` (socle agnostique) + `basemyai` (sémantique mémoire), posée dessus.
-Le workspace compte en tout **6 crates** (`crates/` : `basemyai-core`, `basemyai`,
+Le workspace compte **6 crates membres** (`crates/` : `basemyai-core`, `basemyai`,
 `basemyai-cli`, `basemyai-mcp`, `basemyai-rest`, `basemyai-engine` — moteur de
 stockage maison, ADR-024/025, non publié) + **2 bindings**
 (`bindings/basemyai-py`, `bindings/basemyai-node`) + l'outil DX `xtask/`.
+S'y ajoute `crates/basemyai-eval` (Recall Quality Lab, éval déterministe offline) :
+**volontairement HORS workspace racine** (son `Cargo.toml` déclare son propre
+`[workspace]`, `publish = false`) tant que le câblage workspace/xtask/CI n'est
+pas acté — cf. `eval/README.md` ; il se lance via `--manifest-path`
+(`docs/recall-quality-lab.md`).
 Décisions : `docs/ADR.md` (index, un fichier par ADR sous `docs/adr/`). Relation d'écosystème : `../ECOSYSTEM_ARCHITECTURE.md`.
 
 **État 2026-07-08 (ADR-033)** : workspace **100 % moteur natif**.
@@ -40,7 +45,7 @@ cargo build --profile profiling -p basemyai-rest       # binaire optimisé MAIS 
 
 Le backend est **natif BaseMyAI** (`basemyai-engine`) ; `embed` tire Candle (lourd).
 
-**Profils** (définis dans le `Cargo.toml` racine) : `dev` est allégé (`debug = "line-tables-only"`) pour itérer vite malgré libSQL+Candle — backtraces panic conservées ; pour debugger sous gdb/lldb : `cargo build --config 'profile.dev.debug=2'`. `profiling` = release symbolisable (perf, flamegraphs).
+**Profils** (définis dans le `Cargo.toml` racine) : `dev` est allégé (`debug = "line-tables-only"`) pour itérer vite malgré Candle — backtraces panic conservées ; pour debugger sous gdb/lldb : `cargo build --config 'profile.dev.debug=2'`. `profiling` = release symbolisable (perf, flamegraphs).
 
 **Bindings** : le code *test-only* (constructeurs `open_in_memory`) est gardé par `#[cfg(feature = "test-util")]` **avec sa registration** (bloc `#[napi]`/`#[pymethods]` séparé, ou helper gardé) — sinon le build par défaut casse (E0425 napi / `dead_code`). Le gate `--all-targets` ci-dessus couvre les deux bindings en config défaut.
 
@@ -99,10 +104,12 @@ format/           ← wire formats versionnés + format.lock
 
 ```text
 memory/           ← Domaine mémoire (4 couches, isolation, validité)
-  ├─ mod.rs       ← façade Memory (remember, recall, recall_by_layer, invalidate, forget, stats, search_graph)
+  ├─ mod.rs       ← façade Memory (remember, recall, recall_by_layer, invalidate, forget, stats, search_graph, compile_context)
   ├─ layer.rs     ← MemoryLayer enum, Record, AgentStats
   ├─ porting.rs   ← export/import JSONL
   ├─ event.rs     ← MemoryEvent (ADR-022)
+  ├─ trust.rs     ← TrustLevel (provenance ADR-036)
+  ├─ testutil.rs  ← HashEmbedder (feature test-util)
   └─ isolation.rs ← AgentId newtype (isolation structurelle ADR-006)
 
 cognition/        ← Pipeline Phase 2 (graphe + consolidation + inférence)
@@ -111,8 +118,18 @@ cognition/        ← Pipeline Phase 2 (graphe + consolidation + inférence)
   ├─ consolidation.rs ← consolidate(memory, llm) → faits + graphe
   └─ graph.rs     ← Graph {entity, edge}, traverse (BFS natif)
 
+context/          ← Context Engine (PLAN-CONTEXT-ENGINE.md — ⚠ non committé)
+  ├─ mod.rs       ← façade + validation, re-exports
+  ├─ types.rs     ← ContextRequest/ContextBundle/citations/exclusions
+  ├─ token.rs     ← estimation de tokens (budget dur)
+  ├─ compile.rs   ← filtres, normalisation, déduplication
+  ├─ selection.rs ← utility ranking, quotas, sélection sous budget
+  ├─ temporal.rs  ← statut de validité, fraîcheur
+  └─ render.rs    ← sections, Markdown, citations, métriques
+
 storage/          ← Contrat MemoryStore
-  └─ native_store.rs ← NativeMemoryStore (unique implémentation)
+  ├─ native_store/ ← NativeMemoryStore, module-répertoire (mod.rs, trait_impl.rs, inner.rs, porting.rs)
+  └─ integrity.rs ← verify/repair/rebuild-indexes/reembed (ADR-040)
 
 provision/        ← Provisioning hardware-aware
   ├─ mod.rs       ← re-exports
@@ -120,10 +137,13 @@ provision/        ← Provisioning hardware-aware
   └─ llm.rs       ← KNOWN_MODELS, detect_llm_options(), choose_llm()
 
 maintenance/      ← Tâches de fond injectées
-  └─ mod.rs       ← ConsolidationTask uniquement (gc/oubli adaptatif retirés ADR-033)
+  ├─ mod.rs       ← ConsolidationTask + AdaptiveForgettingTask + ExpiredMemoryGcTask (ADR-037/038)
+  ├─ adaptive_forgetting.rs ← oubli adaptatif borné (ADR-037/041)
+  └─ expired_gc.rs ← GC temporel (ADR-038/041)
 
 retrieval.rs      ← Racine : Ranking, Fused, rrf_fuse (pur méchanisme)
 temporal.rs       ← Racine : Validity (valid_from/until), temporal_filter()
+config.rs         ← Racine : ConfigDefaults (⚠ non committé)
 error.rs          ← Racine : MemoryError (thiserror)
 lib.rs            ← re-exports
 ```
@@ -131,18 +151,32 @@ lib.rs            ← re-exports
 **Organisation par domaine sémantique, pas par artefact.** Chaque dossier
 regroupe un concept métier et expose un API cohérent via `mod.rs`.
 
-## Statut (juillet 2026)
+## Statut (2026-07-17)
 
 **Source de vérité détaillée : `docs/status.md`.**
 
-- **Moteur natif (N0→N5.6 + ADR-033) : ✅ clos** — `basemyai-engine` est le backend
-  unique (LSM, vecteur LM-DiskANN, graphe, FTS/BM25, chiffrement ADR-030).
+- **Moteur natif : ✅ clos jusqu'à N11 inclus** — N0→N5.6 (ADR-033, backend unique :
+  LSM, vecteur LM-DiskANN, graphe, FTS/BM25, chiffrement ADR-030), hardening
+  N7→N10 (SST par blocs ADR-039, verify/repair/reembed ADR-040, maintenance
+  scalable ADR-041), N11 (fuzz 24 cibles, model-based, pannes I/O, soak 1M
+  archivé 2026-07-15). HEAD = clôture N11.
+- **Chantier actif : N12/ADR-042** (passphrase Argon2id, zeroization, rotation
+  complète DEK) — code présent **non committé** dans le working tree, non clos
+  (voir `docs/status.md` §10).
+- **Nouveaux, non committés :** Context Engine (`basemyai::context`,
+  `compile_context` — plan `docs/PLAN-CONTEXT-ENGINE.md`, R1.4 + socle R1.5 +
+  SDK py/node livrés) et Recall Quality Lab (`crates/basemyai-eval`, standalone
+  hors workspace — `docs/recall-quality-lab.md`).
 - **Phase 1 + 2 mémoire/cognition : ✅** — API `Memory`, graphe, RRF, consolidation,
-  oubli adaptatif, provisioning LLM.
-- **Surfaces : ✅** — MCP, REST, CLI, bindings PyO3/NAPI.
-- **CI :** `cargo xtask ci` (+ `test-embed`, `test-crash-consistency` séparés).
+  oubli adaptatif + GC temporel (ADR-037/038), provisioning LLM.
+- **Surfaces : ✅** — MCP, REST, CLI, bindings PyO3/NAPI (live watch inclus sur
+  les quatre surfaces).
+- **CI :** `cargo xtask ci` (+ `test-embed`, `test-crash-consistency` séparés ;
+  workflows `nightly.yml` + `soak-campaign.yml`).
 - **Publication :** `0.1.0` crates.io/PyPI (libSQL). **Prochaine : `0.2.0` native-only**
-  (breaking). npm à vérifier ; cargo-dist CLI ouvert.
-- **Reste ouvert :** release 0.2.0, doc format `.bmai` natif, NAPI live watch,
-  CUDA/NVML, bench Mem0+Qdrant, image Docker REST.
+  (breaking — version workspace déjà bumpée, release pas faite). npm à vérifier ;
+  cargo-dist configuré, `dist build`/publication = décision humaine.
+- **Reste ouvert :** committer/stabiliser N12 + context + eval (tests cassés au
+  2026-07-17, réparation en cours), release 0.2.0, R1.6→R1.8 + R2.x du plan
+  context, build Docker REST à vérifier, validation CUDA/NVML sur GPU réel.
 - **V2 :** sync P2P, langage de requête, multi-modèles, Studio/Tauri.
