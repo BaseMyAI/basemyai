@@ -116,6 +116,10 @@ const TEST: &[&[&str]] = &[
     // (injection d'erreurs aux frontières de durabilité) et
     // `corruption_smoke` (bit-flip SST/WAL/crypto.meta → erreurs typées,
     // gap manifest N9 pinné) — smoke tests du gate PR (PLAN §8.3).
+    // + N12/ADR-042 : `adr042_contract` (verrou advisory en écriture,
+    // zeroization de `EncryptionKey` au point de génération/persistance,
+    // non-substitution silencieuse RawKey/Argon2id) — rapide, pas un
+    // kill-loop, donc dans le gate léger contrairement à `crash_consistency`.
     &[
         "test",
         "-p",
@@ -142,6 +146,8 @@ const TEST: &[&[&str]] = &[
         "failpoints",
         "--test",
         "corruption_smoke",
+        "--test",
+        "adr042_contract",
     ],
     &["test", "-p", "basemyai", "--features", "test-util"],
     // `--test memory_tests` : runner déclaratif du contrat MemoryStore sur le

@@ -38,6 +38,7 @@ jobs:
           - sst_footer_decode
           - store_meta_decode
           - crypto_meta_decode
+          - crypto_meta_decode_structured
           - encrypted_sst_block_decode
           - fts_docterms_decode
           - fts_postings_decode
