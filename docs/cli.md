@@ -47,8 +47,10 @@ file resolves the user passphrase via **ADR-034** (see
 4. `/run/secrets/basemyai_db_key`
 5. `~/.basemyai/key` (from `basemyai config key generate`)
 
-There is no CLI flag for the key and no way to open a file in plaintext. The
-passphrase is **never** stored in `config.toml`.
+`BASEMYAI_DB_KEY_MODE=passphrase` interprets the resolved secret through
+Argon2id. If unset, the mode remains `raw-key` for compatibility with stores
+created before ADR-042. There is no CLI flag for the current key and no way
+to open a file in plaintext. The secret is **never** stored in `config.toml`.
 
 In `text` mode, `basemyai` now uses a terminal-aware presentation layer:
 tables for scanability, semantic color tokens, and progress feedback for long
@@ -141,6 +143,7 @@ explicit consent in the SDKs). See
 
 ```bash
 basemyai init ./agent.bmai      # create an encrypted native .bmai container (metadata)
+basemyai init ./agent.bmai --low-memory # Argon2id 19 MiB/t2/p1 for constrained hardware
 basemyai inspect                # container metadata + memory count
 basemyai verify                 # container metadata + engine integrity audit, mode Quick (default)
 basemyai verify --physical      # + decode every data block (VerifyMode::FullPhysical)
@@ -149,12 +152,22 @@ basemyai repair --dry-run       # audit (FullLogical) + print the derived-index 
 basemyai repair                 # apply the plan if no primary data is at risk (else exit 11, REPAIR_REFUSED)
 basemyai rebuild-indexes        # unconditionally rebuild derived indexes (vecmap/allocator, FTS, vector graph)
 basemyai compact                # full compaction: merge into one SST, purge tombstones (Engine::compact_now)
+basemyai rotate-key --new-key "$NEW_KEY"                     # O(1) raw-key rewrap
+basemyai rotate-key --new-key "$NEW_PASSPHRASE" --passphrase # O(1) rewrap to Argon2id
+basemyai rotate-key --new-key "$NEW_PASSPHRASE" --passphrase --low-memory # explicit 19 MiB/t2/p1
+basemyai rotate-key --new-key "$NEW_PASSPHRASE" --passphrase --full # fresh DEK + full re-encryption
 basemyai reembed                 # fix every memory store-wide currently missing its vector (loads the embedder)
 basemyai reembed --agent X --ids a,b   # re-embed specific memories of X unconditionally
 basemyai reembed --agent X --all       # re-embed every memory of X unconditionally (e.g. embedding model change)
 basemyai migrate                # idempotent open (native format applied at open time)
 basemyai stats                  # per-layer valid-memory counts for the resolved agent
 ```
+
+`--low-memory` selects the explicit ADR-042 constrained-hardware Argon2id
+profile (19 MiB, two iterations, one lane). The normal profile remains
+64 MiB/t3/p4. Parameters are persisted in the container and replayed on open;
+repeat `--low-memory` on each key rotation that should keep the constrained
+profile, otherwise the new wrap uses the normal profile.
 
 `verify`'s engine-level audit (ADR-040) runs strictly read-only, before the
 normal container open that follows to read `format`/`format_version`/

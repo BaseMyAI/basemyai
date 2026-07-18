@@ -62,6 +62,30 @@ fn apply_recall_options(records: Vec<Record>, options: RecallOptions) -> Vec<Rec
         .collect()
 }
 
+/// Un tour de conversation brut (rôle + contenu) à ingérer via
+/// [`Memory::observe`]. `role` n'est pas validé — c'est un libellé libre
+/// (`"user"`, `"assistant"`, `"system"`, ou tout autre nom choisi par
+/// l'appelant), simplement reporté dans le texte mémorisé.
+#[derive(Debug, Clone)]
+pub struct ConversationTurn {
+    pub role: String,
+    pub content: String,
+}
+
+impl ConversationTurn {
+    #[must_use]
+    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
+
+    fn render(&self) -> String {
+        format!("{}: {}", self.role, self.content)
+    }
+}
+
 /// Mémoire d'un agent : moteur de stockage natif + embedder, scellés par un
 /// [`AgentId`]. Le chiffrement est obligatoire (ADR-007/ADR-030).
 pub struct Memory {
@@ -109,17 +133,18 @@ impl Memory {
     }
 
     /// Ouvre une mémoire sur un répertoire-store `.bmai` (au besoin le crée),
-    /// **chiffré au repos** (ADR-030 — la clé est obligatoire, ADR-007 ; sans
-    /// CMake), vérifie le contrat embedding, puis renvoie la façade scellée
-    /// par `agent`.
+    /// **chiffré au repos** (ADR-030/042 — la clé ou passphrase est
+    /// obligatoire, ADR-007 ; sans CMake), vérifie le contrat embedding,
+    /// puis renvoie la façade scellée par `agent`.
     ///
     /// Ouvre un **nouveau** `NativeMemoryStore` à chaque appel (mono-écrivain
     /// exclusif, ADR-025) : n'appeler qu'**une fois** par répertoire-store
     /// par process — c'est le cas commun d'une seule `Memory` (CLI, spike).
     /// Un consommateur qui sert **plusieurs agents** sur le même store (un
     /// provider REST/MCP) doit ouvrir une fois via
-    /// [`NativeMemoryStore::open_encrypted`], l'envelopper en `Arc`, puis
-    /// appeler [`Memory::from_native_store`] pour chaque agent — jamais
+    /// [`NativeMemoryStore::open_encrypted`] ou
+    /// [`NativeMemoryStore::open_with_passphrase`], l'envelopper en `Arc`,
+    /// puis appeler [`Memory::from_native_store`] pour chaque agent — jamais
     /// rouvrir le répertoire.
     ///
     /// # Errors
@@ -133,10 +158,10 @@ impl Memory {
         agent: AgentId,
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let key = key.expose().to_string();
+        let key = key.clone();
         // L'ouverture (recovery WAL, chargement des méta d'index) est
         // bloquante — jamais sur un thread du runtime.
-        let store = tokio::task::spawn_blocking(move || NativeMemoryStore::open_encrypted(&path, &key))
+        let store = tokio::task::spawn_blocking(move || NativeMemoryStore::open_with_key(&path, &key))
             .await
             .map_err(|e| {
                 crate::MemoryError::Core(basemyai_core::CoreError::Storage(format!(
@@ -406,6 +431,25 @@ impl Memory {
         Ok(ids)
     }
 
+    /// Ingère une conversation brute : chaque tour devient un souvenir
+    /// **épisodique** (`"{role}: {content}"`), en un seul batch atomique
+    /// ([`Memory::remember_batch`]). Ne fait **aucune** extraction de faits —
+    /// c'est la consolidation ([`crate::consolidate`]/[`crate::apply_extraction`],
+    /// tâche de fond) qui promeut plus tard les faits durables en couche
+    /// `semantic` à partir de ces épisodes.
+    ///
+    /// Pensé pour l'ingestion "pilotée par l'agent" : l'appelant transmet les
+    /// tours tels quels, sans choisir lui-même une couche mémoire — le pendant
+    /// "sans réflexion" de [`Memory::remember`] pour du dialogue brut.
+    ///
+    /// # Errors
+    /// [`MemoryError::TextTooLong`] si le rendu d'un tour dépasse [`MAX_TEXT_LEN`].
+    /// Propage aussi les erreurs d'embedding/stockage.
+    pub async fn observe(&self, turns: &[ConversationTurn]) -> Result<Vec<String>> {
+        let texts: Vec<String> = turns.iter().map(ConversationTurn::render).collect();
+        self.remember_batch(&texts, MemoryLayer::Episodic).await
+    }
+
     /// Recall temporel : pertinent ET valide, borné à cet agent.
     ///
     /// Par défaut, la couche `procedural` est **exclue** (audit memory poisoning) ;
@@ -546,6 +590,7 @@ impl Memory {
                     layer: h.layer,
                     score,
                     source: h.source,
+                    validity: h.validity,
                 }
             })
             .collect();
@@ -766,7 +811,36 @@ impl Memory {
     /// chiffré ; [`basemyai_core::CoreError::Storage`] si la rotation échoue.
     /// Les deux remontent enveloppées dans [`MemoryError::Core`].
     pub async fn rotate_key(&self, new_key: basemyai_core::EncryptionKey) -> Result<()> {
-        self.engine.rotate_key(new_key.expose()).await
+        self.engine.rotate_with_key(new_key).await
+    }
+
+    /// Rotation O(1) vers une passphrase avec un profil Argon2id explicite.
+    pub async fn rotate_passphrase_with_profile(
+        &self,
+        new_passphrase: basemyai_core::EncryptionKey,
+        profile: crate::storage::Argon2idProfile,
+    ) -> Result<()> {
+        self.engine
+            .rotate_passphrase_with_profile(new_passphrase, profile)
+            .await
+    }
+
+    /// Effectue une rotation complète de la DEK : toutes les données vivantes
+    /// sont ré-encryptées dans une nouvelle génération avant publication
+    /// atomique. Coût O(taille du store), avec espace temporaire proche de ×2.
+    pub async fn rotate_key_full(&self, new_key: basemyai_core::EncryptionKey) -> Result<()> {
+        self.engine.rotate_key_full(new_key).await
+    }
+
+    /// Rotation complète vers une passphrase avec un profil Argon2id explicite.
+    pub async fn rotate_passphrase_full_with_profile(
+        &self,
+        new_passphrase: basemyai_core::EncryptionKey,
+        profile: crate::storage::Argon2idProfile,
+    ) -> Result<()> {
+        self.engine
+            .rotate_passphrase_full_with_profile(new_passphrase, profile)
+            .await
     }
 }
 
@@ -882,6 +956,129 @@ mod tests {
             .await
             .expect("meta read");
         assert_eq!(stored, "test-model-a");
+    }
+
+    #[tokio::test]
+    async fn open_native_uses_the_encryption_key_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let passphrase = basemyai_core::EncryptionKey::passphrase("memory passphrase");
+        let memory = Memory::open_native(
+            dir.path(),
+            &passphrase,
+            Box::new(TestEmbedder {
+                model: "test-model-a",
+                dim: crate::EMBEDDING_DIM,
+            }),
+            AgentId::new("passphrase-agent").expect("valid agent"),
+        )
+        .await
+        .expect("open passphrase memory");
+        drop(memory);
+
+        let raw = basemyai_core::EncryptionKey::raw("memory passphrase");
+        let Err(err) = Memory::open_native(
+            dir.path(),
+            &raw,
+            Box::new(TestEmbedder {
+                model: "test-model-a",
+                dim: crate::EMBEDDING_DIM,
+            }),
+            AgentId::new("raw-agent").expect("valid agent"),
+        )
+        .await
+        else {
+            panic!("raw key must not open a passphrase memory")
+        };
+        assert!(matches!(
+            err,
+            MemoryError::Core(basemyai_core::CoreError::WrongEncryptionKey)
+        ));
+    }
+
+    #[tokio::test]
+    async fn full_key_rotation_delegates_to_the_native_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(
+            NativeMemoryStore::open_encrypted(dir.path(), "old full-rotation key")
+                .expect("open encrypted native store"),
+        );
+        let memory = Memory::from_native_store(
+            Arc::clone(&store),
+            Box::new(TestEmbedder {
+                model: "test-model-a",
+                dim: crate::EMBEDDING_DIM,
+            }),
+            AgentId::new("full-rotation-agent").expect("valid agent"),
+        )
+        .await
+        .expect("memory opens");
+
+        memory
+            .remember("remembered before a full key rotation", MemoryLayer::Semantic)
+            .await
+            .expect("remember before full rotation");
+        memory
+            .rotate_key_full(basemyai_core::EncryptionKey::raw("new full-rotation key"))
+            .await
+            .expect("full rotation through memory facade");
+
+        let recalled = memory.recall("rotation", 10).await.expect("recall after full rotation");
+        assert_eq!(
+            recalled.len(),
+            1,
+            "the live Memory facade remains usable after rotation"
+        );
+        assert_eq!(recalled[0].text, "remembered before a full key rotation");
+
+        drop(memory);
+        drop(store);
+
+        assert!(
+            NativeMemoryStore::open_encrypted(dir.path(), "old full-rotation key").is_err(),
+            "the old key must not open the published generation"
+        );
+        NativeMemoryStore::open_encrypted(dir.path(), "new full-rotation key")
+            .expect("the new key opens the published generation");
+    }
+
+    #[tokio::test]
+    async fn observe_stores_each_turn_as_an_episodic_memory() {
+        let store = open_native_store_for_tests();
+        let agent = AgentId::new("observe-agent").expect("valid agent");
+        let memory = Memory::from_native_store(
+            Arc::clone(&store),
+            Box::new(TestEmbedder {
+                model: "test-model-a",
+                dim: crate::EMBEDDING_DIM,
+            }),
+            agent,
+        )
+        .await
+        .expect("memory opens");
+
+        let ids = memory
+            .observe(&[
+                ConversationTurn::new("user", "what does basemyai store?"),
+                ConversationTurn::new("assistant", "local memories for an agent."),
+            ])
+            .await
+            .expect("observe");
+        assert_eq!(ids.len(), 2, "one memory id per conversation turn");
+
+        let stats = memory.stats().await.expect("stats");
+        assert_eq!(stats.episodic, 2, "turns land in the episodic layer, not semantic");
+        assert_eq!(stats.semantic, 0, "observe never promotes facts by itself");
+
+        let recalled = memory
+            .recall_by_layer("local memories", MemoryLayer::Episodic, 10)
+            .await
+            .expect("recall episodic");
+        assert!(
+            recalled
+                .iter()
+                .any(|r| r.text == "assistant: local memories for an agent."),
+            "the rendered `role: content` text is what gets stored"
+        );
     }
 
     #[tokio::test]

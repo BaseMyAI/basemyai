@@ -32,7 +32,7 @@ impl FileProvider {
     /// d'index) échoue, ou si la clé est fausse.
     pub async fn open(
         store_path: std::path::PathBuf,
-        key: String,
+        key: basemyai_core::EncryptionKey,
         embedder: std::sync::Arc<dyn basemyai_core::Embedder>,
     ) -> Result<Self, basemyai::MemoryError> {
         if let Some(parent) = store_path.parent() {
@@ -45,7 +45,7 @@ impl FileProvider {
         }
         let path = store_path.clone();
         let store =
-            tokio::task::spawn_blocking(move || basemyai::storage::NativeMemoryStore::open_encrypted(&path, &key))
+            tokio::task::spawn_blocking(move || basemyai::storage::NativeMemoryStore::open_with_key(&path, &key))
                 .await
                 .map_err(|e| {
                     basemyai::MemoryError::Core(basemyai_core::CoreError::Storage(format!(

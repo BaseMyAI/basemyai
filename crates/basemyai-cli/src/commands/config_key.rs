@@ -17,8 +17,8 @@ pub(crate) fn run(action: ConfigKeyAction, format: Format) -> Result<(), CliErro
 }
 
 fn generate(force: bool, format: Format) -> Result<(), CliError> {
-    let passphrase = EncryptionKey::generate_passphrase();
-    let path = EncryptionKey::persist_to_default_file(&passphrase, force).map_err(|e| {
+    let generated_key = EncryptionKey::generate_passphrase();
+    let path = EncryptionKey::persist_to_default_file(&generated_key, force).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
             CliError::KeyResolution(e.to_string())
         } else {

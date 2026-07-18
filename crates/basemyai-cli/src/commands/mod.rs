@@ -31,7 +31,7 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
         Command::Setup { fetch } => provision::setup(fetch, format).await,
         Command::Status => provision::status(format).await,
         Command::Config { action } => config::run(action, format, cli.db.clone(), cli.agent.clone()),
-        Command::Init { path } => container::init(&path, format).await,
+        Command::Init { path, low_memory } => container::init(&path, low_memory, format).await,
         Command::Inspect => container::inspect(&resolve_path()?, format).await,
         Command::Verify { physical, logical } => {
             let mode = if logical {
@@ -141,9 +141,14 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
             let agent = resolve_agent()?;
             memory::import(&path, &agent, &file, trusted, format).await
         }
-        Command::RotateKey { new_key } => {
+        Command::RotateKey {
+            new_key,
+            passphrase,
+            low_memory,
+            full,
+        } => {
             let path = resolve_path()?;
-            container::rotate_key(&path, new_key, format).await
+            container::rotate_key(&path, new_key, passphrase, low_memory, full, format).await
         }
         Command::Graph { action } => {
             let path = resolve_path()?;

@@ -47,7 +47,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let provider: Arc<dyn basemyai_rest::MemoryProvider> =
-        Arc::new(FileProvider::open(db_path, db_key.expose().to_string(), embedder).await?);
+        Arc::new(FileProvider::open(db_path, db_key, embedder).await?);
     let addr = config.socket_addr();
     let app = build_app(AppState::new(provider, config));
 

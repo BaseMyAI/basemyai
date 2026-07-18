@@ -195,6 +195,7 @@ fn batch_mixing_puts_and_deletes() {
     assert_eq!(engine.get(b"c").expect("get"), Some(b"new-c".to_vec()));
 
     engine.flush().expect("flush");
+    drop(engine);
     let engine = Engine::open(dir.path()).expect("reopen");
     assert_eq!(engine.get(b"a").expect("get"), Some(b"new-a".to_vec()));
     assert_eq!(engine.get(b"b").expect("get"), None);

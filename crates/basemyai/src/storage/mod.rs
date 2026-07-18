@@ -14,6 +14,7 @@
 pub mod integrity;
 mod native_store;
 
+pub use basemyai_engine::Argon2idProfile;
 pub use native_store::{BMAI_FORMAT_VERSION, NativeExportRows, NativeMemoryStore};
 pub(crate) use native_store::{NativeImportEdge, NativeImportEntity, NativeImportMemory};
 
@@ -63,6 +64,7 @@ pub struct HydratedRecord {
     pub text: String,
     pub layer: MemoryLayer,
     pub source: String,
+    pub validity: Validity,
 }
 
 /// Un candidat à l'oubli adaptatif (VISION §5.2, ADR-012, portée sur le

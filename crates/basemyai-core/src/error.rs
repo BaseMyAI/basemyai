@@ -35,6 +35,14 @@ pub enum CoreError {
     #[error("corrupt encryption metadata")]
     CorruptEncryptionMetadata,
 
+    /// Le store est déjà détenu par un autre writer.
+    #[error("store is locked by another writer")]
+    StoreLocked,
+
+    /// Métadonnées de génération structurellement invalides.
+    #[error("corrupt store generation metadata")]
+    CorruptStoreGenerationMetadata,
+
     /// Store déjà en clair : impossible d'appliquer une clé a posteriori.
     #[error("plaintext store cannot be encrypted in place")]
     PlaintextStoreEncryptedKeySupplied,

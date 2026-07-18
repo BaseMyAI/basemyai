@@ -139,6 +139,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "crypto_meta_decode_structured"
+path = "fuzz_targets/crypto_meta_decode_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "wal_envelope_decode"
 path = "fuzz_targets/wal_envelope_decode.rs"
 test = false

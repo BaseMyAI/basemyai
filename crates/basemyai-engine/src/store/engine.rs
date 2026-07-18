@@ -4,7 +4,7 @@
 //! ordering guarantee.
 
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::crypto::{self, CryptoContext};
 use crate::error::{EngineError, Result};
 use crate::fail_point;
+use crate::format::generation_meta;
 use crate::format::store_meta::{self, StoreMeta};
 use crate::format::wal::{BatchOp, WalOp};
 use crate::key::Key;
@@ -150,7 +151,18 @@ impl Default for EngineOptions {
 /// memtable; flush as an ordered SST (fsync, rename, *then* truncate the
 /// WAL — never the other order, per ADR-025).
 pub struct Engine {
+    /// Stable store root. `dir` may move to `gen-N` after a full rotation,
+    /// while root metadata and the writer lock always remain here.
+    root_dir: PathBuf,
     dir: PathBuf,
+    /// Logical generation selected from root `generation.meta`; legacy root
+    /// stores remain generation zero until their first full DEK rotation.
+    generation_id: u64,
+    /// Held for this engine's full lifetime. Dropping the file releases the
+    /// advisory OS lock, so no second writable opener can reach WAL/SST.
+    _writer_lock: File,
+    /// Stable identity persisted in `store.meta` (`StoreMeta:2`, ADR-042).
+    store_id: uuid::Uuid,
     wal: Wal,
     memtable: Memtable,
     /// Ordered oldest to newest.
@@ -219,28 +231,107 @@ impl Engine {
         Self::open_encrypted_with_options(path, key, EngineOptions::default())
     }
 
-    /// Same as [`Engine::open_encrypted`] with explicit tunables.
-    pub fn open_encrypted_with_options(path: impl AsRef<Path>, key: &[u8], options: EngineOptions) -> Result<Self> {
-        Self::open_inner(path.as_ref(), options, Some(key))
+    /// Opens (creating if absent) an encrypted store with a human
+    /// passphrase. Fresh stores persist `CryptoMeta:2` in Argon2id mode;
+    /// existing records must already declare that same mode, so raw keys and
+    /// passphrases never silently substitute for one another (ADR-042).
+    pub fn open_with_passphrase(path: impl AsRef<Path>, passphrase: &[u8]) -> Result<Self> {
+        Self::open_with_passphrase_and_options(path, passphrase, EngineOptions::default())
     }
 
-    fn open_inner(path: &Path, options: EngineOptions, key: Option<&[u8]>) -> Result<Self> {
-        let dir = path.to_path_buf();
-        fs::create_dir_all(&dir).map_err(|e| EngineError::io(dir.clone(), e))?;
+    /// Opens (or creates) a passphrase store using an explicit Argon2id cost
+    /// profile when a new `crypto.meta` must be written. Existing stores
+    /// always replay the parameters persisted in their metadata.
+    pub fn open_with_passphrase_and_profile(
+        path: impl AsRef<Path>,
+        passphrase: &[u8],
+        profile: crypto::Argon2idProfile,
+    ) -> Result<Self> {
+        Self::open_with_passphrase_profile_and_options(path, passphrase, profile, EngineOptions::default())
+    }
+
+    /// Same as [`Engine::open_encrypted`] with explicit tunables.
+    pub fn open_encrypted_with_options(path: impl AsRef<Path>, key: &[u8], options: EngineOptions) -> Result<Self> {
+        Self::open_inner(
+            path.as_ref(),
+            options,
+            Some((key, crypto::KeyMode::RawKey, crypto::Argon2idProfile::Default)),
+        )
+    }
+
+    /// Same as [`Engine::open_with_passphrase`] with explicit tunables.
+    pub fn open_with_passphrase_and_options(
+        path: impl AsRef<Path>,
+        passphrase: &[u8],
+        options: EngineOptions,
+    ) -> Result<Self> {
+        Self::open_with_passphrase_profile_and_options(path, passphrase, crypto::Argon2idProfile::Default, options)
+    }
+
+    fn open_with_passphrase_profile_and_options(
+        path: impl AsRef<Path>,
+        passphrase: &[u8],
+        profile: crypto::Argon2idProfile,
+        options: EngineOptions,
+    ) -> Result<Self> {
+        Self::open_inner(
+            path.as_ref(),
+            options,
+            Some((passphrase, crypto::KeyMode::Passphrase, profile)),
+        )
+    }
+
+    fn open_inner(
+        path: &Path,
+        options: EngineOptions,
+        key: Option<(&[u8], crypto::KeyMode, crypto::Argon2idProfile)>,
+    ) -> Result<Self> {
+        let root_dir = path.to_path_buf();
+        fs::create_dir_all(&root_dir).map_err(|e| EngineError::io(root_dir.clone(), e))?;
+
+        // This lock deliberately precedes *all* store metadata checks and
+        // mutations. In particular, legacy StoreMeta:1 upgrading must never
+        // race another open which could stamp a different store_id.
+        let writer_lock = acquire_writer_lock(&root_dir)?;
 
         // Store-generation check (N8.9, ADR-039 §7) — before touching
         // crypto/WAL/SST state at all: an incompatible or pre-ADR-039 store
         // must fail fast and typed, not as inexplicable corruption further
         // in. A genuinely fresh directory publishes a new `store.meta` here.
-        check_or_create_store_meta(&dir)?;
+        let store_meta = check_or_create_store_meta(&root_dir)?;
+        let store_id = store_meta
+            .store_id
+            .expect("check_or_create_store_meta always returns a stamped StoreMeta:2");
+
+        let (dir, generation_id) = resolve_active_generation(&root_dir)?;
 
         // `crypto.meta`'s presence is the single source of truth for the
         // store's mode (ADR-030 §2) — never guessed from file contents.
         let meta_exists = crypto::crypto_meta_path(&dir).exists();
+        if generation_id != 0 && !meta_exists {
+            return Err(EngineError::CorruptCryptoMeta {
+                path: crypto::crypto_meta_path(&dir),
+                reason: "published generation is missing crypto.meta".to_string(),
+            });
+        }
         let crypto = match (meta_exists, key) {
-            (true, Some(key)) => Some(crypto::load_meta(&dir, key)?),
+            (true, Some((key, crypto::KeyMode::RawKey, _))) if generation_id == 0 => {
+                Some(crypto::load_meta(&dir, key)?)
+            }
+            (true, Some((key, crypto::KeyMode::RawKey, _))) => Some(crypto::load_meta_for_generation(
+                &dir,
+                key,
+                crypto::KeyMode::RawKey,
+                generation_id,
+            )?),
+            (true, Some((key, crypto::KeyMode::Passphrase, _))) => Some(crypto::load_meta_for_generation(
+                &dir,
+                key,
+                crypto::KeyMode::Passphrase,
+                generation_id,
+            )?),
             (true, None) => return Err(EngineError::MissingEncryptionKey { path: dir }),
-            (false, Some(key)) => {
+            (false, Some((key, mode, profile))) => {
                 // Refuse to mix modes: a directory that already holds
                 // plaintext artifacts cannot be encrypted a posteriori.
                 let has_wal = dir.join("wal.log").exists();
@@ -248,7 +339,12 @@ impl Engine {
                 if has_wal || has_sst {
                     return Err(EngineError::PlaintextStoreKeySupplied { path: dir });
                 }
-                Some(crypto::create_meta(&dir, key)?)
+                Some(match (mode, generation_id) {
+                    (crypto::KeyMode::RawKey, 0) => crypto::create_meta(&dir, key)?,
+                    (mode, generation_id) => {
+                        crypto::create_meta_for_generation_with_profile(&dir, key, mode, profile, generation_id)?
+                    }
+                })
             }
             (false, None) => None,
         };
@@ -285,8 +381,13 @@ impl Engine {
         }
 
         let block_cache = BlockCache::new(options.block_cache_capacity_bytes);
+        gc_inactive_generations(&root_dir, generation_id);
         Ok(Self {
+            root_dir,
             dir,
+            generation_id,
+            _writer_lock: writer_lock,
+            store_id,
             wal,
             memtable,
             ssts,
@@ -341,6 +442,13 @@ impl Engine {
         self.crypto.is_some()
     }
 
+    /// Stable identifier of this store, persisted in `store.meta` and safe to
+    /// use as an external account name (it is an identifier, not a secret).
+    #[must_use]
+    pub fn store_id(&self) -> uuid::Uuid {
+        self.store_id
+    }
+
     /// Rotates the user key **in place** (ADR-030 §4): the store's DEK is
     /// re-wrapped under a KEK derived from `new_key` (fresh salt) and
     /// `crypto.meta` is atomically replaced (tmp + fsync + rename). O(1) —
@@ -360,10 +468,175 @@ impl Engine {
     /// encryption (nothing to rotate — parity with ADR-007's posture);
     /// otherwise I/O errors from the atomic replace.
     pub fn rotate_key(&mut self, new_key: &[u8]) -> Result<()> {
+        self.rotate_key_with_mode(new_key, crypto::KeyMode::RawKey, crypto::Argon2idProfile::Default)
+    }
+
+    /// Passphrase counterpart to [`Self::rotate_key`]. The existing DEK is
+    /// re-wrapped under an Argon2id-derived KEK without rewriting data files.
+    pub fn rotate_passphrase(&mut self, new_passphrase: &[u8]) -> Result<()> {
+        self.rotate_passphrase_with_profile(new_passphrase, crypto::Argon2idProfile::Default)
+    }
+
+    /// Re-wraps the existing DEK with a passphrase under an explicit Argon2id
+    /// profile. The profile must be repeated at each rotation that should keep
+    /// using the constrained-hardware parameters (ADR-042).
+    pub fn rotate_passphrase_with_profile(
+        &mut self,
+        new_passphrase: &[u8],
+        profile: crypto::Argon2idProfile,
+    ) -> Result<()> {
+        self.rotate_key_with_mode(new_passphrase, crypto::KeyMode::Passphrase, profile)
+    }
+
+    fn rotate_key_with_mode(
+        &mut self,
+        new_key: &[u8],
+        mode: crypto::KeyMode,
+        profile: crypto::Argon2idProfile,
+    ) -> Result<()> {
         let Some(crypto) = &self.crypto else {
             return Err(EngineError::NotEncrypted { path: self.dir.clone() });
         };
-        crypto::write_meta(&self.dir, new_key, crypto)
+        crypto::write_meta_with_mode_for_generation_and_profile(
+            &self.dir,
+            new_key,
+            crypto,
+            mode,
+            profile,
+            self.generation_id,
+        )
+    }
+
+    /// Re-encrypts every live record under a fresh DEK and atomically makes
+    /// the resulting generation current (ADR-042). Unlike [`Self::rotate_key`],
+    /// this is an O(store size) full merge and removes tombstones and shadowed
+    /// records from the active generation.
+    ///
+    /// # Errors
+    /// [`EngineError::NotEncrypted`] for a plaintext store, plus I/O or
+    /// corruption errors encountered while reading or publishing the new
+    /// generation. Before pointer publication an error leaves this instance
+    /// and the active generation unchanged.
+    pub fn rotate_key_full(&mut self, new_key: &[u8]) -> Result<()> {
+        self.rotate_full(new_key, crypto::KeyMode::RawKey, crypto::Argon2idProfile::Default)
+    }
+
+    /// Passphrase counterpart to [`Self::rotate_key_full`]. The fresh DEK is
+    /// wrapped by an Argon2id-derived KEK persisted in `CryptoMeta:2`.
+    pub fn rotate_passphrase_full(&mut self, new_passphrase: &[u8]) -> Result<()> {
+        self.rotate_passphrase_full_with_profile(new_passphrase, crypto::Argon2idProfile::Default)
+    }
+
+    /// Full-DEK counterpart to [`Self::rotate_passphrase_with_profile`].
+    pub fn rotate_passphrase_full_with_profile(
+        &mut self,
+        new_passphrase: &[u8],
+        profile: crypto::Argon2idProfile,
+    ) -> Result<()> {
+        self.rotate_full(new_passphrase, crypto::KeyMode::Passphrase, profile)
+    }
+
+    fn rotate_full(&mut self, new_key: &[u8], mode: crypto::KeyMode, profile: crypto::Argon2idProfile) -> Result<()> {
+        if self.crypto.is_none() {
+            return Err(EngineError::NotEncrypted { path: self.dir.clone() });
+        }
+
+        let next_generation = self
+            .generation_id
+            .checked_add(1)
+            .ok_or_else(|| EngineError::CorruptGenerationMeta {
+                path: self.root_dir.join(generation_meta::GENERATION_META_FILENAME),
+                reason: "active generation id cannot be incremented".to_string(),
+            })?;
+        let next_dir = generation_dir(&self.root_dir, next_generation);
+
+        // A pre-publication crash may leave this exact directory behind.
+        // Never reuse its crypto.meta/DEK: remove it completely and create a
+        // fresh generation from scratch.
+        if next_dir.exists() {
+            fs::remove_dir_all(&next_dir).map_err(|e| EngineError::io(next_dir.clone(), e))?;
+        }
+        fs::create_dir(&next_dir).map_err(|e| EngineError::io(next_dir.clone(), e))?;
+
+        let build = (|| -> Result<(CryptoContext, Option<BlockSstFile>, Wal)> {
+            let new_crypto =
+                crypto::create_meta_for_generation_with_profile(&next_dir, new_key, mode, profile, next_generation)?;
+            fail_point!("after_full_rotation_new_dek");
+
+            // Same precedence as reads/compaction: old SSTs first, newest
+            // layers overwrite them, and the WAL-replayed memtable wins last.
+            // This directly folds the unflushed tail into the output, so no
+            // intermediate old-DEK SST and no WAL re-sealing pass is needed.
+            let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
+            for sst in &self.ssts {
+                for (key, value) in sst.entries()? {
+                    merged.insert(key, value);
+                }
+            }
+            for (key, value) in self.memtable.iter() {
+                merged.insert(key.clone(), value.clone());
+            }
+            let entries: Vec<(Key, Option<Value>)> = merged.into_iter().filter(|(_, value)| value.is_some()).collect();
+            let new_sst = if entries.is_empty() {
+                None
+            } else {
+                let sst = BlockSstFile::write_new(&next_dir, 0, entries, self.options.block_size, Some(&new_crypto))?;
+                fail_point!("after_full_rotation_sst_write");
+                Some(sst)
+            };
+
+            // The new generation is published only after even its empty WAL
+            // exists durably. Keep this handle ready for the live-state swap.
+            let wal_path = next_dir.join("wal.log");
+            let wal_file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&wal_path)
+                .map_err(|e| EngineError::io(wal_path.clone(), e))?;
+            wal_file.sync_all().map_err(|e| EngineError::io(wal_path.clone(), e))?;
+            drop(wal_file);
+            let new_wal = Wal::open_for_append(wal_path, Some(new_crypto.clone()))?;
+            fail_point!("before_full_rotation_publish");
+            Ok((new_crypto, new_sst, new_wal))
+        })();
+
+        let (new_crypto, new_sst, new_wal) = match build {
+            Ok(build) => build,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&next_dir);
+                return Err(error);
+            }
+        };
+
+        publish_generation(&self.root_dir, next_generation)?;
+
+        // From this point forward the in-memory writer must follow the
+        // published pointer. Every operation below is infallible; notably,
+        // the new WAL handle was opened before publication.
+        let old_dir = std::mem::replace(&mut self.dir, next_dir);
+        self.generation_id = next_generation;
+        let old_wal = std::mem::replace(&mut self.wal, new_wal);
+        drop(old_wal); // mandatory before remove_dir_all on Windows
+        let old_ssts = std::mem::replace(&mut self.ssts, new_sst.into_iter().collect());
+        let input_bytes = old_ssts.iter().map(|sst| sst.file_bytes).sum::<u64>();
+        let output_bytes = self.ssts.iter().map(|sst| sst.file_bytes).sum::<u64>();
+        for old in &old_ssts {
+            self.block_cache.invalidate_sst(old.id);
+        }
+        drop(old_ssts);
+        self.memtable.clear();
+        self.next_sst_id = u64::from(!self.ssts.is_empty());
+        self.crypto = Some(new_crypto);
+        self.counters.compaction_count += 1;
+        self.counters.compaction_input_bytes += input_bytes;
+        self.counters.compaction_output_bytes += output_bytes;
+        self.counters.bytes_written += output_bytes;
+
+        fail_point!("after_full_rotation_publish");
+        gc_old_generation(&self.root_dir, &old_dir, next_generation);
+        Ok(())
     }
 
     /// Inserts or overwrites `key`. Durable once this returns `Ok` — the WAL
@@ -747,33 +1020,38 @@ fn sst_files_present(dir: &Path) -> Result<bool> {
 /// the very same `open_inner` call (after this function returns) — treating
 /// its presence as an "old artifact" here would make every first-ever
 /// encrypted-store open falsely look like an incompatible reopen.
-fn check_or_create_store_meta(dir: &Path) -> Result<()> {
-    let meta_path = dir.join("store.meta");
-    if meta_path.exists() {
-        let bytes = fs::read(&meta_path).map_err(|e| EngineError::io(meta_path.clone(), e))?;
-        let meta = store_meta::decode(&bytes, &meta_path)?;
-        if meta.store_format_version != store_meta::STORE_FORMAT_VERSION {
-            return Err(EngineError::UnsupportedStoreFormat {
+fn acquire_writer_lock(dir: &Path) -> Result<File> {
+    let path = dir.join(".basemyai.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        // This stable lock file has no payload. Never truncate it while a
+        // previous opener may still hold the OS-level advisory lock.
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| EngineError::io(path.clone(), e))?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(EngineError::StoreLocked {
                 path: dir.to_path_buf(),
-                expected: store_meta::STORE_FORMAT_VERSION,
-                found: meta.store_format_version,
             });
         }
-        return Ok(());
+        Err(std::fs::TryLockError::Error(error)) => return Err(EngineError::io(path, error)),
     }
+    Ok(file)
+}
 
-    let has_old_artifacts = dir.join("wal.log").exists() || sst_files_present(dir)?;
-    if has_old_artifacts {
-        return Err(EngineError::UnsupportedStoreFormat {
-            path: dir.to_path_buf(),
-            expected: store_meta::STORE_FORMAT_VERSION,
-            found: 0, // sentinel: no store.meta at all (pre-ADR-039 store)
-        });
-    }
+fn generation_dir(root_dir: &Path, generation_id: u64) -> PathBuf {
+    root_dir.join(format!("gen-{generation_id}"))
+}
 
-    let tmp_path = meta_path.with_extension("meta.tmp");
-    let bytes = store_meta::encode(&StoreMeta {
-        store_format_version: store_meta::STORE_FORMAT_VERSION,
+fn publish_generation(root_dir: &Path, generation_id: u64) -> Result<()> {
+    let final_path = root_dir.join(generation_meta::GENERATION_META_FILENAME);
+    let tmp_path = final_path.with_extension("meta.tmp");
+    let bytes = generation_meta::encode(&generation_meta::GenerationMeta {
+        current_generation: generation_id,
     });
     {
         let mut file = OpenOptions::new()
@@ -786,8 +1064,169 @@ fn check_or_create_store_meta(dir: &Path) -> Result<()> {
             .map_err(|e| EngineError::io(tmp_path.clone(), e))?;
         file.sync_all().map_err(|e| EngineError::io(tmp_path.clone(), e))?;
     }
+    fs::rename(&tmp_path, &final_path).map_err(|e| EngineError::io(final_path, e))?;
+    Ok(())
+}
+
+fn gc_old_generation(root_dir: &Path, old_dir: &Path, current_generation: u64) {
+    if old_dir == root_dir {
+        let _ = fs::remove_file(root_dir.join("wal.log"));
+        hit_infallible_failpoint("during_full_rotation_gc");
+        let _ = fs::remove_file(crypto::crypto_meta_path(root_dir));
+        let _ = fs::remove_file(root_dir.join("crypto.meta.tmp"));
+        if let Ok(entries) = fs::read_dir(root_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+                if path.extension().and_then(|extension| extension.to_str()) == Some("sst")
+                    || name.ends_with(".sst.tmp")
+                {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+    } else if old_dir != generation_dir(root_dir, current_generation) {
+        if let Ok(mut entries) = fs::read_dir(old_dir)
+            && let Some(Ok(entry)) = entries.next()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(path);
+            } else {
+                let _ = fs::remove_file(path);
+            }
+            hit_infallible_failpoint("during_full_rotation_gc");
+        }
+        let _ = fs::remove_dir_all(old_dir);
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+fn hit_infallible_failpoint(name: &'static str) {
+    // Post-publication GC is deliberately best-effort and cannot return an
+    // error to the caller. Abort actions still terminate inside `hit`; an
+    // injected ordinary error is ignored to preserve that contract.
+    let _ = crate::failpoint::hit(name);
+}
+
+#[cfg(not(any(test, feature = "test-util")))]
+fn hit_infallible_failpoint(_name: &'static str) {}
+
+fn gc_inactive_generations(root_dir: &Path, current_generation: u64) {
+    let Ok(entries) = fs::read_dir(root_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(id) = name.strip_prefix("gen-").and_then(|id| id.parse::<u64>().ok()) else {
+            continue;
+        };
+        if id != current_generation {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+    if current_generation != 0 {
+        gc_old_generation(root_dir, root_dir, current_generation);
+    }
+}
+
+/// Resolves the only data directory an opener may inspect. Before a full
+/// rotation there is no pointer and the root is the legacy logical generation
+/// zero. Once a pointer exists, arbitrary root artifacts and sibling
+/// generations are ignored; only `gen-<current>` is active.
+fn resolve_active_generation(root_dir: &Path) -> Result<(PathBuf, u64)> {
+    let pointer_path = root_dir.join(generation_meta::GENERATION_META_FILENAME);
+    if !pointer_path.exists() {
+        return Ok((root_dir.to_path_buf(), 0));
+    }
+    let bytes = fs::read(&pointer_path).map_err(|e| EngineError::io(pointer_path.clone(), e))?;
+    let meta = generation_meta::decode(&bytes, &pointer_path)?;
+    if meta.current_generation == 0 {
+        return Err(EngineError::CorruptGenerationMeta {
+            path: pointer_path,
+            reason: "generation.meta must point to a non-zero gen-N directory".to_string(),
+        });
+    }
+    let active_dir = root_dir.join(format!("gen-{}", meta.current_generation));
+    if !active_dir.is_dir() {
+        return Err(EngineError::CorruptGenerationMeta {
+            path: pointer_path,
+            reason: format!("active generation directory {} is missing", active_dir.display()),
+        });
+    }
+    Ok((active_dir, meta.current_generation))
+}
+
+fn check_or_create_store_meta(dir: &Path) -> Result<StoreMeta> {
+    let meta_path = dir.join("store.meta");
+    if meta_path.exists() {
+        let bytes = fs::read(&meta_path).map_err(|e| EngineError::io(meta_path.clone(), e))?;
+        let mut meta = store_meta::decode(&bytes, &meta_path)?;
+        if meta.store_format_version != store_meta::STORE_FORMAT_VERSION {
+            return Err(EngineError::UnsupportedStoreFormat {
+                path: dir.to_path_buf(),
+                expected: store_meta::STORE_FORMAT_VERSION,
+                found: meta.store_format_version,
+            });
+        }
+        if meta.store_id.is_none() {
+            meta.store_id = Some(uuid::Uuid::now_v7());
+            write_store_meta(&meta_path, &meta)?;
+        }
+        return Ok(meta);
+    }
+
+    let has_generation_dir = fs::read_dir(dir)
+        .map_err(|e| EngineError::io(dir.to_path_buf(), e))?
+        .filter_map(std::result::Result::ok)
+        .any(|entry| {
+            entry.path().is_dir()
+                && entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.strip_prefix("gen-"))
+                    .is_some_and(|id| id.parse::<u64>().is_ok())
+        });
+    let has_old_artifacts = dir.join("wal.log").exists()
+        || crypto::crypto_meta_path(dir).exists()
+        || dir.join(generation_meta::GENERATION_META_FILENAME).exists()
+        || has_generation_dir
+        || sst_files_present(dir)?;
+    if has_old_artifacts {
+        return Err(EngineError::UnsupportedStoreFormat {
+            path: dir.to_path_buf(),
+            expected: store_meta::STORE_FORMAT_VERSION,
+            found: 0, // sentinel: no store.meta at all (pre-ADR-039 store)
+        });
+    }
+
+    let meta = StoreMeta {
+        store_format_version: store_meta::STORE_FORMAT_VERSION,
+        store_id: Some(uuid::Uuid::now_v7()),
+    };
+    write_store_meta(&meta_path, &meta)?;
+    Ok(meta)
+}
+
+fn write_store_meta(meta_path: &Path, meta: &StoreMeta) -> Result<()> {
+    let tmp_path = meta_path.with_extension("meta.tmp");
+    let bytes = store_meta::encode(meta);
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .map_err(|e| EngineError::io(tmp_path.clone(), e))?;
+        file.write_all(&bytes)
+            .map_err(|e| EngineError::io(tmp_path.clone(), e))?;
+        file.sync_all().map_err(|e| EngineError::io(tmp_path.clone(), e))?;
+    }
     fail_point!("before_manifest_publish");
-    fs::rename(&tmp_path, &meta_path).map_err(|e| EngineError::io(meta_path.clone(), e))?;
+    fs::rename(&tmp_path, meta_path).map_err(|e| EngineError::io(meta_path, e))?;
     Ok(())
 }
 
@@ -831,6 +1270,96 @@ mod tests {
         assert_eq!(engine.get(b"key-019").expect("get").as_deref(), Some(&b"value-19"[..]));
         assert_eq!(engine.get(b"key-003").expect("get"), None);
         assert_eq!(engine.get(b"tail").expect("get").as_deref(), Some(&b"unflushed"[..]));
+    }
+
+    #[test]
+    fn legacy_store_meta_is_stamped_with_a_stable_id_under_the_writer_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let meta_path = dir.path().join("store.meta");
+        let legacy = StoreMeta {
+            store_format_version: store_meta::STORE_FORMAT_VERSION,
+            store_id: None,
+        };
+        fs::write(&meta_path, store_meta::encode(&legacy)).expect("write legacy StoreMeta:1");
+
+        let engine = Engine::open_encrypted(dir.path(), KEY).expect("open upgrades StoreMeta:1");
+        let decoded = store_meta::decode(&fs::read(&meta_path).expect("read upgraded store.meta"), &meta_path)
+            .expect("decode upgraded StoreMeta:2");
+        assert_eq!(decoded.store_id, Some(engine.store_id()));
+    }
+
+    #[test]
+    fn generation_pointer_never_falls_back_to_root_artifacts() {
+        let root = tempfile::tempdir().expect("tempdir");
+        drop(Engine::open_encrypted(root.path(), KEY).expect("create legacy root store"));
+        let pointer_path = root.path().join(generation_meta::GENERATION_META_FILENAME);
+        fs::write(
+            &pointer_path,
+            generation_meta::encode(&generation_meta::GenerationMeta { current_generation: 1 }),
+        )
+        .expect("write pointer");
+
+        let Err(err) = Engine::open_encrypted(root.path(), KEY) else {
+            panic!("missing active generation must fail");
+        };
+        assert!(matches!(err, EngineError::CorruptGenerationMeta { .. }));
+    }
+
+    #[test]
+    fn generation_pointer_requires_matching_crypto_meta_generation() {
+        let root = tempfile::tempdir().expect("tempdir");
+        drop(Engine::open_encrypted(root.path(), KEY).expect("create root store metadata"));
+        let generation_dir = root.path().join("gen-1");
+        fs::create_dir(&generation_dir).expect("create generation directory");
+        // Deliberately write a generation-zero wrap under gen-1: an active
+        // pointer must never make this silently usable.
+        crypto::create_meta_for_generation(&generation_dir, KEY, crypto::KeyMode::RawKey, 0)
+            .expect("create mismatched crypto meta");
+        fs::write(
+            root.path().join(generation_meta::GENERATION_META_FILENAME),
+            generation_meta::encode(&generation_meta::GenerationMeta { current_generation: 1 }),
+        )
+        .expect("write pointer");
+
+        let Err(err) = Engine::open_encrypted(root.path(), KEY) else {
+            panic!("mismatched generation must fail");
+        };
+        assert!(matches!(err, EngineError::CorruptCryptoMeta { .. }));
+    }
+
+    #[test]
+    fn published_generation_missing_crypto_meta_is_never_reinitialized() {
+        let root = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(root.path(), KEY).expect("open");
+            engine.put(b"key", b"value").expect("put");
+            engine.rotate_key_full(b"fresh key").expect("full rotate");
+        }
+        fs::remove_file(root.path().join("gen-1").join("crypto.meta")).expect("remove active crypto meta");
+
+        for key in [None, Some(&b"fresh key"[..])] {
+            let result = match key {
+                Some(key) => Engine::open_encrypted(root.path(), key),
+                None => Engine::open(root.path()),
+            };
+            assert!(matches!(result, Err(EngineError::CorruptCryptoMeta { .. })));
+        }
+    }
+
+    #[test]
+    fn published_generation_without_store_meta_is_not_restamped() {
+        let root = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(root.path(), KEY).expect("open");
+            engine.rotate_key_full(b"fresh key").expect("full rotate");
+        }
+        fs::remove_file(root.path().join("store.meta")).expect("remove store meta");
+
+        let Err(error) = Engine::open_encrypted(root.path(), b"fresh key") else {
+            panic!("missing store.meta must not be recreated for a published generation");
+        };
+        assert!(matches!(error, EngineError::UnsupportedStoreFormat { found: 0, .. }));
+        assert!(!root.path().join("store.meta").exists());
     }
 
     #[test]
@@ -905,6 +1434,119 @@ mod tests {
             panic!("a posteriori encryption is refused")
         };
         assert!(matches!(err, EngineError::PlaintextStoreKeySupplied { .. }));
+    }
+
+    #[test]
+    fn full_rotation_publishes_fresh_generation_and_keeps_live_engine_usable() {
+        let root = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted_with_options(root.path(), KEY, small_options()).expect("open");
+            engine.put(b"kept", b"current").expect("put current");
+            engine.put(b"deleted", b"old").expect("put deleted");
+            engine.flush().expect("flush old generation");
+            engine.delete(b"deleted").expect("delete");
+            fs::write(root.path().join("crypto.meta.tmp"), b"old wrap").expect("seed crypto tmp");
+            fs::write(root.path().join("999.sst.tmp"), b"old ciphertext").expect("seed sst tmp");
+
+            engine.rotate_key_full(b"fresh key").expect("full rotate");
+            assert_eq!(engine.get(b"kept").expect("get kept").as_deref(), Some(&b"current"[..]));
+            assert_eq!(engine.get(b"deleted").expect("get deleted"), None);
+            engine.put(b"after", b"publish").expect("write after publish");
+        }
+
+        assert!(!root.path().join("crypto.meta.tmp").exists());
+        assert!(!root.path().join("999.sst.tmp").exists());
+
+        let Err(old) = Engine::open_encrypted(root.path(), KEY) else {
+            panic!("old key must not open current generation");
+        };
+        assert!(matches!(old, EngineError::WrongEncryptionKey { .. }));
+        let reopened = Engine::open_encrypted(root.path(), b"fresh key").expect("new key opens");
+        assert_eq!(
+            reopened.get(b"kept").expect("get kept").as_deref(),
+            Some(&b"current"[..])
+        );
+        assert_eq!(reopened.get(b"deleted").expect("get deleted"), None);
+        assert_eq!(
+            reopened.get(b"after").expect("get after").as_deref(),
+            Some(&b"publish"[..])
+        );
+    }
+
+    #[test]
+    fn full_rotation_can_switch_to_passphrase_mode() {
+        let root = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(root.path(), KEY).expect("open raw-key store");
+            engine.put(b"key", b"value").expect("put");
+            engine
+                .rotate_passphrase_full(b"new human passphrase")
+                .expect("full rotate to passphrase");
+        }
+
+        let Err(raw) = Engine::open_encrypted(root.path(), b"new human passphrase") else {
+            panic!("same bytes in raw-key mode must be refused");
+        };
+        assert!(matches!(raw, EngineError::WrongEncryptionKey { .. }));
+        let reopened = Engine::open_with_passphrase(root.path(), b"new human passphrase").expect("passphrase opens");
+        assert_eq!(reopened.get(b"key").expect("get").as_deref(), Some(&b"value"[..]));
+    }
+
+    #[test]
+    fn in_place_rotation_can_switch_to_passphrase_mode() {
+        let root = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(root.path(), KEY).expect("open raw-key store");
+            engine.put(b"key", b"value").expect("put");
+            engine
+                .rotate_passphrase(b"new human passphrase")
+                .expect("rotate to passphrase");
+            assert_eq!(engine.get(b"key").expect("get live").as_deref(), Some(&b"value"[..]));
+        }
+
+        let Err(raw) = Engine::open_encrypted(root.path(), b"new human passphrase") else {
+            panic!("same bytes in raw-key mode must be refused");
+        };
+        assert!(matches!(raw, EngineError::WrongEncryptionKey { .. }));
+        let reopened = Engine::open_with_passphrase(root.path(), b"new human passphrase").expect("passphrase opens");
+        assert_eq!(reopened.get(b"key").expect("get").as_deref(), Some(&b"value"[..]));
+    }
+
+    #[test]
+    fn consecutive_full_rotations_advance_and_gc_generations() {
+        let root = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(root.path(), KEY).expect("open");
+            engine.put(b"before", b"one").expect("put before");
+            engine.rotate_key_full(b"second key").expect("first full rotate");
+            engine.put(b"between", b"two").expect("put between");
+            engine.rotate_key_full(b"third key").expect("second full rotate");
+        }
+
+        assert!(!root.path().join("gen-1").exists(), "previous generation must be GC'd");
+        assert!(root.path().join("gen-2").is_dir());
+        let engine = Engine::open_encrypted(root.path(), b"third key").expect("open latest generation");
+        assert_eq!(engine.get(b"before").expect("get before").as_deref(), Some(&b"one"[..]));
+        assert_eq!(
+            engine.get(b"between").expect("get between").as_deref(),
+            Some(&b"two"[..])
+        );
+    }
+
+    #[test]
+    fn full_rotation_preserves_monotonic_block_cache_counters() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut engine = Engine::open_encrypted_with_options(root.path(), KEY, small_options()).expect("open");
+        engine.put(b"key", b"value").expect("put");
+        engine.flush().expect("flush");
+        assert_eq!(engine.get(b"key").expect("miss").as_deref(), Some(&b"value"[..]));
+        assert_eq!(engine.get(b"key").expect("hit").as_deref(), Some(&b"value"[..]));
+        let before = engine.stats().expect("stats before");
+
+        engine.rotate_key_full(b"fresh key").expect("full rotate");
+        let after = engine.stats().expect("stats after");
+        assert!(after.block_cache_hits >= before.block_cache_hits);
+        assert!(after.block_cache_misses >= before.block_cache_misses);
     }
 
     #[test]

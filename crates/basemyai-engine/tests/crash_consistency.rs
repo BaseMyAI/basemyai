@@ -46,15 +46,16 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use basemyai_engine::harness::{
-    BATCH_SIZE, ChurnOp, GRAPH_AGENT, GraphOp, MEMORY_AGENT, MEMORY_VECTOR_DIM, MemoryOp, churn_deletes_before,
-    churn_inserts_before, churn_op, encode_key, expected_memory_content, expected_value, expected_vector,
-    graph_entity_kind, graph_entity_label, graph_op, memory_forgets_before, memory_match_expr, memory_op,
-    memory_puts_before, memory_record_id, vector_index_params,
+    BATCH_SIZE, CRYPTO_KEY, ChurnOp, GRAPH_AGENT, GraphOp, MEMORY_AGENT, MEMORY_VECTOR_DIM, MemoryOp,
+    ROTATED_CRYPTO_KEY, churn_deletes_before, churn_inserts_before, churn_op, encode_key, expected_memory_content,
+    expected_value, expected_vector, graph_entity_kind, graph_entity_label, graph_op, memory_forgets_before,
+    memory_match_expr, memory_op, memory_puts_before, memory_record_id, vector_index_params,
 };
 use basemyai_engine::idx::vector::node;
 use basemyai_engine::key::vector_index::node_key;
 use basemyai_engine::{
     Engine, PersistentFts, PersistentGraph, PersistentMemoryIndex, PersistentVectorIndex, VectorIndexParams,
+    VerifyMode, verify_store,
 };
 
 /// Matches the earlier N1 spike's rigor (20 cycles) — see
@@ -130,6 +131,87 @@ fn memory_kill_reopen_verify_loop() {
 #[test]
 fn encrypted_memory_kill_reopen_verify_loop() {
     run_memory_cycles(cycles(), true);
+}
+
+/// Exact-boundary crash proof for ADR-042 full DEK rotation. Each failpoint
+/// aborts a fresh child without unwinding; the parent verifies the generation
+/// selected on disk before opening it (and therefore before open-time GC).
+#[test]
+fn full_rotation_abort_boundaries_keep_the_published_generation_healthy() {
+    const SITES: &[&str] = &[
+        "after_full_rotation_new_dek",
+        "after_sst_tmp_write",
+        "after_sst_tmp_fsync",
+        "after_full_rotation_sst_write",
+        "before_full_rotation_publish",
+        "after_full_rotation_publish",
+        "during_full_rotation_gc",
+    ];
+    let bin = env!("CARGO_BIN_EXE_crash_writer");
+
+    for initial_generation in [0_u64, 1] {
+        for site in SITES {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let engine_dir = tmp.path().join("engine");
+            let confirm_log = tmp.path().join("confirmed.log");
+            {
+                let mut engine = Engine::open_encrypted(&engine_dir, CRYPTO_KEY).expect("seed encrypted store");
+                for counter in 0..64 {
+                    engine
+                        .put(&encode_key(counter), &expected_value(counter))
+                        .expect("seed record");
+                }
+                engine.flush().expect("seed SST");
+                engine.put(b"wal-tail", b"durable").expect("seed WAL tail");
+                if initial_generation == 1 {
+                    engine.rotate_key_full(CRYPTO_KEY).expect("seed generation one");
+                }
+            }
+            let pointer_path = engine_dir.join("generation.meta");
+            let pointer_before = std::fs::read(&pointer_path).ok();
+
+            let status = Command::new(bin)
+                .arg(&engine_dir)
+                .arg(&confirm_log)
+                .arg("rotate-full")
+                .arg("--encrypted")
+                .env("BASEMYAI_FAILPOINTS", format!("{site}=abort"))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap_or_else(|error| panic!("gen-{initial_generation} {site}: failed to spawn child: {error}"));
+            assert!(
+                !status.success(),
+                "gen-{initial_generation} {site}: abort failpoint did not terminate the child"
+            );
+
+            let pointer_after = std::fs::read(&pointer_path).ok();
+            let active_key = if pointer_after != pointer_before {
+                ROTATED_CRYPTO_KEY
+            } else {
+                CRYPTO_KEY
+            };
+            let report = verify_store(&engine_dir, Some(active_key), VerifyMode::FullLogical)
+                .unwrap_or_else(|error| panic!("gen-{initial_generation} {site}: verify failed: {error}"));
+            assert!(
+                report.healthy,
+                "gen-{initial_generation} {site}: verify errors: {:?}",
+                report.errors
+            );
+
+            let engine = Engine::open_encrypted(&engine_dir, active_key).unwrap_or_else(|error| {
+                panic!("gen-{initial_generation} {site}: active generation failed to open: {error}")
+            });
+            for counter in 0..64 {
+                assert_key_present_and_correct(&engine, counter, 0, site);
+            }
+            assert_eq!(
+                engine.get(b"wal-tail").expect("read WAL tail").as_deref(),
+                Some(&b"durable"[..]),
+                "gen-{initial_generation} {site}: pre-rotation WAL tail was not preserved"
+            );
+        }
+    }
 }
 
 /// Exposed at a small cycle count so this file can also serve as a fast

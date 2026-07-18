@@ -17,6 +17,11 @@
 //! before_wal_truncate     in flush, after the SST is durable, before WAL reset
 //! during_compaction       at the start of a compaction merge
 //! after_crypto_meta_write after crypto.meta's atomic replace (rotation)
+//! after_full_rotation_new_dek after the next generation's fresh DEK wrap
+//! after_full_rotation_sst_write after the merged SST is durable
+//! before_full_rotation_publish after all content fsyncs, before pointer rename
+//! after_full_rotation_publish after pointer rename, before old-generation GC
+//! during_full_rotation_gc immediately before best-effort old-generation GC
 //! ```
 //!
 //! `before_manifest_publish` from the plan has **no site yet** — the engine

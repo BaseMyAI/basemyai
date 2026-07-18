@@ -1,7 +1,7 @@
 //! Fuzz target: `format::store_meta::decode` on arbitrary bytes.
 //!
-//! `StoreMeta` (ADR-039 §7, N8.2) is fixed-length with an exact-length
-//! check before any field read — same shape as `vector_meta_decode`. Note
+//! `StoreMeta` (ADR-039 §7, N8.2; extended by ADR-042) accepts only its
+//! exact legacy-v1 or current-v2 length before any field read. Note
 //! `decode` deliberately does not reject an unexpected
 //! `store_format_version` (that policy belongs to the store-open path,
 //! N8.9) — this target only guards that the length/magic/crc gates stay

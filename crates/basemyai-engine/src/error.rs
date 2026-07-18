@@ -215,6 +215,12 @@ pub enum EngineError {
     #[error("wrong encryption key for store at {}", .path.display())]
     WrongEncryptionKey { path: PathBuf },
 
+    /// Another process already holds this store's mandatory advisory writer
+    /// lock (ADR-042). Opening a second engine would otherwise allow two
+    /// independent WAL/memtable owners to corrupt the same store.
+    #[error("store at {} is already open for writing by another process", .path.display())]
+    StoreLocked { path: PathBuf },
+
     /// A key was supplied for a store that already exists in plaintext.
     /// Encrypting a posteriori is deliberately not supported (same posture
     /// as libSQL's `rotate_key`, ADR-007/ADR-030 §2) — never silently mix
@@ -236,6 +242,12 @@ pub enum EngineError {
     /// (intact file, wrong key): two very different diagnoses for a user.
     #[error("corrupt crypto.meta at {}: {reason}", .path.display())]
     CorruptCryptoMeta { path: PathBuf, reason: String },
+
+    /// The root generation pointer used by a full DEK rotation is malformed
+    /// or fails its checksum. This is distinct from a bad `crypto.meta`:
+    /// opening an arbitrary generation after this error would be unsafe.
+    #[error("corrupt generation.meta at {}: {reason}", .path.display())]
+    CorruptGenerationMeta { path: PathBuf, reason: String },
 
     /// An AEAD seal operation failed — not reachable through corruption of
     /// on-disk data (those surface as `CorruptWal`/`CorruptSstFooter`/

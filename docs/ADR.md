@@ -49,4 +49,4 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-039](adr/ADR-039-block-based-sst.md) | Format SST par blocs : AEAD par bloc, index, bloom filters, block cache (N8) | ✅ Accepted |
 | [ADR-040](adr/ADR-040-integrity-and-repair.md) | Intégrité physique, intégrité logique et modèle de réparation (N9) | ✅ Accepted |
 | [ADR-041](adr/ADR-041-native-maintenance-indexes.md) | Index d'importance, index temporel (`Engine::scan_range`) et maintenance bornée (N10) | ✅ Accepted |
-| [ADR-042](adr/ADR-042-passphrase-kdf-zeroization-full-rotation.md) | Passphrase KDF (Argon2id), zeroization des secrets et rotation complète de la DEK (N12) | 🟡 Proposed |
+| [ADR-042](adr/ADR-042-passphrase-kdf-zeroization-full-rotation.md) | Passphrase KDF (Argon2id), zeroization des secrets et rotation complète de la DEK (N12) | ✅ Accepted |

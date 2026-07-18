@@ -15,6 +15,8 @@
 //! ## Variables d'environnement
 //!
 //! - `BASEMYAI_DB_KEY` (**requis**) : clé de chiffrement de la base (ADR-007).
+//! - `BASEMYAI_DB_KEY_MODE` : `raw-key` (défaut compatible) ou `passphrase`
+//!   pour activer Argon2id (ADR-042).
 //! - `BASEMYAI_FETCH=1` : consent au téléchargement du modèle baseline au 1ᵉʳ run
 //!   (sinon, le modèle doit déjà être provisionné — zéro download silencieux, ADR-010).
 //! - `BASEMYAI_MCP_TRANSPORT` : `stdio` (défaut) ou `http`.
@@ -63,7 +65,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mp = basemyai::provision(consent).await?;
     let embedder: Arc<dyn Embedder> = Arc::new(CandleEmbedder::load(&mp.model_path, mp.device)?);
 
-    let provider = Arc::new(FileProvider::open(db_path, db_key.expose().to_string(), embedder).await?);
+    let provider = Arc::new(FileProvider::open(db_path, db_key, embedder).await?);
     let server = McpServer::new(provider, config.clone());
 
     match transport.as_str() {

@@ -96,7 +96,9 @@ Ajoutez à la config MCP de l'hôte (ex. `claude_desktop_config.json`) :
 
 Après `basemyai config key generate`, la passphrase est lue depuis
 `%USERPROFILE%\\.basemyai\\key`. Sinon, définissez `BASEMYAI_DB_KEY` dans
-`env` (voir [key-resolution.md](security/key-resolution.md)).
+`env` (voir [key-resolution.md](security/key-resolution.md)). Ajoutez
+`BASEMYAI_DB_KEY_MODE=passphrase` pour un store Argon2id ; laissez la variable
+absente pour ouvrir un store historique `raw-key`.
 
 Retirez `BASEMYAI_FETCH` après le premier lancement réussi.
 

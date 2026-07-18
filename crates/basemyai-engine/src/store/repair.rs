@@ -271,6 +271,7 @@ mod tests {
             .delete(fts_index::meta_key("a").expect("key").as_bytes())
             .expect("delete stats");
         let before = std::fs::read_dir(dir.path()).expect("read dir").count();
+        drop(engine);
         let audit = verify_store(dir.path(), None, VerifyMode::FullLogical).expect("verify");
         let plan = plan_repair(&audit);
         assert!(plan.actions.contains(&RepairAction::RebuildFts));
@@ -309,6 +310,7 @@ mod tests {
             engine.scan_prefix(memory_index::RECORD_PREFIX).expect("records"),
             primary_before
         );
+        drop(engine);
         let audit = verify_store(dir.path(), None, VerifyMode::FullLogical).expect("verify");
         assert!(audit.healthy, "{:#?}", audit.errors);
     }

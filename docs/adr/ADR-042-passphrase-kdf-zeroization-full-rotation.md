@@ -1,7 +1,8 @@
 # ADR-042 — Passphrase KDF, zeroization des secrets et rotation complète de la DEK
 
-**Statut** : 🟡 Proposed (décision soumise à revue — aucune implémentation ne
-doit atterrir avant acceptation ; PR1 du découpage §14 du plan)
+**Statut** : ✅ Accepted (2026-07-15 — validé par le mainteneur après
+l'amendement du même jour ; les paramètres Argon2id par défaut restent
+ajustables par la mesure PR2 sans nouvel ADR, tout le reste est figé)
 **Date** : 2026-07-15
 **Amendement 2026-07-15 (même jour)** : §1-§5 amendés après trois passes
 dédiées — (a) recherche de prior art (SQLCipher/SEE `rekey`, CockroachDB/TiKV
@@ -541,11 +542,12 @@ ce secret ne le regarde pas.
   les sources actuelles.
 - **Trois points épinglés par la revue adversariale, à trancher avant PR3
   (amendement)** :
-  - *Schéma de nommage* : `service = "basemyai"`, `account` = **UUID stable
-    du store enregistré dans `store.meta`** — jamais le chemin (déplacer le
-    store orphelinerait l'entrée) ni une constante (deux stores
-    entreraient en collision et une passphrase en écraserait une autre en
-    silence).
+  - *Schéma de nommage* : `service = "basemyai"`, `account` = **`store_id`
+    UUIDv7 stable enregistré dans `store.meta`** (arbitrage mainteneur —
+    `StoreMeta:2` en PR3, voir « Arbitrages » en fin de document) — jamais
+    le chemin (déplacer le store orphelinerait l'entrée) ni une constante
+    (deux stores entreraient en collision et une passphrase en écraserait
+    une autre en silence).
   - *Déplacement honnête du modèle de menace* : un keyring OS déverrouillé
     (Secret Service, DPAPI user-scope, Keychain) livre le secret à **tout
     process s'exécutant sous le même utilisateur** — adopter le keyring
@@ -742,29 +744,35 @@ faisabilité file:line + revue adversariale) :
 - ~~N13 tiré en avant ou non~~ — tranché « non » et étayé par le prior art
   (§3.4), clause de révision élargie au cas « REST sans downtime ».
 
-**Restent ouverts pour revue humaine** :
+**Arbitrages du mainteneur (2026-07-15, acceptation de l'ADR)** :
 
-1. **Paramètres Argon2id par défaut** (§1) : proposition motivée
-   (RFC 9106 second profil, `64 MiB/t3/p4`) mais non mesurée sur du matériel
-   réel bas de gamme — à valider ou ajuster en PR2 avec un vrai benchmark,
-   pas à prendre pour acquis.
-2. **Périmètre exact du verrou advisory** (§3.2) : l'analyse a montré que
-   l'absence d'exclusivité inter-process est un hasard de corruption
-   préexistant (un `rotate` CLI contre un store tenu par REST double-écrit
-   silencieusement le même WAL **dès aujourd'hui**) — le verrou est donc
-   justifié pour tout open en écriture, pas seulement `--full`. À
-   confirmer : verrou général dès N12 (recommandé — il ferme un vrai bug)
-   ou minimal `--full`-seulement avec le verrou général en suivi.
-3. **UUID de store dans `store.meta`** (§4) : le schéma de nommage keyring
-   requiert un identifiant stable par store — l'ajouter à `store.meta`
-   (bump de version) ou le dériver autrement ; à trancher en PR3 avec
-   l'implémentation keyring, non bloquant pour le cœur N12.
-4. **`docs/security/encryption-model.md`** référencé dans la consigne de la
-   première version n'existe pas dans le dépôt — cadrage fait sur ADR-007 +
-   ADR-030 + `docs/security/key-resolution.md` (qui, lui, existe). Si un
-   document de modèle de menace séparé est attendu, il reste à créer — les
-   paragraphes rémanence/rollback/périmètre-RAM de cet ADR en seraient le
-   noyau naturel.
+1. **Paramètres Argon2id par défaut** (§1) : **validés tels que proposés**
+   (RFC 9106 second profil, `64 MiB/t3/p4`). Le benchmark PR2 sur matériel
+   réel reste dû ; si la mesure contredit la cible (~quelques centaines de
+   ms sur poste ordinaire), l'ajustement se fait en PR2 sans nouvel ADR —
+   le format persiste les paramètres par store, donc aucun store existant
+   n'est affecté par un changement de défaut.
+2. **Verrou advisory : périmètre général, dès N12** (§3.2) : **tranché** —
+   le verrou couvre tout open en écriture, pas seulement `--full`. C'est un
+   vrai bug préexistant (un `rotate` CLI contre un store tenu par REST
+   double-écrit silencieusement le même WAL dès aujourd'hui) et il se fixe
+   maintenant, pas en suivi.
+3. **Identifiant stable de store** (§4) : **tranché** — `store_id: UUIDv7`
+   ajouté à `store.meta` en PR3, avec bump de version du codec
+   (`StoreMeta:2`, nouvelle entrée `format.lock` — même politique additive
+   que `CryptoMeta:2` : un `store.meta` v1 reste lisible, l'id est estampé
+   à la première ouverture en écriture d'un store pré-migration,
+   idempotent). UUIDv7 (ordonné temporellement) plutôt que v4 : tri naturel
+   dans les listings d'outillage, aucune propriété de sécurité requise de
+   l'id (c'est un nom, pas un secret).
+
+**Reste ouvert (non bloquant, suivi documentation)** :
+
+- **`docs/security/encryption-model.md`** n'existe pas dans le dépôt —
+  cadrage fait sur ADR-007 + ADR-030 + `docs/security/key-resolution.md`
+  (qui, lui, existe). Si un document de modèle de menace séparé est
+  attendu, il reste à créer — les paragraphes rémanence/rollback/
+  périmètre-RAM de cet ADR en seraient le noyau naturel.
 
 ## Prior art consulté (amendement)
 

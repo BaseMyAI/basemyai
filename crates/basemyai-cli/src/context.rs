@@ -48,12 +48,22 @@ pub(crate) async fn load_embedder() -> Result<Box<dyn basemyai_core::Embedder>, 
 /// # Errors
 /// Erreur de stockage si la clé est fausse ou si l'ouverture échoue.
 pub(crate) async fn open_store(path: &Path) -> Result<basemyai::storage::NativeMemoryStore, CliError> {
+    let key = require_key()?;
+    open_store_with_key(path, key).await
+}
+
+/// Ouvre un store avec une credential déjà résolue. Les opérations qui
+/// doivent connaître le mode authentifié évitent ainsi une seconde résolution
+/// de l'environnement entre la détection et l'ouverture.
+pub(crate) async fn open_store_with_key(
+    path: &Path,
+    key: basemyai_core::EncryptionKey,
+) -> Result<basemyai::storage::NativeMemoryStore, CliError> {
     if path.extension().and_then(|e| e.to_str()) != Some("bmai") {
         crate::ui::render::warning(&format!("'{}' does not use the .bmai extension", path.display()));
     }
-    let key = require_key()?;
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || basemyai::storage::NativeMemoryStore::open_encrypted(&path, key.expose()))
+    tokio::task::spawn_blocking(move || basemyai::storage::NativeMemoryStore::open_with_key(&path, &key))
         .await
         .map_err(|e| {
             CliError::Core(basemyai_core::CoreError::Storage(format!(

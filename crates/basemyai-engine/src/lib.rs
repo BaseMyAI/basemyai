@@ -72,6 +72,7 @@ macro_rules! fail_point {
 }
 pub(crate) use fail_point;
 
+pub use crypto::Argon2idProfile;
 pub use error::{EngineError, Result};
 pub use idx::fts::{FtsStats, PersistentFts};
 pub use idx::graph::{GraphEdgeMeta, GraphEntity, PersistentGraph, RamGraph, Reached};
@@ -81,4 +82,5 @@ pub use key::Key;
 pub use store::{
     Batch, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, EngineStats, IntegrityIssue, IssueKind, RebuildReport,
     RepairAction, RepairPlan, ScanPage, Value, VerifyMode, VerifyReport, plan_repair, rebuild_indexes, verify_store,
+    verify_store_with_passphrase,
 };

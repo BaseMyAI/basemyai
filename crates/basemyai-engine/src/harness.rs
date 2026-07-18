@@ -20,6 +20,9 @@ pub const VALUE_LEN: usize = 64;
 /// management.
 pub const CRYPTO_KEY: &[u8] = b"crash-harness-encryption-key";
 
+/// Replacement credential used by the full-rotation crash harness.
+pub const ROTATED_CRYPTO_KEY: &[u8] = b"crash-harness-rotated-encryption-key";
+
 /// Number of keys per batch used by the batch-atomicity crash-consistency
 /// harness (`src/bin/crash_writer.rs` batch mode + `tests/crash_consistency.rs`).
 /// Batches are always `[k * BATCH_SIZE, k * BATCH_SIZE + BATCH_SIZE - 1]` for

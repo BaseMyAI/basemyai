@@ -33,6 +33,7 @@ candle-transformers = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 uuid = { workspace = true }
+zeroize.workspace = true
 # Backend natif (ADR-024/ADR-025/ADR-032) — dépendance directe et unique.
 # Interne, non publié (voir crates/basemyai-engine/Cargo.toml).
 basemyai-engine = { path = "../basemyai-engine" }

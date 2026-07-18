@@ -33,7 +33,8 @@ Détails des types (`Nonce`, `Salt`, `Dek`), générateurs et frontière test/pr
 
 ## Règles produit
 
-- **Production** : toutes les surfaces appellent `open_encrypted` uniquement.
+- **Production** : toutes les surfaces appellent `open_with_key` et respectent
+  le mode explicite `raw-key`/`passphrase` porté par `EncryptionKey`.
 - `Engine::open` (clair) existe derrière `test-util` pour les tests.
 - La passphrase est fournie à l'ouverture ([key-resolution.md](key-resolution.md),
   ADR-034) et n'est **jamais** écrite sur disque ni loguée (`Debug` masqué).
@@ -46,8 +47,21 @@ atomique de `crypto.meta`). L'ancienne passphrase + une copie de l'ancien
 documentée du modèle de menace).
 
 ```bash
-basemyai rotate-key --db ./agent.bmai --new-key "$NEW_PASSPHRASE"
+basemyai rotate-key --db ./agent.bmai --new-key "$NEW_PASSPHRASE" --passphrase
+basemyai rotate-key --db ./agent.bmai --new-key "$NEW_PASSPHRASE" --passphrase --low-memory
+basemyai rotate-key --db ./agent.bmai --new-key "$NEW_PASSPHRASE" --passphrase --full
 ```
+
+Le profil `--low-memory` est un choix explicite pour matériel contraint
+(19 MiB/t2/p1), à répéter lors de chaque rotation qui doit le conserver. Sans
+ce flag, toute nouvelle création/rotation Argon2id utilise le profil normal
+64 MiB/t3/p4. L'ouverture rejoue toujours les paramètres persistés.
+
+`--full` génère une nouvelle DEK et ré-encrypte tous les enregistrements
+vivants avant de publier atomiquement la nouvelle génération. Il demande
+temporairement jusqu'à environ 2× l'espace disque. Il ne garantit ni
+l'effacement physique de l'ancien ciphertext sur SSD, ni la révocation des
+backups ou copies réalisés avant la rotation.
 
 ## Erreurs stables
 

@@ -67,6 +67,9 @@ sha2 = "0.11"
 # Pur Rust (RustCrypto), sans feature gate côté moteur — contrairement au
 # `crypto` libSQL, il n'y a aucun coût d'installation (CMake) à éviter.
 chacha20poly1305 = "0.10"
+# KDF de passphrase ADR-042 (N12). La feature zeroize efface la mémoire de
+# travail Argon2 à la fin de la dérivation.
+argon2 = { version = "0.5.3", features = ["zeroize"] }
 # Effacement mémoire des clés DEK (ADR-030, basemyai-engine).
 zeroize = { version = "1", features = ["derive"] }
 # HTTP framework — basemyai-mcp (transport HTTP) et basemyai-rest.
@@ -82,7 +85,7 @@ schemars    = "1.2"
 # Comparaison de tokens en temps constant (auth Bearer anti timing-attack).
 subtle      = "2"
 # UUID v4 — généré pour les souvenirs et X-Request-Id.
-uuid        = { version = "1", features = ["v4"] }
+uuid        = { version = "1", features = ["v4", "v7"] }
 # Lazy singleton (runtime tokio dans les bindings FFI).
 once_cell   = "1"
 # Parsing de config.toml (clé API MCP, db-path).

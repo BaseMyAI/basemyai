@@ -319,6 +319,55 @@ async fn native_rotate_key_preserves_data_and_invalidates_old_key() {
     assert_eq!(got[0].text, "la lune est en roche");
 }
 
+#[tokio::test]
+async fn native_full_rotation_preserves_passphrase_mode_and_data() {
+    use basemyai::MemoryLayer;
+    use basemyai::storage::{MemoryStore, NativeMemoryStore};
+    use basemyai::temporal::Validity;
+    use basemyai_core::{EncryptionKey, Metric};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let agent = basemyai::AgentId::new("native-full-rotate-agent").expect("agent id");
+    let vector = memory_tests::vec_for(2);
+
+    {
+        let store = NativeMemoryStore::open_encrypted(dir.path(), "ancienne-clé").expect("open raw-key store");
+        store
+            .put_memory(
+                "m1",
+                &agent,
+                MemoryLayer::Semantic,
+                "donnée à ré-encrypter",
+                Validity::since(0),
+                &vector,
+                "user",
+                1.0,
+            )
+            .await
+            .expect("put before full rotation");
+        store
+            .rotate_key_full(EncryptionKey::passphrase("nouvelle passphrase"))
+            .await
+            .expect("full rotate to passphrase");
+
+        let got = store
+            .recall_vector(&agent, &vector, 5, None, Metric::Cosine, 0, true)
+            .await
+            .expect("live store remains usable");
+        assert_eq!(got.len(), 1);
+    }
+
+    assert!(NativeMemoryStore::open_encrypted(dir.path(), "nouvelle passphrase").is_err());
+    let store = NativeMemoryStore::open_with_key(dir.path(), &EncryptionKey::passphrase("nouvelle passphrase"))
+        .expect("reopen passphrase generation");
+    let got = store
+        .recall_vector(&agent, &vector, 5, None, Metric::Cosine, 0, true)
+        .await
+        .expect("recall after reopen");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].text, "donnée à ré-encrypter");
+}
+
 /// `rotate_key` sur un store natif ouvert en clair : erreur franche.
 /// Concurrence des lecteurs (N5.5, barre hardening M6) : depuis le passage de
 /// `NativeMemoryStore` de `Mutex` à `RwLock`, plusieurs lectures doivent

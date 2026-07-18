@@ -57,6 +57,10 @@ pub(crate) enum Command {
     Init {
         /// Chemin du fichier `.bmai` à créer.
         path: PathBuf,
+        /// Crée le wrap passphrase Argon2id avec le profil contraint
+        /// 19 MiB/t2/p1. Ce choix est explicite et n'affecte pas les défauts.
+        #[arg(long)]
+        low_memory: bool,
     },
     /// Inspecte un `.bmai` : métadonnées du conteneur + nombre de souvenirs.
     Inspect,
@@ -136,9 +140,19 @@ pub(crate) enum Command {
     },
     /// Change la clé de chiffrement du conteneur `.bmai` en place (ADR-030).
     RotateKey {
-        /// Nouvelle passphrase (sinon `BASEMYAI_DB_KEY` / résolution ADR-034).
+        /// Nouveau secret (sinon `BASEMYAI_DB_KEY` / résolution ADR-034).
         #[arg(long)]
         new_key: Option<String>,
+        /// Interprète le nouveau secret comme une passphrase Argon2id.
+        #[arg(long)]
+        passphrase: bool,
+        /// Utilise le profil Argon2id contraint 19 MiB/t2/p1. À répéter à
+        /// chaque rotation qui doit conserver ce profil.
+        #[arg(long, requires = "passphrase")]
+        low_memory: bool,
+        /// Ré-encrypte toutes les données sous une nouvelle DEK (O(taille)).
+        #[arg(long)]
+        full: bool,
     },
     /// Graphe entités/relations d'un agent.
     Graph {

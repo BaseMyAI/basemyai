@@ -157,6 +157,8 @@ fn core_error_code(e: &CoreError) -> &'static str {
         CoreError::EncryptionKeyRequired => "ENCRYPTION_KEY_REQUIRED",
         CoreError::WrongEncryptionKey => "WRONG_ENCRYPTION_KEY",
         CoreError::CorruptEncryptionMetadata => "CORRUPT_ENCRYPTION_METADATA",
+        CoreError::StoreLocked => "STORE_LOCKED",
+        CoreError::CorruptStoreGenerationMetadata => "CORRUPT_STORE_GENERATION_METADATA",
         CoreError::Encryption => "ENCRYPTION_ERROR",
         CoreError::PlaintextStoreEncryptedKeySupplied => "ENCRYPTION_REQUIRED",
         CoreError::ModelNotProvisioned(_) => "MODEL_NOT_PROVISIONED",

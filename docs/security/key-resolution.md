@@ -87,6 +87,7 @@ Créer les fichiers avec `chmod 600` et les ajouter à `.gitignore`.
 | `BASEMYAI_DB_KEY` | Passphrase canonique |
 | `BASEMYAI_ENCRYPTION_KEY` | Alias legacy |
 | `BASEMYAI_DB_KEY_FILE` | Chemin vers un fichier contenant la passphrase |
+| `BASEMYAI_DB_KEY_MODE` | `raw-key` par défaut (compatibilité) ou `passphrase` pour Argon2id |
 
 ## V2 — OS keyring (non implémenté)
 

@@ -37,6 +37,11 @@ name = "block_spike"
 path = "src/bin/block_spike.rs"
 required-features = ["test-util"]
 
+[[bin]]
+name = "argon2_bench"
+path = "src/bin/argon2_bench.rs"
+required-features = ["test-util"]
+
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
@@ -44,8 +49,10 @@ tracing.workspace = true
 # SHA-256 de la clé d'enveloppe. Inconditionnel (pur Rust, léger) — pas de
 # feature gate, contrairement au `crypto` libSQL qui exige CMake.
 chacha20poly1305.workspace = true
+argon2.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
+uuid.workspace = true
 
 # `vector_bench` (src/bin, N3.1 follow-up) in-process RAM sampler only —
 # not used by the library itself. Windows has no portable std API for

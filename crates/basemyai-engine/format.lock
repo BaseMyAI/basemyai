@@ -18,6 +18,8 @@
 #   (b) you didn't mean to change it — revert.
 WalRecord:2(b4570df1)
 CryptoMeta:1(cee13d7b)
+CryptoMetaV2:2(50f7d17c)
+GenerationMeta:1(021b9f3e)
 WalEnvelope:1(4911cece)
 EncryptedSstBlock:1(f7f1e05a)
 VectorNode:2(1ba6b40f)
@@ -36,3 +38,4 @@ SstBlockIndex:2(42a4533b)
 SstBloomFilter:1(b3a83b83)
 SstFooter:1(a8d631d4)
 StoreMeta:1(f764b090)
+StoreMetaV2:2(07ad26de)

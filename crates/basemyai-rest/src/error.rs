@@ -90,6 +90,16 @@ impl RestError {
                     "CORRUPT_ENCRYPTION_METADATA",
                     "corrupt encryption metadata".to_string(),
                 ),
+                M::Core(CoreError::StoreLocked) => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "STORE_LOCKED",
+                    "store is locked by another writer".to_string(),
+                ),
+                M::Core(CoreError::CorruptStoreGenerationMetadata) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "CORRUPT_STORE_GENERATION_METADATA",
+                    "corrupt store generation metadata".to_string(),
+                ),
                 M::Core(CoreError::Encryption) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "ENCRYPTION_ERROR",
@@ -140,5 +150,13 @@ mod tests {
         let (status, code, _) = err.parts();
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(code, "WRONG_ENCRYPTION_KEY");
+    }
+
+    #[test]
+    fn store_lock_maps_to_retryable_rest_code() {
+        let err = RestError::Memory(MemoryError::Core(CoreError::StoreLocked));
+        let (status, code, _) = err.parts();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(code, "STORE_LOCKED");
     }
 }

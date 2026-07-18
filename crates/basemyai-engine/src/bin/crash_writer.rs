@@ -24,7 +24,8 @@
 //! interrupt writes sealed SSTs, proving the crash guarantees survive the
 //! encryption layer unchanged.
 //!
-//! `mode` is `single` (default, omit it), `batch`, `vector`, or `graph`:
+//! `mode` is `single` (default, omit it), `batch`, `vector`, `graph`,
+//! `memory`, or `rotate-full`:
 //! - `single`: one `Engine::put` per counter, confirmed one counter per log
 //!   line — proves single-key durability (pre-existing).
 //! - `batch`: counters are grouped into fixed-size batches (see
@@ -63,15 +64,18 @@
 //!   idempotent: a put whose write landed but whose confirmation was lost
 //!   replays as `DuplicateMemoryId` (already durable, treated as success);
 //!   a forget whose write landed replays as a no-op `false` (already gone).
+//! - `rotate-full`: one full DEK rotation from [`CRYPTO_KEY`] to
+//!   [`ROTATED_CRYPTO_KEY`]. The driver arms one exact abort failpoint and
+//!   verifies the published generation after the child terminates.
 
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 
 use basemyai_engine::harness::{
-    BATCH_SIZE, CRYPTO_KEY, ChurnOp, GRAPH_AGENT, GraphOp, MEMORY_AGENT, MEMORY_VECTOR_DIM, MemoryOp, churn_op,
-    encode_key, expected_memory_content, expected_value, expected_vector, graph_entity_kind, graph_entity_label,
-    graph_op, memory_op, memory_record_id, vector_index_params,
+    BATCH_SIZE, CRYPTO_KEY, ChurnOp, GRAPH_AGENT, GraphOp, MEMORY_AGENT, MEMORY_VECTOR_DIM, MemoryOp,
+    ROTATED_CRYPTO_KEY, churn_op, encode_key, expected_memory_content, expected_value, expected_vector,
+    graph_entity_kind, graph_entity_label, graph_op, memory_op, memory_record_id, vector_index_params,
 };
 use basemyai_engine::{
     Batch, Engine, EngineError, EngineOptions, NewMemoryRecord, PersistentFts, PersistentGraph, PersistentMemoryIndex,
@@ -132,9 +136,19 @@ fn main() {
         "vector" => run_vector_mode(&mut engine, &mut log, &confirm_log_path),
         "graph" => run_graph_mode(&mut engine, &mut log, &confirm_log_path),
         "memory" => run_memory_mode(&mut engine, &mut log, &confirm_log_path),
+        "rotate-full" if encrypted => match engine.rotate_key_full(ROTATED_CRYPTO_KEY) {
+            Ok(()) => {
+                eprintln!("crash_writer: rotate-full unexpectedly reached completion without an abort failpoint");
+                std::process::exit(2);
+            }
+            Err(error) => {
+                eprintln!("crash_writer: rotate-full failed before the configured abort: {error}");
+                std::process::exit(1);
+            }
+        },
         other => {
             eprintln!(
-                "crash_writer: unknown mode {other:?} (expected \"single\", \"batch\", \"vector\", \"graph\" or \"memory\")"
+                "crash_writer: unknown mode {other:?} (expected \"single\", \"batch\", \"vector\", \"graph\", \"memory\" or encrypted \"rotate-full\")"
             );
             std::process::exit(1);
         }

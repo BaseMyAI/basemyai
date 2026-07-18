@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 
 use crate::crypto::{self, CryptoContext};
 use crate::error::{EngineError, Result};
+use crate::format::generation_meta;
 use crate::format::sst_block::SST_HEADER_TOTAL_LEN;
 use crate::format::store_meta;
 use crate::format::wal::WalOp;
@@ -74,6 +75,9 @@ pub enum IssueKind {
     /// `store.meta`'s version mismatches, or store artifacts exist without
     /// any `store.meta` at all (pre-ADR-039 store).
     StoreFormatUnsupported,
+    /// The active-generation pointer is malformed, references generation
+    /// zero, or names a generation directory that is not present.
+    GenerationMetaCorrupt,
     /// `crypto.meta` is present but structurally corrupt (distinct from a
     /// wrong key, which is an `Err` of the call, not a report entry).
     CryptoMetaCorrupt,
@@ -266,6 +270,8 @@ fn sst_error_kind(err: &EngineError) -> IssueKind {
 /// of re-listing the directory.
 struct Inventory {
     store_meta: Option<PathBuf>,
+    generation_meta: Option<PathBuf>,
+    generation_dirs: Vec<PathBuf>,
     crypto_meta: bool,
     wal: Option<PathBuf>,
     /// `(id, path)`, sorted ascending by id.
@@ -275,6 +281,8 @@ struct Inventory {
 fn inventory(dir: &Path, report: &mut VerifyReport) -> Result<Inventory> {
     let mut inv = Inventory {
         store_meta: None,
+        generation_meta: None,
+        generation_dirs: Vec::new(),
         crypto_meta: false,
         wal: None,
         ssts: Vec::new(),
@@ -284,14 +292,25 @@ fn inventory(dir: &Path, report: &mut VerifyReport) -> Result<Inventory> {
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
+        if path.is_dir() && name.strip_prefix("gen-").is_some_and(|id| id.parse::<u64>().is_ok()) {
+            // Generation directories are resolved exclusively through the
+            // root pointer. Retain their presence so an otherwise metadata-
+            // free directory is not misreported as a fresh empty store.
+            inv.generation_dirs.push(path);
+            continue;
+        }
         if path.is_dir() {
             report.warning(IssueKind::UnknownFile, &path, "unexpected subdirectory in a store");
             continue;
         }
         match name.as_ref() {
             "store.meta" => inv.store_meta = Some(path),
+            generation_meta::GENERATION_META_FILENAME => inv.generation_meta = Some(path),
             "crypto.meta" => inv.crypto_meta = true,
             "wal.log" => inv.wal = Some(path),
+            // ADR-042's live-writer advisory lock is engine-owned metadata,
+            // not an integrity artifact. Verification never reads or mutates it.
+            ".basemyai.lock" => {}
             _ if name.ends_with(".tmp") => {
                 report.warning(
                     IssueKind::OrphanTmpFile,
@@ -460,26 +479,58 @@ fn check_sst_blocks(
 /// — the same typed contract as `Engine::open*`. Every detectable on-disk
 /// anomaly lands in the returned [`VerifyReport`] instead.
 pub fn verify_store(dir: impl AsRef<Path>, key: Option<&[u8]>, mode: VerifyMode) -> Result<VerifyReport> {
-    let dir = dir.as_ref();
+    verify_store_with_key_mode(dir.as_ref(), key.map(|key| (key, crypto::KeyMode::RawKey)), mode)
+}
+
+/// Passphrase counterpart to [`verify_store`]. A passphrase store must be
+/// verified through this explicit mode so it never falls back to raw-key
+/// derivation (ADR-042).
+pub fn verify_store_with_passphrase(
+    dir: impl AsRef<Path>,
+    passphrase: Option<&[u8]>,
+    mode: VerifyMode,
+) -> Result<VerifyReport> {
+    verify_store_with_key_mode(
+        dir.as_ref(),
+        passphrase.map(|passphrase| (passphrase, crypto::KeyMode::Passphrase)),
+        mode,
+    )
+}
+
+fn verify_store_with_key_mode(
+    root_dir: &Path,
+    key: Option<(&[u8], crypto::KeyMode)>,
+    mode: VerifyMode,
+) -> Result<VerifyReport> {
     let mut report = VerifyReport::default();
-    if !dir.is_dir() {
+    if !root_dir.is_dir() {
         return Err(EngineError::io(
-            dir.to_path_buf(),
+            root_dir.to_path_buf(),
             std::io::Error::new(std::io::ErrorKind::NotFound, "store directory does not exist"),
         ));
     }
-    let inv = inventory(dir, &mut report)?;
+    // Every current-format store keeps this stable file after its first
+    // writable open. Holding a shared lock prevents pointer publication or
+    // generation GC from racing the multi-step inventory below, while an
+    // old/fresh directory without the file remains strictly read-only.
+    let _verification_lock = acquire_verification_lock(root_dir)?;
+    let root_inv = inventory(root_dir, &mut report)?;
 
     // 1. Store generation (ADR-039 §7) — same gate as `Engine::open`, but
     //    reported instead of raised. A generation mismatch stops the audit:
     //    a store written by a different generation would only produce
     //    misleading per-file noise below.
-    match &inv.store_meta {
+    match &root_inv.store_meta {
         None => {
-            if inv.wal.is_some() || !inv.ssts.is_empty() {
+            if root_inv.wal.is_some()
+                || !root_inv.ssts.is_empty()
+                || root_inv.crypto_meta
+                || root_inv.generation_meta.is_some()
+                || !root_inv.generation_dirs.is_empty()
+            {
                 report.error(
                     IssueKind::StoreFormatUnsupported,
-                    &dir.join("store.meta"),
+                    &root_dir.join("store.meta"),
                     "store artifacts exist but store.meta is absent — a store from before ADR-039, \
                      which this build does not read",
                 );
@@ -512,23 +563,83 @@ pub fn verify_store(dir: impl AsRef<Path>, key: Option<&[u8]>, mode: VerifyMode)
         }
     }
 
-    // 2. Encryption mode + key — `crypto.meta`'s presence is the single
+    // 2. Active generation (ADR-042 §3) — resolve the pointer before
+    // inventorying crypto/WAL/SST state. Root artifacts and sibling
+    // generations are never mixed into the active view.
+    let (dir, generation_id, inv) = match &root_inv.generation_meta {
+        None => (root_dir.to_path_buf(), 0, root_inv),
+        Some(pointer_path) => {
+            report.files_checked += 1;
+            let bytes = match fs::read(pointer_path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    report.error(IssueKind::Io, pointer_path, error.to_string());
+                    return Ok(report.finalize());
+                }
+            };
+            let meta = match generation_meta::decode(&bytes, pointer_path) {
+                Ok(meta) => meta,
+                Err(EngineError::UnsupportedFormatVersion { .. }) => {
+                    report.error(
+                        IssueKind::StoreFormatUnsupported,
+                        pointer_path,
+                        "generation.meta version is not supported by this build",
+                    );
+                    return Ok(report.finalize());
+                }
+                Err(error) => {
+                    report.error(IssueKind::GenerationMetaCorrupt, pointer_path, error.to_string());
+                    return Ok(report.finalize());
+                }
+            };
+            if meta.current_generation == 0 {
+                report.error(
+                    IssueKind::GenerationMetaCorrupt,
+                    pointer_path,
+                    "generation.meta must point to a non-zero gen-N directory",
+                );
+                return Ok(report.finalize());
+            }
+            let active_dir = root_dir.join(format!("gen-{}", meta.current_generation));
+            if !active_dir.is_dir() {
+                report.error(
+                    IssueKind::GenerationMetaCorrupt,
+                    pointer_path,
+                    format!("active generation directory {} is missing", active_dir.display()),
+                );
+                return Ok(report.finalize());
+            }
+            let active_inv = inventory(&active_dir, &mut report)?;
+            (active_dir, meta.current_generation, active_inv)
+        }
+    };
+
+    // 3. Encryption mode + key — `crypto.meta`'s presence is the single
     //    source of truth (ADR-030 §2), same contract as `Engine::open*`.
+    if generation_id != 0 && !inv.crypto_meta {
+        report.error(
+            IssueKind::CryptoMetaCorrupt,
+            &dir.join("crypto.meta"),
+            "published generation is missing crypto.meta",
+        );
+        return Ok(report.finalize());
+    }
     let crypto: Option<CryptoContext> = match (inv.crypto_meta, key) {
         (true, None) => {
-            return Err(EngineError::MissingEncryptionKey {
-                path: dir.to_path_buf(),
-            });
+            return Err(EngineError::MissingEncryptionKey { path: dir.clone() });
         }
         (false, Some(_)) => {
-            return Err(EngineError::PlaintextStoreKeySupplied {
-                path: dir.to_path_buf(),
-            });
+            return Err(EngineError::PlaintextStoreKeySupplied { path: dir.clone() });
         }
         (false, None) => None,
-        (true, Some(key)) => {
+        (true, Some((key, key_mode))) => {
             report.files_checked += 1;
-            match crypto::load_meta(dir, key) {
+            let loaded = if generation_id == 0 {
+                crypto::load_meta_with_mode(&dir, key, key_mode)
+            } else {
+                crypto::load_meta_for_generation(&dir, key, key_mode, generation_id)
+            };
+            match loaded {
                 Ok(ctx) => Some(ctx),
                 Err(EngineError::CorruptCryptoMeta { path, reason }) => {
                     // Without an intact key-wrap there is no DEK, and
@@ -609,11 +720,11 @@ pub fn verify_store(dir: impl AsRef<Path>, key: Option<&[u8]>, mode: VerifyMode)
                 };
             }
             let live: BTreeMap<Vec<u8>, Value> = kv.into_iter().filter_map(|(k, v)| Some((k, v?))).collect();
-            verify_logical::check_logical(&live, dir, &mut report);
+            verify_logical::check_logical(&live, &dir, &mut report);
         } else {
             report.warning(
                 IssueKind::LogicalChecksSkipped,
-                dir,
+                &dir,
                 "logical checks skipped: physical errors above make the merged key-value view \
                  untrustworthy — repair the physical layer first, then re-verify",
             );
@@ -621,6 +732,22 @@ pub fn verify_store(dir: impl AsRef<Path>, key: Option<&[u8]>, mode: VerifyMode)
     }
 
     Ok(report.finalize())
+}
+
+fn acquire_verification_lock(dir: &Path) -> Result<Option<File>> {
+    let path = dir.join(".basemyai.lock");
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(EngineError::io(path, error)),
+    };
+    match file.try_lock_shared() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(EngineError::StoreLocked {
+            path: dir.to_path_buf(),
+        }),
+        Err(std::fs::TryLockError::Error(error)) => Err(EngineError::io(path, error)),
+    }
 }
 
 #[cfg(test)]
@@ -704,6 +831,97 @@ mod tests {
             // the flushed SST holds 80 entries: 78 values + 2 tombstones.
             assert_eq!(full.records_checked, 80);
         }
+    }
+
+    #[test]
+    fn full_rotation_verifies_only_the_published_generation() {
+        let root = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine =
+                Engine::open_encrypted_with_options(root.path(), KEY, small_options()).expect("open encrypted");
+            engine.put(b"kept", b"current").expect("put");
+            engine.flush().expect("flush");
+            engine.rotate_key_full(b"fresh key").expect("full rotate");
+        }
+
+        // A corrupt sibling must be ignored: only generation.meta chooses
+        // the audited store. Engine::open will garbage-collect it later.
+        let sibling = root.path().join("gen-999");
+        fs::create_dir(&sibling).expect("create sibling");
+        fs::write(sibling.join("corrupt.sst"), b"not an sst").expect("write sibling");
+
+        let report = verify_store(root.path(), Some(b"fresh key"), VerifyMode::FullLogical).expect("verify");
+        assert!(report.healthy, "errors: {:?}", report.errors);
+        assert!(report.warnings.is_empty(), "warnings: {:?}", report.warnings);
+        assert!(report.records_checked > 0, "the active generation must be audited");
+    }
+
+    #[test]
+    fn full_passphrase_rotation_verifies_in_passphrase_mode() {
+        let root = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(root.path(), KEY).expect("open encrypted");
+            engine.put(b"key", b"value").expect("put");
+            engine
+                .rotate_passphrase_full(b"fresh passphrase")
+                .expect("full passphrase rotate");
+        }
+
+        let report = verify_store_with_passphrase(root.path(), Some(b"fresh passphrase"), VerifyMode::FullLogical)
+            .expect("verify passphrase generation");
+        assert!(report.healthy, "errors: {:?}", report.errors);
+        assert!(report.warnings.is_empty(), "warnings: {:?}", report.warnings);
+    }
+
+    #[test]
+    fn published_generation_without_crypto_meta_is_reported_as_corrupt() {
+        let root = tempfile::tempdir().expect("tempdir");
+        {
+            let mut engine = Engine::open_encrypted(root.path(), KEY).expect("open encrypted");
+            engine.rotate_key_full(b"fresh key").expect("full rotate");
+        }
+        fs::remove_file(root.path().join("gen-1").join("crypto.meta")).expect("remove crypto meta");
+
+        let report = verify_store(root.path(), Some(b"fresh key"), VerifyMode::Quick).expect("verify");
+        assert!(!report.healthy);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|issue| issue.kind == IssueKind::CryptoMetaCorrupt)
+        );
+    }
+
+    #[test]
+    fn corrupt_generation_pointer_is_reported_without_auditing_root_artifacts() {
+        let root = build_store(false);
+        fs::write(
+            root.path().join(generation_meta::GENERATION_META_FILENAME),
+            b"not a generation pointer",
+        )
+        .expect("write corrupt pointer");
+
+        let report = verify_store(root.path(), None, VerifyMode::FullLogical).expect("verify");
+        assert!(!report.healthy);
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.errors[0].kind, IssueKind::GenerationMetaCorrupt);
+        assert_eq!(
+            report.records_checked, 0,
+            "pointer failure must stop before root artifacts"
+        );
+    }
+
+    #[test]
+    fn pointer_to_missing_generation_is_reported_without_fallback_to_root() {
+        let root = build_store(false);
+        let pointer = generation_meta::encode(&generation_meta::GenerationMeta { current_generation: 7 });
+        fs::write(root.path().join(generation_meta::GENERATION_META_FILENAME), pointer).expect("write pointer");
+
+        let report = verify_store(root.path(), None, VerifyMode::FullLogical).expect("verify");
+        assert!(!report.healthy);
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.errors[0].kind, IssueKind::GenerationMetaCorrupt);
+        assert_eq!(report.records_checked, 0, "must not fall back to root generation zero");
     }
 
     #[test]
@@ -871,6 +1089,26 @@ mod tests {
         assert!(!report.healthy);
         assert_eq!(report.errors.len(), 1);
         assert_eq!(report.errors[0].kind, IssueKind::StoreFormatUnsupported);
+    }
+
+    #[test]
+    fn generation_directory_without_store_meta_is_not_fresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(dir.path().join("gen-1")).expect("create orphan generation");
+
+        let report = verify_store(dir.path(), None, VerifyMode::Quick).expect("verify");
+        assert!(!report.healthy);
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.errors[0].kind, IssueKind::StoreFormatUnsupported);
+    }
+
+    #[test]
+    fn verification_refuses_to_race_a_live_writer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _engine = Engine::open_encrypted(dir.path(), KEY).expect("open writer");
+
+        let err = verify_store(dir.path(), Some(KEY), VerifyMode::Quick).expect_err("writer lock must win");
+        assert!(matches!(err, EngineError::StoreLocked { .. }));
     }
 
     #[test]

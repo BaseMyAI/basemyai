@@ -23,7 +23,7 @@
 
 use std::path::Path;
 
-use basemyai_core::Embedder;
+use basemyai_core::{Embedder, EncryptionKey, EncryptionKeyMode};
 use basemyai_engine::key::memory_index;
 use basemyai_engine::{Engine, PersistentMemoryIndex, PersistentVectorIndex, VectorIndexParams};
 pub use basemyai_engine::{
@@ -41,17 +41,34 @@ fn interrupted(op: &str, e: impl std::fmt::Display) -> MemoryError {
     basemyai_core::CoreError::Storage(format!("{op} interrupted: {e}")).into()
 }
 
+fn open_engine(path: &Path, key: &EncryptionKey) -> Result<Engine> {
+    let result = match key.mode() {
+        EncryptionKeyMode::RawKey => Engine::open_encrypted(path, key.expose().as_bytes()),
+        EncryptionKeyMode::Passphrase => Engine::open_with_passphrase(path, key.expose().as_bytes()),
+        _ => return Err(basemyai_core::CoreError::Storage("unsupported encryption key mode".to_string()).into()),
+    };
+    result.map_err(map_engine_error)
+}
+
 /// Audits the `.bmai` container at `path` without modifying it (ADR-040 §2).
 ///
 /// # Errors
 /// Storage errors opening/reading the directory (missing directory, wrong
 /// key) — never from an integrity finding, which lands in the returned
 /// [`VerifyReport`] instead (see `verify_store`'s own contract).
-pub async fn verify_container(path: &Path, key: &[u8], mode: VerifyMode) -> Result<VerifyReport> {
+pub async fn verify_container(path: &Path, key: EncryptionKey, mode: VerifyMode) -> Result<VerifyReport> {
     let path = path.to_path_buf();
-    let key = key.to_vec();
     tokio::task::spawn_blocking(move || {
-        basemyai_engine::verify_store(&path, Some(&key), mode).map_err(map_engine_error)
+        let result = match key.mode() {
+            EncryptionKeyMode::RawKey => basemyai_engine::verify_store(&path, Some(key.expose().as_bytes()), mode),
+            EncryptionKeyMode::Passphrase => {
+                basemyai_engine::verify_store_with_passphrase(&path, Some(key.expose().as_bytes()), mode)
+            }
+            _ => {
+                return Err(basemyai_core::CoreError::Storage("unsupported encryption key mode".to_string()).into());
+            }
+        };
+        result.map_err(map_engine_error)
     })
     .await
     .map_err(|e| interrupted("verify", e))?
@@ -70,11 +87,10 @@ pub async fn verify_container(path: &Path, key: &[u8], mode: VerifyMode) -> Resu
 ///
 /// # Errors
 /// Storage errors opening the container or rebuilding an index.
-pub async fn rebuild_indexes_container(path: &Path, key: &[u8]) -> Result<RebuildReport> {
+pub async fn rebuild_indexes_container(path: &Path, key: EncryptionKey) -> Result<RebuildReport> {
     let path = path.to_path_buf();
-    let key = key.to_vec();
     tokio::task::spawn_blocking(move || {
-        let mut engine = Engine::open_encrypted(&path, &key).map_err(map_engine_error)?;
+        let mut engine = open_engine(&path, &key)?;
         let report = basemyai_engine::rebuild_indexes(&mut engine).map_err(map_engine_error)?;
         engine.close().map_err(map_engine_error)?;
         Ok(report)
@@ -90,11 +106,10 @@ pub async fn rebuild_indexes_container(path: &Path, key: &[u8]) -> Result<Rebuil
 ///
 /// # Errors
 /// Storage errors opening or compacting the container.
-pub async fn compact_container(path: &Path, key: &[u8]) -> Result<(EngineStats, EngineStats)> {
+pub async fn compact_container(path: &Path, key: EncryptionKey) -> Result<(EngineStats, EngineStats)> {
     let path = path.to_path_buf();
-    let key = key.to_vec();
     tokio::task::spawn_blocking(move || {
-        let mut engine = Engine::open_encrypted(&path, &key).map_err(map_engine_error)?;
+        let mut engine = open_engine(&path, &key)?;
         let before = engine.stats().map_err(map_engine_error)?;
         engine.compact_now().map_err(map_engine_error)?;
         let after = engine.stats().map_err(map_engine_error)?;
@@ -165,11 +180,14 @@ fn reembed_targets(
 ///
 /// # Errors
 /// Storage errors opening the container, rebuilding indexes, or embedding.
-pub async fn reembed_missing_container(path: &Path, key: &[u8], embedder: Box<dyn Embedder>) -> Result<ReembedReport> {
+pub async fn reembed_missing_container(
+    path: &Path,
+    key: EncryptionKey,
+    embedder: Box<dyn Embedder>,
+) -> Result<ReembedReport> {
     let path = path.to_path_buf();
-    let key = key.to_vec();
     tokio::task::spawn_blocking(move || {
-        let mut engine = Engine::open_encrypted(&path, &key).map_err(map_engine_error)?;
+        let mut engine = open_engine(&path, &key)?;
         let rebuilt = basemyai_engine::rebuild_indexes(&mut engine).map_err(map_engine_error)?;
         let report = reembed_targets(&mut engine, embedder.as_ref(), rebuilt.reembedding_required)?;
         engine.close().map_err(map_engine_error)?;
@@ -188,16 +206,15 @@ pub async fn reembed_missing_container(path: &Path, key: &[u8], embedder: Box<dy
 /// Storage errors opening the container or embedding.
 pub async fn reembed_ids_container(
     path: &Path,
-    key: &[u8],
+    key: EncryptionKey,
     agent: &str,
     ids: Vec<String>,
     embedder: Box<dyn Embedder>,
 ) -> Result<ReembedReport> {
     let path = path.to_path_buf();
-    let key = key.to_vec();
     let agent = agent.to_string();
     tokio::task::spawn_blocking(move || {
-        let mut engine = Engine::open_encrypted(&path, &key).map_err(map_engine_error)?;
+        let mut engine = open_engine(&path, &key)?;
         let targets = ids.into_iter().map(|id| (agent.clone(), id)).collect();
         let report = reembed_targets(&mut engine, embedder.as_ref(), targets)?;
         engine.close().map_err(map_engine_error)?;
@@ -216,15 +233,14 @@ pub async fn reembed_ids_container(
 /// embedding.
 pub async fn reembed_all_container(
     path: &Path,
-    key: &[u8],
+    key: EncryptionKey,
     agent: &str,
     embedder: Box<dyn Embedder>,
 ) -> Result<ReembedReport> {
     let path = path.to_path_buf();
-    let key = key.to_vec();
     let agent = agent.to_string();
     tokio::task::spawn_blocking(move || {
-        let mut engine = Engine::open_encrypted(&path, &key).map_err(map_engine_error)?;
+        let mut engine = open_engine(&path, &key)?;
         let prefix = memory_index::record_agent_prefix(&agent).map_err(map_engine_error)?;
         let mut targets = Vec::new();
         for (record_key, _) in engine.scan_prefix(&prefix).map_err(map_engine_error)? {
@@ -238,4 +254,32 @@ pub async fn reembed_all_container(
     })
     .await
     .map_err(|e| interrupted("reembed", e))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::NativeMemoryStore;
+
+    #[tokio::test]
+    async fn passphrase_store_supports_verify_rebuild_and_compact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        drop(NativeMemoryStore::open_with_passphrase(dir.path(), "human passphrase").expect("create store"));
+
+        let report = verify_container(
+            dir.path(),
+            EncryptionKey::passphrase("human passphrase"),
+            VerifyMode::FullLogical,
+        )
+        .await
+        .expect("verify passphrase store");
+        assert!(report.healthy, "verify errors: {:?}", report.errors);
+
+        rebuild_indexes_container(dir.path(), EncryptionKey::passphrase("human passphrase"))
+            .await
+            .expect("rebuild passphrase store");
+        compact_container(dir.path(), EncryptionKey::passphrase("human passphrase"))
+            .await
+            .expect("compact passphrase store");
+    }
 }

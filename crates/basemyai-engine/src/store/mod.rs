@@ -34,7 +34,7 @@ mod wal;
 pub use engine::{Batch, DEFAULT_BLOCK_CACHE_CAPACITY_BYTES, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, ScanPage};
 pub use repair::{RebuildReport, RepairAction, RepairPlan, plan_repair, rebuild_indexes};
 pub use stats::EngineStats;
-pub use verify::{IntegrityIssue, IssueKind, VerifyMode, VerifyReport, verify_store};
+pub use verify::{IntegrityIssue, IssueKind, VerifyMode, VerifyReport, verify_store, verify_store_with_passphrase};
 
 /// A stored value. Kept as a plain alias (not a newtype) since, unlike
 /// [`crate::key::Key`], nothing about its ordering or encoding is

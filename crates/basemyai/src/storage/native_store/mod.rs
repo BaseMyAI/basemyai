@@ -166,6 +166,8 @@ pub(crate) fn map_engine_error(e: basemyai_engine::EngineError) -> crate::Memory
         EngineError::MissingEncryptionKey { .. } => CoreError::EncryptionKeyRequired.into(),
         EngineError::WrongEncryptionKey { .. } => CoreError::WrongEncryptionKey.into(),
         EngineError::CorruptCryptoMeta { .. } => CoreError::CorruptEncryptionMetadata.into(),
+        EngineError::StoreLocked { .. } => CoreError::StoreLocked.into(),
+        EngineError::CorruptGenerationMeta { .. } => CoreError::CorruptStoreGenerationMetadata.into(),
         EngineError::PlaintextStoreKeySupplied { .. } => CoreError::PlaintextStoreEncryptedKeySupplied.into(),
         EngineError::NotEncrypted { .. } => CoreError::Encryption.into(),
         EngineError::CryptoFailure { .. } => CoreError::Encryption.into(),
@@ -194,9 +196,9 @@ impl NativeMemoryStore {
     }
 
     /// Ouvre (en le créant au besoin) un store natif **chiffré au repos**
-    /// (ADR-030) : WAL et SST scellés sous la DEK du store, `key` vérifiée
-    /// contre `crypto.meta` à l'ouverture — une mauvaise clé échoue ici,
-    /// typée, jamais en corruption inexplicable plus loin.
+    /// par une clé brute (ADR-030) : WAL et SST scellés sous la DEK du store,
+    /// `key` vérifiée contre `crypto.meta` à l'ouverture — une mauvaise clé
+    /// échoue ici, typée, jamais en corruption inexplicable plus loin.
     ///
     /// # Errors
     /// Erreur de stockage si la clé est fausse, si `path` contient déjà un
@@ -204,6 +206,48 @@ impl NativeMemoryStore {
     /// toute erreur I/O/corruption d'ouverture.
     pub fn open_encrypted(path: impl AsRef<Path>, key: &str) -> Result<Self> {
         Self::from_engine(Engine::open_encrypted(path, key.as_bytes()).map_err(map_engine_error)?)
+    }
+
+    /// Ouvre un store chiffré selon le mode explicitement porté par
+    /// [`basemyai_core::EncryptionKey`].
+    ///
+    /// C'est le point d'entrée recommandé aux SDKs : il évite qu'une
+    /// passphrase soit accidentellement ouverte comme une clé brute.
+    pub fn open_with_key(path: impl AsRef<Path>, key: &basemyai_core::EncryptionKey) -> Result<Self> {
+        match key.mode() {
+            basemyai_core::EncryptionKeyMode::RawKey => Self::open_encrypted(path, key.expose()),
+            basemyai_core::EncryptionKeyMode::Passphrase => Self::open_with_passphrase(path, key.expose()),
+            _ => Err(storage("unsupported encryption key mode")),
+        }
+    }
+
+    /// Ouvre (en le créant au besoin) un store natif chiffré avec une
+    /// passphrase humaine, étirée avec Argon2id et persistée comme telle dans
+    /// `CryptoMeta:2` (ADR-042).
+    ///
+    /// Une passphrase et une clé brute de mêmes octets ne se substituent
+    /// jamais : un store de l'autre mode échoue à l'ouverture avec l'erreur
+    /// de clé typée du moteur.
+    ///
+    /// # Errors
+    /// Erreur de stockage si la passphrase est fausse, si le store est déjà
+    /// chiffré dans l'autre mode, ou sur toute erreur I/O/corruption
+    /// d'ouverture.
+    pub fn open_with_passphrase(path: impl AsRef<Path>, passphrase: &str) -> Result<Self> {
+        Self::from_engine(Engine::open_with_passphrase(path, passphrase.as_bytes()).map_err(map_engine_error)?)
+    }
+
+    /// Creates a passphrase store with an explicit Argon2id cost profile.
+    /// On reopen, the persisted parameters are replayed regardless of the
+    /// caller's current defaults.
+    pub fn open_with_passphrase_and_profile(
+        path: impl AsRef<Path>,
+        passphrase: &str,
+        profile: basemyai_engine::Argon2idProfile,
+    ) -> Result<Self> {
+        Self::from_engine(
+            Engine::open_with_passphrase_and_profile(path, passphrase.as_bytes(), profile).map_err(map_engine_error)?,
+        )
     }
 
     fn from_engine(mut engine: Engine) -> Result<Self> {
@@ -235,9 +279,79 @@ impl NativeMemoryStore {
     /// rotater — parité de posture avec `CoreError::Encryption`, ADR-007) ou
     /// si le remplacement atomique échoue.
     pub async fn rotate_key(&self, new_key: &str) -> Result<()> {
-        let new_key = new_key.to_string();
-        self.with_inner(move |inner| inner.engine.rotate_key(new_key.as_bytes()).map_err(map_engine_error))
-            .await
+        self.rotate_with_key(basemyai_core::EncryptionKey::raw(new_key)).await
+    }
+
+    /// Re-scelle la DEK selon le mode explicite porté par `new_key`.
+    /// Cette variante évite toute réinterprétation d'une passphrase en clé
+    /// brute et conserve le secret dans un buffer zeroizable jusqu'à la fin
+    /// de la closure bloquante.
+    pub async fn rotate_with_key(&self, new_key: basemyai_core::EncryptionKey) -> Result<()> {
+        self.with_inner(move |inner| {
+            let result = match new_key.mode() {
+                basemyai_core::EncryptionKeyMode::RawKey => inner.engine.rotate_key(new_key.expose().as_bytes()),
+                basemyai_core::EncryptionKeyMode::Passphrase => {
+                    inner.engine.rotate_passphrase(new_key.expose().as_bytes())
+                }
+                _ => return Err(storage("unsupported encryption key mode")),
+            };
+            result.map_err(map_engine_error)
+        })
+        .await
+    }
+
+    /// Re-scelle la DEK avec une passphrase et un profil Argon2id explicite.
+    /// Le profil low-memory doit être redemandé à chaque rotation qui doit le
+    /// conserver ; sinon la rotation revient au profil par défaut ADR-042.
+    pub async fn rotate_passphrase_with_profile(
+        &self,
+        new_passphrase: basemyai_core::EncryptionKey,
+        profile: basemyai_engine::Argon2idProfile,
+    ) -> Result<()> {
+        if new_passphrase.mode() != basemyai_core::EncryptionKeyMode::Passphrase {
+            return Err(storage("Argon2id profiles require a passphrase encryption key"));
+        }
+        self.with_inner(move |inner| {
+            inner
+                .engine
+                .rotate_passphrase_with_profile(new_passphrase.expose().as_bytes(), profile)
+                .map_err(map_engine_error)
+        })
+        .await
+    }
+
+    /// Ré-encrypte tous les enregistrements vivants sous une nouvelle DEK,
+    /// publie atomiquement la génération résultante puis collecte l'ancienne.
+    pub async fn rotate_key_full(&self, new_key: basemyai_core::EncryptionKey) -> Result<()> {
+        self.with_inner(move |inner| {
+            let result = match new_key.mode() {
+                basemyai_core::EncryptionKeyMode::RawKey => inner.engine.rotate_key_full(new_key.expose().as_bytes()),
+                basemyai_core::EncryptionKeyMode::Passphrase => {
+                    inner.engine.rotate_passphrase_full(new_key.expose().as_bytes())
+                }
+                _ => return Err(storage("unsupported encryption key mode")),
+            };
+            result.map_err(map_engine_error)
+        })
+        .await
+    }
+
+    /// Rotation complète de DEK avec un profil Argon2id explicite.
+    pub async fn rotate_passphrase_full_with_profile(
+        &self,
+        new_passphrase: basemyai_core::EncryptionKey,
+        profile: basemyai_engine::Argon2idProfile,
+    ) -> Result<()> {
+        if new_passphrase.mode() != basemyai_core::EncryptionKeyMode::Passphrase {
+            return Err(storage("Argon2id profiles require a passphrase encryption key"));
+        }
+        self.with_inner(move |inner| {
+            inner
+                .engine
+                .rotate_passphrase_full_with_profile(new_passphrase.expose().as_bytes(), profile)
+                .map_err(map_engine_error)
+        })
+        .await
     }
 
     /// Store natif jetable dans un répertoire temporaire, supprimé au drop
