@@ -1,5 +1,42 @@
 # BaseMyAI — Implementation Status Matrix
 
+**Mise à jour 2026-07-19** (les entrées ci-dessous datées 2026-07-17 décrivent
+un working tree non committé qui a depuis été committé — lire cette entrée
+en premier, le reste du fichier garde l'historique tel quel) :
+
+- Le working tree audité le 2026-07-17 (~111 fichiers, compilation cassée) est
+  **committé** en 6 commits sur `dev` : `939c922` (eval), `fccdca2`
+  (N12/ADR-042), `0312fef` (Context Engine), `a0cf48d` (bindings py/node),
+  `1bc291d` (doc), `a3842e7` (fix CI, voir plus bas).
+- La « compilation cassée » du 2026-07-17 était en réalité un `target/`
+  périmé : artefacts compilés avant la réorganisation du dépôt vers
+  `basemyai-orga` (ancien chemin `…/forgemyai/basemyai` encore embarqué dans
+  des binaires de test via `CARGO_MANIFEST_DIR`, jamais invalidés par cargo).
+  Un `cargo clean` complet + rebuild confirme **`cargo xtask ci` vert**.
+- En nettoyant, un vrai trou de gate a été trouvé et corrigé (`a3842e7`) :
+  `crates/basemyai-engine/tests/adr042_contract.rs` et le fuzz target
+  `crypto_meta_decode_structured` compilaient (couverts par
+  `clippy --all-targets`) mais ne s'exécutaient **jamais** — absents de la
+  liste explicite `--test` de `xtask` et de la matrice `fuzz.yml`. Même
+  défaut que celui déjà documenté en §8.3 (nouveaux fichiers de test/fuzz non
+  auto-découverts, câblage manuel systématiquement oublié).
+- **N12/ADR-042 : audit des 13 critères de sortie (§5 de l'ADR) fait
+  ligne par ligne contre le code réel** — 12/13 couverts et testés. Seul gap
+  réel : aucun test ne copie explicitement un ancien `crypto.meta` à côté
+  d'une **nouvelle** génération pour vérifier que l'AEAD échoue sur chaque
+  octet WAL/SST (le binding AAD est prouvé au niveau primitif et au niveau
+  génération/pointeur, mais pas par ce scénario bout-en-bout précis). Voir
+  §10 pour le détail mis à jour.
+- **Context Engine R1.6/R1.7 (profils, formats de rendu, trace/explicabilité)
+  sont en réalité déjà livrés et testés côté Rust** — la version du 2026-07-17
+  de ce fichier et de `docs/PLAN-CONTEXT-ENGINE.md` les disait « ouverts »,
+  ce qui était faux (code trouvé dans `context/types.rs`/`selection.rs`/
+  `render.rs`, testé bout-en-bout par `tests/context.rs`). Ce qui est
+  réellement vrai : `lib.rs` n'exporte pas ces types à la racine du crate, et
+  les bindings Python/Node n'exposent que le sous-ensemble R1.0-R1.5 (aucune
+  trace de profil/format de rendu/rôles/dédup complet/avertissements/trace
+  détaillée). CLI, MCP et REST n'ont aucune surface `compile_context`. Voir §12.
+
 **Date : 2026-07-17** (dernière mise à jour : clôture N11 — campagne 1M archivée
 2026-07-15 —, chantier **N12/ADR-042 en cours non committé**, nouveaux Context
 Engine + Recall Quality Lab non committés ; le fichier était daté 2026-07-08 et
@@ -66,7 +103,7 @@ prêt prod ». La colonne Notes le précise systématiquement.
 | Index graphe natif (BFS) | ✅ | `basemyai-engine/src/idx/graph/` ; `tests/graph_parity.rs` | Isolation agent structurelle dans le layout de clé. ADR-027/N4. |
 | Index FTS/BM25 natif | ✅ | `basemyai-engine/src/idx/fts/` ; scénarios `memory_tests` | Tokenizer casefold+accents ; Porter différé (gap documenté). ADR-028. |
 | `MemoryStore` / `NativeMemoryStore` | ✅ | `basemyai/src/storage/native_store/` (module-répertoire : `mod.rs`, `trait_impl.rs`, `inner.rs`, `porting.rs` — committé) ; `tests/memory_tests.rs`, `storage_contract.rs` | Contrat ADR-020 ; unique implémentation active. Clair + chiffré (`native_encrypted`). |
-| Chiffrement au repos natif | ✅ | ADR-030 ; `crypto.meta`, enveloppes WAL/SST ; `NativeMemoryStore::rotate_key` | XChaCha20-Poly1305 pur Rust, **pas de CMake**. Rotation O(1) (re-scellement DEK). **Extension en cours (non committée) : N12/ADR-042** — passphrase Argon2id, zeroization, rotation complète — voir §10. |
+| Chiffrement au repos natif | ✅ | ADR-030 ; `crypto.meta`, enveloppes WAL/SST ; `NativeMemoryStore::rotate_key` | XChaCha20-Poly1305 pur Rust, **pas de CMake**. Rotation O(1) (re-scellement DEK). **Extension N12/ADR-042 clos** (passphrase Argon2id, zeroization, rotation complète) — voir §10. |
 | Métrique vectorielle (`Metric` enum) | ✅ | `basemyai-core/src/storage/vector.rs` | Cosine/Euclidean/Hamming — mécanisme pur, sans SQL. |
 | `MaintenanceWorker` + tâches injectées | ✅ | `maintenance.rs` ; `tests/maintenance_worker.rs` (dans `basemyai`) | Mécanisme d'injection ; le sens (GC, oubli, consolidation) vit dans `basemyai`. |
 | Embedder trait (object-safe, sync) | ✅ | `embed/mod.rs` (`Embedder`, `Device`) ; `tests/embed.rs` | Ne télécharge jamais (invariant ADR-010). |
@@ -230,11 +267,11 @@ Toutes les méthodes listées dans `TODO.md` M0.1 sont implémentées **et dépa
 | N11.3 — Tests de panne I/O | ✅ | `crates/basemyai-engine/tests/io_faults.rs` | **Clos 2026-07-13** : la majorité de §8.2 était déjà couverte (`failpoints.rs`/`crash_consistency.rs`/`corruption_smoke.rs`) — ce chantier ferme accès refusé (tmp cible en lecture-seule, `EngineError::Io` typé, retry propre après levée de l'obstruction) et fichier temporaire déjà présent (tmp périmé écrasé proprement, `create+truncate` jamais `create_new`). Corrige au passage le commentaire pré-N9 obsolète de `corruption_smoke.rs` : vérifié empiriquement que `verify_store` en `FullLogical` ne détecte pas non plus une SST vivante supprimée (aucun manifest) — gap toujours ouvert, candidat naturel N13/ADR-043. |
 | §8.3 — Matrice de tests (gate/nightly/campagne) | ✅ partiel | `.github/workflows/{ci,fuzz,nightly,soak-campaign}.yml` ; `BASEMYAI_CRASH_CYCLES` (`tests/crash_consistency.rs`) | **2026-07-13** : 3 bugs CI trouvés et corrigés (gate n'exécutait ni `model_based` ni `io_faults` ; `fuzz.yml` référençait une cible supprimée en N8.5 et ne couvrait que 5/24 cibles ; `engine-soak` documenté "nightly" depuis N7.3 mais jamais câblé). `nightly.yml` (crash loops 200 cycles via `BASEMYAI_CRASH_CYCLES`, défaut gate inchangé à 20 ; bench 100k clair+chiffré archivé en artefact). `soak-campaign.yml` (hebdomadaire, Linux/Windows/macOS, `engine-soak`, `workflow_dispatch` pour un run 1M à la demande). **Non fait, documenté comme tel** : rotation de clé pendant soak, disque presque plein, comptage de handles — nécessitent une instrumentation moteur nouvelle, pas de la config CI. |
 | N11 — Campagne 1M réellement exécutée et archivée | ✅ | `docs/benchmarks/n11-soak-1m-2026-07-15.md` ; `docs/benchmarks/data/n11-soak-1m/*.json` (8 rapports) + `campaign.log` ; nouveau flag `--verify` sur `engine_bench` (`crates/basemyai-engine/src/bin/engine_bench.rs`) | **Clos 2026-07-15** : le "reste de suivi hors clôture" laissé par N10/§8.3 (`soak-campaign.yml` jamais réellement déclenché à 1M) est maintenant fait pour de vrai — 4 cycles à `n=1 000 000`, clair **et** chiffré à chaque cycle (8 invocations), plus `cargo xtask test-crash-consistency` (7 variantes × 20 cycles kill réel) dans la même session. `verify_store(FullLogical)` (le mode le plus profond, ADR-040 §2 — le plan dit `--deep`, le code/CLI disent `FullLogical`/`--logical`) branché directement dans `engine_bench` via `--verify` pour auditer chaque store juste après sa fermeture, avant suppression du répertoire temporaire (les stores de `engine_bench` sont des répertoires `Engine` bruts, pas des conteneurs `.bmai` — `verify_store` s'applique directement dessus, pas besoin de la surface CLI). **14/14 audits `healthy=true`, 0 erreur, 0 warning** ; RSS peak stable 553,5-561,7 Mo sur les 8 runs (aucune tendance monotone) ; `sst_bytes`/`wal_bytes`/`tombstone_count`/`compaction_count` identiques bit-pour-bit entre cycles clairs entre eux et cycles chiffrés entre eux (workload déterministe, aucune dérive) ; `test-crash-consistency` 7/7 vert. Aucun bug trouvé. Seul critère de sortie R1 non vérifié positivement : comptage de handles fichier (pas d'instrumentation existante, documenté comme tel plutôt que déclaré clos par omission — voir le rapport). **N11 formellement clos** : les 4 chantiers (N11.1 fuzz, N11.2 model-based, N11.3 pannes I/O, campagne 1M) sont maintenant tous archivés avec preuve mesurée. |
-| N12 — Passphrase KDF + zeroization + rotation complète DEK (ADR-042) | 🟡 en cours | ADR **Accepted 2026-07-15** : `docs/adr/ADR-042-passphrase-kdf-zeroization-full-rotation.md` (committé, amendé dans le working tree). Code présent **non committé** : `basemyai-engine/src/crypto.rs` (Argon2id via `argon2` 0.5.3 + feature `zeroize`, profils `Default`/`LowMemory`, KEK/sortie `Zeroizing`), `format/crypto.rs` + `format/generation_meta.rs` (nouveau — générations logiques, `resolve_active_generation`, legacy = génération 0), `Engine::{open_with_passphrase*, rotate_passphrase*, rotate_key_full, rotate_passphrase_full*}` ; côté produit : `EncryptionKeyMode::Passphrase` (`basemyai-core/src/storage/key.rs`), `NativeMemoryStore::{open_with_passphrase, open_with_passphrase_and_profile, rotate_passphrase*, rotate_key_full, rotate_passphrase_full_with_profile}` ; surfaces CLI (`commands/config_key.rs`, `commands/container.rs`) et bindings py/node (passphrase exposée) ; test contrat `basemyai-engine/tests/adr042_contract.rs` (nouveau) ; fuzz `crypto_meta_decode_structured.rs` (nouvelle cible) ; baseline mesurée `docs/benchmarks/n12-argon2id-baseline-2026-07-15.md` (Argon2id m=64 MiB, t=3, p=4, bin `argon2_bench`) | **En cours dans le working tree (constat 2026-07-17), non committé, non clos.** Au moment de l'audit la compilation des tests était **cassée** (réparation en cours par ailleurs) — code présent ≠ testé. Ne pas déclarer ✅ tant que le gate `cargo xtask ci` n'est pas vert et le tout committé. |
+| N12 — Passphrase KDF + zeroization + rotation complète DEK (ADR-042) | ✅ | ADR **Accepted**, committé : `docs/adr/ADR-042-passphrase-kdf-zeroization-full-rotation.md` (§5, 13/13 critères de sortie cochés et sourcés 2026-07-19). Code : `basemyai-engine/src/crypto.rs` (Argon2id via `argon2` 0.5.3 + `zeroize`, profils `Default`/`LowMemory`), `format/crypto.rs` + `format/generation_meta.rs` (générations logiques, legacy = génération 0), `Engine::{open_with_passphrase*, rotate_passphrase*, rotate_key_full, rotate_passphrase_full*}` ; produit : `EncryptionKeyMode::Passphrase`, `NativeMemoryStore::{open_with_passphrase*, rotate_passphrase*, rotate_key_full}` ; surfaces CLI/bindings py-node (passphrase exposée) ; tests `adr042_contract.rs` + `old_crypto_meta_copied_beside_a_new_generation_cannot_open_its_wal_or_sst` (ajouté 2026-07-19, ferme le dernier gap du §5) + `full_rotation_abort_boundaries_keep_the_published_generation_healthy` (crash-consistency, 7 sites × 2 générations) ; fuzz `crypto_meta_decode_structured.rs` ; baseline `docs/benchmarks/n12-argon2id-baseline-2026-07-15.md` | **Clos 2026-07-19.** `cargo xtask ci` vert (avec `adr042_contract` désormais câblé dans le gate, cf. §8.3bis) et `cargo xtask test-crash-consistency` vert (8/8, y compris le mode `--full`). |
 | Sync P2P (change-capture WAL) | 📋 | `TODO-NATIVE-ENGINE.md` §N6 | V2. Primitive WAL posée. |
 | Langage de requête (Couche 4) | 📋 | ADR-024 §vision | Décision produit préalable. |
 | Multi-modèles d'embedding | ⏸️ | — | V2 (baseline unique en V1). |
-| Key rotation native (`rotate_key`) | ✅ | ADR-030 ; `NativeMemoryStore::rotate_key` | Re-scellement O(1). Ré-encryption complète DEK = **N12/ADR-042, en cours non committé** (voir ligne N12 ci-dessus). |
+| Key rotation native (`rotate_key`) | ✅ | ADR-030 ; `NativeMemoryStore::rotate_key` | Re-scellement O(1). Ré-encryption complète DEK = **N12/ADR-042, clos** (voir ligne N12 ci-dessus). |
 | Bench KNN 100k+ (MemoryStore) | 🟡 | `native_memory_store_bench.rs` (`#[ignore]` N=10k) | Item de suivi post-N5.5. |
 | Licence BUSL-1.1 unifiée | ✅ | ADR-031 | Tout le workspace. `0.1.0` crates.io/PyPI reste MIT pour les early adopters. |
 
@@ -256,20 +293,31 @@ agent locale, pas une base vectorielle de plus », liés depuis `README.md`
 
 ---
 
-## 12. Context Engine & Recall Quality Lab (nouveaux, 2026-07-17 — non committés)
+## 12. Context Engine & Recall Quality Lab (committés 2026-07-19, R1 clos)
 
-Plan de référence : `docs/PLAN-CONTEXT-ENGINE.md` (statut déclaré par le plan :
-« R1.4, socle R1.5 et SDK Python/Node livrés »). **Tout ce qui suit est présent
-dans le working tree mais non committé** (HEAD = clôture N11) ; au moment de
-l'audit la compilation des tests était cassée (réparation en cours) — statuts
-plafonnés à 🟡 tant que le gate CI n'est pas vert.
+Plan de référence : `docs/PLAN-CONTEXT-ENGINE.md`. Le working tree audité le
+2026-07-17 (~111 fichiers non committés, compilation cassée) a été committé
+le 2026-07-19 en 6 commits (`939c922` eval, `fccdca2` N12/ADR-042, `0312fef`
+context engine, `a0cf48d` bindings, `1bc291d` doc, `a3842e7` fix CI). Dans la
+même session, l'audit a trouvé que **R1.6/R1.7 étaient déjà livrés côté Rust**
+(la version du 2026-07-17 de ce fichier et du plan les disait « ouverts »),
+que `lib.rs` n'exportait qu'un sous-ensemble, et que les bindings/CLI/MCP/REST
+n'exposaient que R1.0-R1.5. Tout ceci est maintenant fermé : export racine
+complet, bindings à parité, et les trois surfaces manquantes construites.
+**`cargo xtask ci` vert** (confirmé après nettoyage du `target/` périmé —
+voir §8.3bis) et testé de bout en bout sur chaque surface, y compris
+manuellement sur CLI avec le modèle Candle réel provisionné.
 
 | Feature | Statut | Preuve (vérifiée) | Notes |
 |---|---|---|---|
-| Module `basemyai::context` (`Memory::compile_context`) | 🟡 | `crates/basemyai/src/context/{mod,types,token,compile,selection,temporal,render}.rs` ; exports `lib.rs` (`ContextBundle`, `ContextRequest`, `ContextItem`, `ContextCitation`, `ContextSourcePolicy`, `ExcludedMemory`, `TokenEstimator`, …) ; `crates/basemyai/tests/context.rs` | Pipeline déterministe **sans LLM** : recall hybride borné → filtres layer/provenance/validité → normalisation + estimation tokens → dédup → sélection sous budget dur → sections/rendu + citations + exclusions observables. R1.0→R1.4 + socle R1.5 (temporalité) livrés selon le plan ; **R1.6 (profils), R1.7 (rendus), R1.8 (surfaces) ouverts**. |
-| Support côté domaine (provenance/config) | 🟡 | `memory/trust.rs` (`TrustLevel`), `config.rs` (`ConfigDefaults`), `RecallOptions`/`ConversationTurn`/`SOURCE_*` exportés par `lib.rs` | Non committé (sauf provenance ADR-036 déjà en place) ; nouveau module racine `config.rs`. |
-| SDK Python/Node `compile_context`/`compileContext` | 🟡 | `bindings/basemyai-py/src/memory.rs` + `__init__.pyi` ; `bindings/basemyai-node/src/memory.rs` + `index.d.ts` ; tests roundtrip des deux bindings mis à jour | Non committé. **Pas de surface MCP/REST context** (vérifié : zéro occurrence `compile_context`/`ContextRequest` dans `basemyai-mcp`/`basemyai-rest`) — cohérent avec R1.8 ouvert. |
-| Crate `basemyai-eval` (Recall Quality Lab) | 🟡 | `crates/basemyai-eval/` (9 fichiers `src/`, `tests/cli.rs`, **son propre `Cargo.lock`**) ; assets `eval/README.md`, `eval/datasets/recall-core.jsonl`, rapports générés `eval/reports/{recall-core,comparison}.{json,md}` ; doc `docs/recall-quality-lab.md` | **Volontairement HORS workspace racine** : son `Cargo.toml` déclare son propre `[workspace]` et `publish = false` (« intentionally standalone until the root workspace, xtask and CI wiring is approved »). Le workspace racine reste donc à **6 crates** + ce standalone. Éval déterministe, offline, sans modèle ni réseau (`HashEmbedder` + store éphémère via feature `test-util`) ; couvre recall, recall_hybrid, recall filtré graphe et `compile_context`. Premier livrable R2. Câblage workspace/xtask/CI = décision d'intégration séparée. |
+| Module `basemyai::context` (`Memory::compile_context`) | ✅ | `crates/basemyai/src/context/{mod,types,token,compile,selection,temporal,render}.rs` ; `crates/basemyai/tests/context.rs` | Pipeline déterministe **sans LLM** : recall hybride borné → filtres layer/provenance/validité → normalisation + estimation tokens → dédup → sélection sous budget dur (pondérée par profil, R1.6) → sections/rendu texte/Markdown/JSON (R1.7) + citations + exclusions + trace observables. **R1.0→R1.7 tous livrés et testés.** |
+| Export racine (`lib.rs`) | ✅ | `pub use context::{...}` dans `crates/basemyai/src/lib.rs` | Exporte désormais aussi `ContextProfile`, `ContextRenderFormat`, `ContextTraceLevel`, `ContextRole`, `ContextTrace`, `ContextTraceEvent`, `ContextTraceSummary`, `ContextWarning`, `DedupCluster`, `InclusionReason`, `RetrievalContribution`, `MAX_CONTEXT_TRACE_EVENTS` — le commentaire dans `context/mod.rs` qui laissait ce re-export « hors périmètre » a été retiré. |
+| Support côté domaine (provenance/config) | ✅ | `memory/trust.rs` (`TrustLevel`), `config.rs` (`ConfigDefaults`), `RecallOptions`/`ConversationTurn`/`SOURCE_*` exportés par `lib.rs` | Committé (`0312fef`). |
+| SDK Python/Node `compile_context`/`compileContext` | ✅ | `bindings/basemyai-py/src/{memory,types}.rs` + `__init__.pyi` ; `bindings/basemyai-node/src/{memory,types}.rs` + `index.d.ts` ; `tests/test_roundtrip.py`, `__tests__/roundtrip.test.js` | **Parité complète R1.0-R1.7** : `profile`/`render_format` en options, `role`/`inclusion_reason`/`retrieval_contributions` par item, `dedup_clusters`/`warnings`/`trace` (summary + events bornés) au niveau bundle. Testé dans les deux langages (`maturin develop` + pytest ; `napi build` + jest), 15/15 et 17/18 (1 skip pré-existant) verts. |
+| CLI `basemyai context` | ✅ | `crates/basemyai-cli/src/commands/compile_context.rs`, `cli.rs` (`Command::Context`, `ContextProfileArg`/`ContextRenderFormatArg`/`ContextSourcePolicyArg`), `docs/cli.md` §Context Engine | Hors gate CI (charge Candle, même convention que `remember`/`recall`) — **vérifié manuellement de bout en bout** sur le modèle réel provisionné : texte, JSON, `--profile coding --render json`, `--explain`. |
+| MCP `compile_context` | ✅ | `crates/basemyai-mcp/src/tools/compile_context.rs`, `server.rs`, `tests/server.rs` (4 tests : bundle cité, profil/format, profil inconnu rejeté, agent_id trop long rejeté) | 9 outils au total (`docs/mcp-install.md` mis à jour). |
+| REST `POST /v1/compile_context` | ✅ | `crates/basemyai-rest/src/routes.rs`, `openapi.yaml`, `tests/api.rs` (4 tests : bundle cité, profil/format, validation, auth) | Schéma OpenAPI complet (`CompileContextRequest`/`CompileContextResponse`) ajouté à `openapi.yaml`. |
+| Crate `basemyai-eval` (Recall Quality Lab) | ✅ | `crates/basemyai-eval/` (committé `939c922`) ; assets `eval/README.md`, `eval/datasets/recall-core.jsonl`, rapports `eval/reports/{recall-core,comparison}.{json,md}` ; doc `docs/recall-quality-lab.md` | **Volontairement HORS workspace racine** : son `Cargo.toml` déclare son propre `[workspace]` et `publish = false`. Le workspace racine reste à **6 crates** + ce standalone. Câblage workspace/xtask/CI = décision d'intégration séparée, toujours ouverte (R2). |
 
 ---
 
@@ -332,27 +380,30 @@ plafonnés à 🟡 tant que le gate CI n'est pas vert.
   verify/repair/reembed, maintenance scalable), campagne N11 (fuzz 24 cibles,
   model-based, pannes I/O, soak 1M archivé 2026-07-15). **HEAD = clôture N11**
   (`d58923a`).
-- **Chantier actif : N12/ADR-042** (passphrase Argon2id, zeroization, rotation
-  complète DEK par générations) — ADR Accepted 2026-07-15, **code présent non
-  committé**, compilation des tests cassée au moment de l'audit (2026-07-17).
-  Voir §10.
-- **Nouveaux, non committés** : **Context Engine** (`compile_context` — R1.4 +
-  socle R1.5 + SDK py/node livrés selon le plan) et **Recall Quality Lab**
-  (`crates/basemyai-eval`, standalone hors workspace). Voir §12.
+- **N12/ADR-042 : ✅ clos 2026-07-19** (passphrase Argon2id, zeroization,
+  rotation complète DEK par générations) — 13/13 critères de sortie §5
+  vérifiés et sourcés, `cargo xtask ci` + `test-crash-consistency` verts. Voir §10.
+- **Context Engine : ✅ R1 clos 2026-07-19** — `compile_context` (R1.0-R1.7 :
+  types, profils, rendus texte/Markdown/JSON, trace/explicabilité) livré et
+  testé sur les **cinq surfaces** : Rust, CLI (`basemyai context`), MCP
+  (outil `compile_context`), REST (`POST /v1/compile_context`), bindings
+  Python/Node à parité complète. Reste ouvert : R2 (Recall Quality Lab, déjà
+  en partie livré en standalone). Voir §12.
+- **Recall Quality Lab** : `crates/basemyai-eval`, standalone hors workspace,
+  committé. Voir §12.
 - **Mémoire (Phase 1 + 2) : ✅** — remember/recall/hybrid/graphe/consolidation/oubli,
   toutes surfaces (MCP, REST, CLI, bindings).
 - **Publication : `0.1.0` sur crates.io + PyPI** (2026-06-22, encore libSQL).
   **Prochaine étape : release `0.2.0` native-only** (breaking —
   `workspace.package.version` déjà bumpé à `0.2.0` et committé, publication pas
   faite). npm à vérifier.
-- **CLI : ✅ surface complète** ; tests partiels en CI ; **cargo-dist configuré**
-  (2026-07-10, `dist plan` vert) — `dist build`/publication réelle restent une
-  décision humaine séparée (§6).
-- **Reste ouvert (priorité)** : stabiliser + committer le working tree
-  (N12 + context + eval, tests à remettre au vert). Release 0.2.0. R1.6→R1.8 et
-  R2.x restants du plan Context Engine. Image Docker REST écrite (build non
-  vérifié, cf. §5). CUDA/NVML : détection ajoutée (feature `cuda-detect`) —
-  validation sur GPU NVIDIA réel encore à faire. (NAPI live subscriptions,
-  bench Mem0+Qdrant, oubli adaptatif natif ADR-037 et GC temporel natif
-  ADR-038 tous faits 2026-07-10 — voir §3/§5/§6/§11.)
+- **CLI : ✅ surface complète** (dont `context`) ; tests partiels en CI ;
+  **cargo-dist configuré** (2026-07-10, `dist plan` vert) — `dist build`/
+  publication réelle restent une décision humaine séparée (§6).
+- **Reste ouvert (priorité)** : release 0.2.0. R2.x du plan Context Engine
+  (câblage workspace/xtask/CI du Recall Quality Lab). Image Docker REST
+  écrite (build non vérifié, cf. §5). CUDA/NVML : détection ajoutée (feature
+  `cuda-detect`) — validation sur GPU NVIDIA réel encore à faire. (NAPI live
+  subscriptions, bench Mem0+Qdrant, oubli adaptatif natif ADR-037 et GC
+  temporel natif ADR-038 tous faits 2026-07-10 — voir §3/§5/§6/§11.)
 - **V2 reporté** : Studio, Tauri, sync P2P, multi-modèles, langage de requête.

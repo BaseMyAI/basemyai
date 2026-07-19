@@ -1,6 +1,11 @@
 # Plan d'implementation - Context Engine et Recall Quality Lab
 
-Statut : en cours - Rust, R1.4, socle R1.5 et SDK Python/Node livres  
+Statut (2026-07-19) : **R1 clos** - Rust R1.0-R1.7 livre et teste bout-en-bout ;
+SDK Python/Node a parite complete (profils, formats de rendu, roles, clusters
+de dedup, avertissements, trace detaillee) ; surfaces CLI (`basemyai context`),
+MCP (outil `compile_context`) et REST (`POST /v1/compile_context`) livrees et
+testees. Reste ouvert : R2 (Recall Quality Lab, deja en partie livre en
+standalone - voir section 7).  
 Portee : crate `basemyai`, surfaces publiques et evaluation deterministe  
 Prerequis : moteur natif-only, recall hybride, provenance ADR-036
 
@@ -173,7 +178,7 @@ Implementation :
   section representee et sans depasser le budget.
 
 Le facteur de fraicheur est ajoute par R1.5 apres propagation de `Validity`.
-Les profils de compilation restent reportes a R1.6.
+Les profils de compilation sont livres par R1.6 (poids et quotas par role).
 
 ### R1.5 - Temporalite et conflits
 
@@ -206,6 +211,9 @@ faux positifs et contredirait la politique conservatrice de ce plan.
 
 ### R1.6 - Roles et profils
 
+Etat : livre et teste (`context/types.rs`, `context/selection.rs`,
+`tests/context.rs::text_markdown_and_json_renderers_each_respect_their_budget`).
+
 Profils initiaux : `Balanced`, `Conversation`, `Coding`, `Execution` et
 `SafetyCritical`. Ils configurent des poids et quotas, jamais des permissions.
 
@@ -214,6 +222,8 @@ donnees incertaines. Un role est derive de metadonnees explicites ou de la
 couche ; V1 n'infere pas une instruction depuis le texte libre.
 
 ### R1.7 - Rendus et explicabilite
+
+Etat : livre et teste, Rust et toutes les surfaces (voir R1.8).
 
 - renderers texte, Markdown et JSON ;
 - contributions retrieval disponibles ;
@@ -234,13 +244,25 @@ Ordre de livraison :
 Toutes les surfaces conservent enums, valeurs par defaut, erreurs et invariants
 du contrat Rust. Des tests de parite empechent leur divergence.
 
-Etat au 2026-07-17 :
+Etat au 2026-07-19 (clos - les cinq surfaces exposent desormais le contrat
+complet R1.0-R1.7 ; verifie contre le code, pas seulement declare) :
 
-- Rust : livre ;
-- Python et Node : livres avec bundle structure, rendu, citations, traces,
-  typings, exemples et tests runtime ;
-- CLI, MCP et REST : encore ouverts. Leur ajout doit adapter le contrat
-  canonique sans reimplementer les politiques.
+- Rust : livre (types, selection ponderee par profil, rendus
+  texte/Markdown/JSON, trace compacte/detaillee) ;
+- CLI : livre — `basemyai context <query> --token-budget N [--profile ..]
+  [--render ..] [--explain]` (`basemyai-cli/src/commands/compile_context.rs`),
+  verifie manuellement de bout en bout (modele reel provisionne) ;
+- MCP : livre — outil `compile_context` (`basemyai-mcp/src/tools/
+  compile_context.rs` + `server.rs`), teste (`tests/server.rs`) ;
+- REST : livre — `POST /v1/compile_context` (`basemyai-rest/src/routes.rs`),
+  documente dans `openapi.yaml`, teste (`tests/api.rs`) ;
+- Python et Node : parite complete — `ContextOptions`/`compileContext`
+  exposent desormais `profile`/`renderFormat` en plus de query/tokenBudget/
+  candidateLimit/includeProcedural/sourcePolicy/explain, et le bundle expose
+  `role`/`inclusionReason`/`retrievalContributions` par item,
+  `dedupClusters`/`warnings`/`trace` (summary + events bornes) au niveau
+  racine — testes des deux cotes (`__tests__/roundtrip.test.js`,
+  `tests/test_roundtrip.py`).
 
 ## 7. Recall Quality Lab
 
