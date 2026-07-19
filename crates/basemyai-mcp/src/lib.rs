@@ -36,9 +36,10 @@ pub use provider::MemoryProvider;
 pub use sampling::SamplingBackend;
 pub use server::McpServer;
 pub use tools::{
-    ApplyEntity, ApplyRelation, ConsolidateApplyParams, ConsolidateParams, ConsolidateResult, ConsolidateStatus,
-    EntityItem, InvalidateParams, InvalidateResult, RecallGraphParams, RecallGraphResult, RecallItem, RecallParams,
-    RecallResult, RememberParams, RememberResult, StatsParams, StatsResult, WatchParams, WatchResult,
+    ApplyEntity, ApplyRelation, CompileContextParams, CompileContextResult, ConsolidateApplyParams, ConsolidateParams,
+    ConsolidateResult, ConsolidateStatus, EntityItem, InvalidateParams, InvalidateResult, RecallGraphParams,
+    RecallGraphResult, RecallItem, RecallParams, RecallResult, RememberParams, RememberResult, StatsParams,
+    StatsResult, WatchParams, WatchResult,
 };
 
 pub use provider::FileProvider;

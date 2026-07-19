@@ -3,6 +3,7 @@
 //! exposés au client via le JSON Schema généré par les macros `#[tool]` (schemars).
 //! La logique vit dans [`crate::server`].
 
+mod compile_context;
 mod consolidate;
 mod invalidate;
 mod recall;
@@ -11,6 +12,8 @@ mod remember;
 mod stats;
 mod watch;
 
+pub use compile_context::{CompileContextParams, CompileContextResult};
+pub(crate) use compile_context::{parse_profile, parse_render_format, parse_source_policy};
 pub use consolidate::{
     ApplyEntity, ApplyRelation, ConsolidateApplyParams, ConsolidateParams, ConsolidateResult, ConsolidateStatus,
 };

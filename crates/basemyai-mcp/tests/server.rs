@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use basemyai_mcp::{
-    ApplyEntity, ApplyRelation, Config, ConsolidateApplyParams, InMemoryProvider, InvalidateParams, McpServer,
-    RecallGraphParams, RecallParams, RememberParams, StatsParams,
+    ApplyEntity, ApplyRelation, CompileContextParams, Config, ConsolidateApplyParams, InMemoryProvider,
+    InvalidateParams, McpServer, RecallGraphParams, RecallParams, RememberParams, StatsParams,
 };
 use rmcp::ServiceExt;
 use rmcp::handler::client::ClientHandler;
@@ -390,4 +390,118 @@ async fn recall_graph_on_empty_graph_is_ok() {
         .expect("recall_graph");
     assert!(g.entities.is_empty());
     assert!(!g.truncated);
+}
+
+#[tokio::test]
+async fn compile_context_returns_a_cited_bundle_with_defaults() {
+    let s = server();
+    let Json(created) = s
+        .remember(remember("a", "BaseMyAI stores local agent memory.", "semantic"))
+        .await
+        .expect("remember");
+
+    let Json(bundle) = s
+        .compile_context(Parameters(CompileContextParams {
+            agent_id: "a".to_string(),
+            query: "local agent memory".to_string(),
+            token_budget: 128,
+            candidate_limit: 64,
+            include_procedural: false,
+            source_policy: "exclude_imported".to_string(),
+            profile: "balanced".to_string(),
+            render_format: "markdown".to_string(),
+            explain: true,
+        }))
+        .await
+        .expect("compile_context");
+
+    assert!(bundle.estimated_tokens <= 128);
+    assert!(bundle.rendered.contains("BaseMyAI stores local agent memory."));
+    assert!(bundle.citations.iter().any(|c| c.memory_id == created.id));
+    assert_eq!(bundle.profile, "balanced");
+    assert_eq!(bundle.render_format, "markdown");
+    assert_eq!(bundle.trace.level, "detailed");
+    assert!(bundle.trace.summary.included_items > 0);
+}
+
+#[tokio::test]
+async fn compile_context_honors_profile_and_render_format() {
+    let s = server();
+    s.remember(remember("a", "call the deploy script before merging", "semantic"))
+        .await
+        .expect("remember");
+
+    let Json(bundle) = s
+        .compile_context(Parameters(CompileContextParams {
+            agent_id: "a".to_string(),
+            query: "deploy script".to_string(),
+            token_budget: 256,
+            candidate_limit: 64,
+            include_procedural: false,
+            source_policy: "exclude_imported".to_string(),
+            profile: "coding".to_string(),
+            render_format: "json".to_string(),
+            explain: false,
+        }))
+        .await
+        .expect("compile_context");
+
+    assert_eq!(bundle.profile, "coding");
+    assert_eq!(bundle.render_format, "json");
+    assert!(serde_json::from_str::<Value>(&bundle.rendered).is_ok());
+}
+
+#[tokio::test]
+async fn compile_context_rejects_unknown_profile() {
+    let s = server();
+    let err = match s
+        .compile_context(Parameters(CompileContextParams {
+            agent_id: "a".to_string(),
+            query: "q".to_string(),
+            token_budget: 128,
+            candidate_limit: 64,
+            include_procedural: false,
+            source_policy: "exclude_imported".to_string(),
+            profile: "not-a-real-profile".to_string(),
+            render_format: "markdown".to_string(),
+            explain: false,
+        }))
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("un profile inconnu doit être rejeté"),
+    };
+    assert!(
+        err.message.contains("profile"),
+        "profile inconnu rejeté : {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn compile_context_agent_id_too_long_is_rejected() {
+    let s = server();
+    let agent_id = overlong_agent_id();
+    let err = match s
+        .compile_context(Parameters(CompileContextParams {
+            agent_id: agent_id.clone(),
+            query: "q".to_string(),
+            token_budget: 128,
+            candidate_limit: 64,
+            include_procedural: false,
+            source_policy: "exclude_imported".to_string(),
+            profile: "balanced".to_string(),
+            render_format: "markdown".to_string(),
+            explain: false,
+        }))
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("un agent_id trop long doit être rejeté"),
+    };
+    assert!(
+        err.message.contains("agent_id"),
+        "agent_id trop long rejeté : {}",
+        err.message
+    );
 }
