@@ -163,7 +163,16 @@ export interface Record {
 export type ContextSourcePolicy = 'allow_all' | 'exclude_imported' | 'user_and_consolidation_only'
 export type ContextSectionKind = 'working_context' | 'current_facts' | 'procedures' | 'recent_events' | 'unknown'
 export type ContextTemporalStatus = 'current' | 'scheduled' | 'expired' | 'unknown'
-export type ExclusionReason = 'source_filtered' | 'not_currently_valid' | 'token_budget' | 'unknown'
+export type ExclusionReason = 'source_filtered' | 'not_currently_valid' | 'token_budget' | 'profile_quota' | 'unknown'
+/** Compilation profile: weights and per-role quotas only, never permissions. */
+export type ContextProfile = 'balanced' | 'conversation' | 'coding' | 'execution' | 'safety_critical' | 'unknown'
+export type ContextRenderFormat = 'text' | 'markdown' | 'json' | 'unknown'
+/** Derived only from layer + typed provenance, never from free text. */
+export type ContextRole = 'fact' | 'constraint' | 'procedure' | 'event' | 'reference' | 'uncertain_data' | 'unknown'
+export type InclusionReason = 'section_reservation' | 'value_per_token' | 'local_replacement' | 'unknown'
+export type ContextTraceLevel = 'compact' | 'detailed'
+export type ContextTraceEventKind = 'included' | 'excluded' | 'deduplicated' | 'warning' | 'unknown'
+export type ContextWarningKind = 'incompatible_metadata' | 'unknown'
 
 export interface ContextOptions {
   query: string
@@ -171,7 +180,19 @@ export interface ContextOptions {
   candidateLimit?: number
   includeProcedural?: boolean
   sourcePolicy?: ContextSourcePolicy
+  /** Defaults to `'balanced'` when omitted. */
+  profile?: ContextProfile
+  /** Defaults to `'markdown'` when omitted. */
+  renderFormat?: ContextRenderFormat
+  /** When `true`, populates `ContextBundle.trace` with individual events (bounded, see `ContextTrace.truncated`). */
   explain?: boolean
+}
+
+/** A memory recalled alongside the item's representative before dedup/filtering. */
+export interface RetrievalContribution {
+  memoryId: string
+  retrievalRank: number
+  retrievalScore: number
 }
 
 export interface ContextItem {
@@ -179,15 +200,18 @@ export interface ContextItem {
   sourceMemoryIds: Array<string>
   layer: string
   trust: string
+  role: ContextRole
   validFrom: number
   validUntil?: number
   temporalStatus: ContextTemporalStatus
   retrievalScore: number
   retrievalRank: number
+  retrievalContributions: Array<RetrievalContribution>
   estimatedTokens: number
   utilityScore: number
   valuePerToken: number
   freshnessScore: number
+  inclusionReason: InclusionReason
 }
 
 export interface ContextSection {
@@ -204,20 +228,76 @@ export interface ExcludedMemory {
   memoryId: string
   reason: ExclusionReason
   temporalStatus: ContextTemporalStatus
+  role: ContextRole
+  retrievalContribution: RetrievalContribution
 }
 
+/** One absorbed-memory -> representative pair. See `dedupClusters` for the full groups. */
 export interface MergedMemory {
   memoryId: string
   representativeMemoryId: string
+}
+
+/** A complete group produced by exact-text deduplication. */
+export interface DedupCluster {
+  representativeMemoryId: string
+  memoryIds: Array<string>
+}
+
+/** Conservative warning derived only from explicit metadata — never an inferred semantic contradiction. */
+export interface ContextWarning {
+  kind: ContextWarningKind
+  memoryIds: Array<string>
+}
+
+/**
+ * One event of a detailed trace. `kind` discriminates which of the other
+ * fields are populated — napi-rs has no tagged-union support, so this is a
+ * flattened struct rather than a discriminated union.
+ */
+export interface ContextTraceEvent {
+  kind: ContextTraceEventKind
+  memoryId?: string
+  role?: ContextRole
+  inclusionReason?: InclusionReason
+  contributions?: Array<RetrievalContribution>
+  excluded?: ExcludedMemory
+  dedupCluster?: DedupCluster
+  warning?: ContextWarning
+}
+
+/** Always-present counters, computed before any detailed-trace truncation. */
+export interface ContextTraceSummary {
+  includedItems: number
+  includedMemories: number
+  excludedMemories: number
+  dedupClusters: number
+  warnings: number
+}
+
+/** Compact by default (summary only); detailed and size-bounded with `explain: true`. */
+export interface ContextTrace {
+  level: ContextTraceLevel
+  summary: ContextTraceSummary
+  events: Array<ContextTraceEvent>
+  totalEvents: number
+  truncated: boolean
 }
 
 export interface ContextBundle {
   sections: Array<ContextSection>
   rendered: string
   estimatedTokens: number
+  /** The profile actually applied (mirrors the request, or `'balanced'` if omitted). */
+  profile: ContextProfile
+  /** The format actually rendered (mirrors the request, or `'markdown'` if omitted). */
+  renderFormat: ContextRenderFormat
   compiledAt: number
   totalUtility: number
   citations: Array<ContextCitation>
   merged: Array<MergedMemory>
   excluded: Array<ExcludedMemory>
+  dedupClusters: Array<DedupCluster>
+  warnings: Array<ContextWarning>
+  trace: ContextTrace
 }

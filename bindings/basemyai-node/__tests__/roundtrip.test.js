@@ -57,6 +57,39 @@ test('compileContext returns a bounded typed bundle', async () => {
   expect(bundle.citations.some((citation) => citation.memoryId === id)).toBe(true);
   expect(bundle.sections[0].kind).toBe('current_facts');
   expect(bundle.sections[0].items[0].validFrom).toBeGreaterThan(0);
+  expect(bundle.sections[0].items[0].role).toBe('fact');
+  expect(bundle.sections[0].items[0].inclusionReason).not.toBe('unknown');
+  expect(bundle.sections[0].items[0].retrievalContributions.length).toBeGreaterThan(0);
+  // Defaults when profile/renderFormat are omitted (R1.6/R1.7).
+  expect(bundle.profile).toBe('balanced');
+  expect(bundle.renderFormat).toBe('markdown');
+  // `explain: true` requests a detailed trace, bounded but non-empty here.
+  expect(bundle.trace.level).toBe('detailed');
+  expect(bundle.trace.summary.includedItems).toBeGreaterThan(0);
+  expect(bundle.trace.events.length).toBeGreaterThan(0);
+});
+
+test('compileContext honors profile and renderFormat (R1.6/R1.7)', async () => {
+  const mem = await Memory.openInMemory('agent-context-profile');
+  await mem.remember('call the deploy script before merging', 'semantic');
+
+  const text = await mem.compileContext({
+    query: 'deploy script',
+    tokenBudget: 256,
+    profile: 'coding',
+    renderFormat: 'text',
+  });
+  expect(text.profile).toBe('coding');
+  expect(text.renderFormat).toBe('text');
+  expect(text.rendered).not.toContain('#');
+
+  const json = await mem.compileContext({
+    query: 'deploy script',
+    tokenBudget: 256,
+    renderFormat: 'json',
+  });
+  expect(json.renderFormat).toBe('json');
+  expect(() => JSON.parse(json.rendered)).not.toThrow();
 });
 
 test('isolation between agents', async () => {

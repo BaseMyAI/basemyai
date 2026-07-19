@@ -25,7 +25,9 @@ use basemyai_core::{CandleEmbedder, Device, Embedder};
 use crate::errors::EncryptionError;
 use crate::errors::ValidationError;
 use crate::errors::to_pyerr;
-use crate::types::{AgentStats, ContextBundle, Entity, Record, WatchEvent, parse_source_policy};
+use crate::types::{
+    AgentStats, ContextBundle, Entity, Record, WatchEvent, parse_profile, parse_render_format, parse_source_policy,
+};
 
 /// Mémoire d'un agent (tenant). Construite via une fabrique asynchrone, puis
 /// interrogée par `remember`/`recall`/... (toutes asynchrones).
@@ -215,7 +217,7 @@ impl Memory {
 
     /// Compile un recall hybride en contexte Markdown borné et traçable.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (query, token_budget, *, candidate_limit = 64, include_procedural = false, source_policy = "exclude_imported".to_string(), explain = false))]
+    #[pyo3(signature = (query, token_budget, *, candidate_limit = 64, include_procedural = false, source_policy = "exclude_imported".to_string(), profile = "balanced".to_string(), render_format = "markdown".to_string(), explain = false))]
     fn compile_context<'p>(
         &self,
         py: Python<'p>,
@@ -224,14 +226,20 @@ impl Memory {
         candidate_limit: usize,
         include_procedural: bool,
         source_policy: String,
+        profile: String,
+        render_format: String,
         explain: bool,
     ) -> PyResult<Bound<'p, PyAny>> {
         let inner = Arc::clone(&self.inner);
         let source_policy = parse_source_policy(&source_policy).map_err(ValidationError::new_err)?;
+        let profile = parse_profile(&profile).map_err(ValidationError::new_err)?;
+        let render_format = parse_render_format(&render_format).map_err(ValidationError::new_err)?;
         future_into_py(py, async move {
             let mut request = basemyai::ContextRequest::new(&query, token_budget)
                 .candidate_limit(candidate_limit)
-                .source_policy(source_policy);
+                .source_policy(source_policy)
+                .profile(profile)
+                .render_format(render_format);
             if include_procedural {
                 request = request.include_procedural();
             }

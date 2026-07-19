@@ -20,7 +20,7 @@ use basemyai_core::{CandleEmbedder, Device};
 use crate::errors::to_napi;
 use crate::types::{
     AgentStats, ContextBundle, ContextOptions, ConversationTurn, Entity, MemoryEventPayload, MemoryOpenOptions, Record,
-    parse_source_policy,
+    parse_profile, parse_render_format, parse_source_policy,
 };
 
 /// Mémoire d'un agent (tenant). Ouverte par une fabrique asynchrone, puis
@@ -125,13 +125,21 @@ impl Memory {
             candidate_limit,
             include_procedural,
             source_policy,
+            profile,
+            render_format,
             explain,
         } = options;
         let source_policy = parse_source_policy(source_policy.as_deref().unwrap_or("exclude_imported"))
             .map_err(|message| Error::new(Status::InvalidArg, message))?;
+        let profile = parse_profile(profile.as_deref().unwrap_or("balanced"))
+            .map_err(|message| Error::new(Status::InvalidArg, message))?;
+        let render_format = parse_render_format(render_format.as_deref().unwrap_or("markdown"))
+            .map_err(|message| Error::new(Status::InvalidArg, message))?;
         let mut request = basemyai::ContextRequest::new(&query, token_budget as usize)
             .candidate_limit(candidate_limit.unwrap_or(64) as usize)
-            .source_policy(source_policy);
+            .source_policy(source_policy)
+            .profile(profile)
+            .render_format(render_format);
         if include_procedural.unwrap_or(false) {
             request = request.include_procedural();
         }
