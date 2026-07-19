@@ -1473,6 +1473,112 @@ mod tests {
         );
     }
 
+    /// ADR-042 §5 exit criterion: the old key **combined with a genuine copy
+    /// of the pre-rotation `crypto.meta`** — exactly the gap ADR-030 §4
+    /// documented as uncovered for `--full` — must not decrypt a single byte
+    /// of the new generation, neither WAL nor SST. `generation_pointer_
+    /// requires_matching_crypto_meta_generation` already proves the
+    /// generation-id self-check in `crypto.meta` rejects this; this test
+    /// goes one level lower and proves the AEAD itself (DEK binding, not
+    /// just the generation-id field) rejects it, by attempting a raw
+    /// `CryptoContext::open` against real ciphertext from the new
+    /// generation using a context loaded from the *old* generation's
+    /// `crypto.meta` while it still existed, pre-rotation.
+    #[test]
+    fn old_crypto_meta_copied_beside_a_new_generation_cannot_open_its_wal_or_sst() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let old_ctx = {
+            let mut engine = Engine::open_encrypted_with_options(root.path(), KEY, small_options()).expect("open");
+            engine.put(b"kept", b"current").expect("put current");
+            engine.flush().expect("seed a real sealed SST under generation 0");
+            let ctx = crypto::load_meta(root.path(), KEY).expect("load pre-rotation context");
+            engine.rotate_key_full(b"fresh key").expect("full rotate");
+            engine
+                .put(b"after", b"publish")
+                .expect("write into the new generation's WAL");
+            ctx
+        };
+
+        let pointer_bytes =
+            fs::read(root.path().join(generation_meta::GENERATION_META_FILENAME)).expect("read generation pointer");
+        let pointer = generation_meta::decode(
+            &pointer_bytes,
+            &root.path().join(generation_meta::GENERATION_META_FILENAME),
+        )
+        .expect("decode generation pointer");
+        let new_gen_dir = generation_dir(root.path(), pointer.current_generation);
+
+        let wal_path = new_gen_dir.join("wal.log");
+        let wal_bytes = fs::read(&wal_path).expect("read new generation wal");
+        let (nonce, ciphertext, _consumed) = crate::format::crypto::decode_wal_envelope(&wal_bytes, &wal_path)
+            .expect("structurally decode the first wal envelope")
+            .expect("new generation wal must hold at least one complete record");
+        let wal_aad = crate::format::crypto::wal_envelope_aad();
+        assert!(
+            old_ctx.open(&nonce, ciphertext, &wal_aad).is_none(),
+            "the pre-rotation key + crypto.meta must not decrypt the new generation's WAL"
+        );
+        // Positive control: the same extracted (nonce, ciphertext, aad)
+        // genuinely decrypts under the *new* generation's real context —
+        // proves the `None` above is the DEK mismatch this test targets,
+        // not a byte-slicing mistake that would return `None` regardless.
+        let new_ctx = crypto::load_meta_for_generation(
+            &new_gen_dir,
+            b"fresh key",
+            crypto::KeyMode::RawKey,
+            pointer.current_generation,
+        )
+        .expect("load the new generation's own context");
+        assert!(
+            new_ctx.open(&nonce, ciphertext, &wal_aad).is_some(),
+            "sanity check failed: the new generation's own key must decrypt its own WAL"
+        );
+
+        let sst_path = fs::read_dir(&new_gen_dir)
+            .expect("read new generation directory")
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("sst"))
+            .expect("full rotation must have re-sealed at least one SST into the new generation");
+        let sst_bytes = fs::read(&sst_path).expect("read new generation sst");
+        let header_len = crate::format::sst_block::SST_HEADER_TOTAL_LEN;
+        let header = crate::format::sst_block::decode_sst_header(&sst_bytes[..header_len], &sst_path)
+            .expect("decode the plaintext sst header");
+        // `decode_encrypted_sst_block` requires the exact envelope slice (no
+        // torn-tail tolerance) — peek the block's own `ct_len` field first
+        // so the slice passed in is neither short nor carries the next
+        // section's bytes.
+        let block_bytes = &sst_bytes[header_len..];
+        let nonce_len = crate::format::crypto::NONCE_LEN;
+        let envelope_header_len = 4 + 2 + nonce_len + 4;
+        let ct_len = u32::from_le_bytes(
+            block_bytes[4 + 2 + nonce_len..envelope_header_len]
+                .try_into()
+                .expect("4-byte ct_len field"),
+        ) as usize;
+        let (sst_nonce, sst_ciphertext) =
+            crate::format::crypto::decode_encrypted_sst_block(&block_bytes[..envelope_header_len + ct_len], &sst_path)
+                .expect("structurally decode the first sealed data block");
+        // Block 0 of the Data section, right after the plaintext header —
+        // `sst_id` comes from the file's own header so the AAD matches
+        // exactly what the writer used, isolating the assertion to the DEK
+        // mismatch rather than an incidental AAD mismatch.
+        let sst_aad = crate::format::crypto::encrypted_sst_block_aad(
+            header.sst_id,
+            crate::format::crypto::SstSectionType::Data,
+            0,
+        );
+        assert!(
+            old_ctx.open(&sst_nonce, sst_ciphertext, &sst_aad).is_none(),
+            "the pre-rotation key + crypto.meta must not decrypt the new generation's SST, \
+             even with the correct AAD shape reconstructed"
+        );
+        assert!(
+            new_ctx.open(&sst_nonce, sst_ciphertext, &sst_aad).is_some(),
+            "sanity check failed: the new generation's own key must decrypt its own SST block"
+        );
+    }
+
     #[test]
     fn full_rotation_can_switch_to_passphrase_mode() {
         let root = tempfile::tempdir().expect("tempdir");

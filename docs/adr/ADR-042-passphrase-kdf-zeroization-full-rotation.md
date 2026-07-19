@@ -572,22 +572,42 @@ ce secret ne le regarde pas.
 
 ### 5. Critères de sortie (adaptés du plan §9, rendus testables)
 
-- [ ] Une clé/passphrase **retirée** de rotation (ancien mode ou ancienne
+**Audit 2026-07-19 : les 13 critères ci-dessous ont été vérifiés un par un
+contre le code réel (pas contre une déclaration de doc) et sont tous
+couverts et testés.** Le dernier gap restant (copie de l'ancien
+`crypto.meta` contre une nouvelle génération) a été fermé par
+`old_crypto_meta_copied_beside_a_new_generation_cannot_open_its_wal_or_sst`
+(`crates/basemyai-engine/src/store/engine.rs`), avec contrôle positif intégré
+(mêmes octets, contexte de la nouvelle génération, déchiffrement réussi) pour
+prouver que l'échec ci-dessus vient bien du DEK, pas d'un bug d'extraction.
+
+- [x] Une clé/passphrase **retirée** de rotation (ancien mode ou ancienne
   valeur) échoue `open` avec `WrongEncryptionKey` — jamais un succès
-  partiel, jamais un panic.
-- [ ] L'ancienne clé **combinée à une copie de l'ancien `crypto.meta`**
+  partiel, jamais un panic. Preuve :
+  `full_rotation_publishes_fresh_generation_and_keeps_live_engine_usable`,
+  `full_rotation_can_switch_to_passphrase_mode`,
+  `in_place_rotation_can_switch_to_passphrase_mode` (`store/engine.rs`).
+- [x] L'ancienne clé **combinée à une copie de l'ancien `crypto.meta`**
   (mode `--full` seulement — c'est exactement l'écart qu'ADR-030 §4
   documentait comme non couvert) ne peut plus déchiffrer **aucun** octet de
   la nouvelle génération : ni WAL ni SST — test explicite qui copie
   l'ancien `crypto.meta` à côté de la nouvelle génération et vérifie
-  l'échec AEAD sur chaque artefact, pas seulement sur `crypto.meta`.
-- [ ] Un fichier `crypto.meta` `version == 1` (mode `RawKey` historique) se
+  l'échec AEAD sur chaque artefact, pas seulement sur `crypto.meta`. Preuve :
+  `old_crypto_meta_copied_beside_a_new_generation_cannot_open_its_wal_or_sst`
+  (`store/engine.rs`).
+- [x] Un fichier `crypto.meta` `version == 1` (mode `RawKey` historique) se
   décode et s'ouvre **sans aucune modification de comportement** — test de
-  non-régression explicite sur un fixture v1 gelé.
-- [ ] Un fichier `crypto.meta` `version == 2` en mode `Argon2id` refuse de
+  non-régression explicite sur un fixture v1 gelé. Preuve :
+  `legacy_crypto_meta_v1_still_roundtrips_as_raw_key`,
+  `legacy_crypto_meta_v1_fixture_stays_readable_without_reencoding`
+  (`format/crypto.rs`).
+- [x] Un fichier `crypto.meta` `version == 2` en mode `Argon2id` refuse de
   s'ouvrir avec la clé brute correspondante interprétée comme mode `RawKey`
   (les deux modes ne se substituent jamais silencieusement l'un à l'autre).
-- [ ] Crash injecté (fail-point, même mécanisme que
+  Preuve : `passphrase_store_never_accepts_the_same_bytes_as_a_raw_key`
+  (`tests/adr042_contract.rs`), `passphrase_mode_roundtrips_and_refuses_raw_
+  key_interpretation` (`crypto.rs`).
+- [x] Crash injecté (fail-point, même mécanisme que
   `crate::fail_point!("after_crypto_meta_write")` déjà présent) à **chacune**
   des étapes de la rotation `--full` listées en §3.2 : après génération de la
   nouvelle DEK, en cours d'écriture de chaque SST re-scellé, après le fsync
@@ -597,39 +617,53 @@ ce secret ne le regarde pas.
   génération désignée par `generation.meta` est intégralement ouvrable ;
   toute autre génération présente est ignorée puis GC au prochain open**
   (invariant §3.3 — la formulation initiale « exactement une des deux »
-  était intestable dans la fenêtre post-publication/pré-suppression).
-- [ ] Altérer un seul octet des champs KDF v2 (`kdf_mode`, `kdf_salt`,
+  était intestable dans la fenêtre post-publication/pré-suppression). Preuve :
+  `full_rotation_abort_boundaries_keep_the_published_generation_healthy`
+  (`tests/crash_consistency.rs`) — 7 sites de fail-point × 2 générations
+  initiales, plus large que les 5 étapes listées ici.
+- [x] Altérer un seul octet des champs KDF v2 (`kdf_mode`, `kdf_salt`,
   `argon2_m_kib`/`t_cost`/`p` — CRC recalculé pour passer le décodage
   structurel) fait échouer l'unwrap (AAD, §1) — le test anti
-  parameter-tampering explicite.
-- [ ] Un `generation.meta` re-pointé vers une génération dont le
+  parameter-tampering explicite. Preuve :
+  `argon2id_parameter_tampering_is_rejected_after_crc_recalculation`
+  (`crypto.rs`).
+- [x] Un `generation.meta` re-pointé vers une génération dont le
   `crypto.meta` déclare un autre id de génération échoue **bruyamment** à
   l'ouverture (AAD du wrap, §3.5) — jamais une réouverture silencieuse de
-  l'ancienne génération par simple bascule du pointeur.
-- [ ] `grep -rn 'expose()' crates bindings | grep to_string` retourne zéro
+  l'ancienne génération par simple bascule du pointeur. Preuve :
+  `generation_pointer_requires_matching_crypto_meta_generation`
+  (`store/engine.rs`).
+- [x] `grep -rn 'expose()' crates bindings | grep to_string` retourne zéro
   (§2) — les sites `memory/mod.rs:136`, `basemyai-rest/src/main.rs:50` et
   équivalents refactorés en emprunt ; `EncryptionKey` zeroizable ; les
-  `Debug` masqués le restent et `Serialize` reste absent.
-- [ ] Le verrou advisory (§3.2) est en place pour tout open en écriture :
+  `Debug` masqués le restent et `Serialize` reste absent. Vérifié 2026-07-19,
+  zéro résultat.
+- [x] Le verrou advisory (§3.2) est en place pour tout open en écriture :
   test « second open en écriture refusé pendant qu'un premier est vivant »,
-  et `--full` refuse de démarrer si le verrou est tenu.
-- [ ] La documentation opérateur du `--full` (CLI + docs) énonce les trois
+  et `--full` refuse de démarrer si le verrou est tenu. Preuve :
+  `second_writable_open_is_refused_while_the_first_is_live`
+  (`tests/adr042_contract.rs`).
+- [x] La documentation opérateur du `--full` (CLI + docs) énonce les trois
   limites d'honnêteté : coût disque temporaire ×2, rémanence SSD (l'ancien
   ciphertext n'est pas effacé du support de façon garantie — la promesse est
   « l'ancienne clé ne lit plus le store courant », jamais « l'ancien
   ciphertext est irrécupérable du médium »), et non-protection rétroactive
-  des backups/copies antérieurs à la rotation.
-- [ ] Le nouveau format crypto (`CryptoMeta:2`, tout champ Argon2id) est
+  des backups/copies antérieurs à la rotation. Preuve :
+  `docs/security/encryption-model.md` §Rotation de clé.
+- [x] Le nouveau format crypto (`CryptoMeta:2`, tout champ Argon2id) est
   documenté dans le module doc de `format/crypto.rs` avec le même niveau de
   détail que la documentation actuelle de `CryptoMeta:1`, et verrouillé dans
-  `format.lock` (`cargo xtask format-lock` vert).
-- [ ] Les anciens codecs crypto ne sont supprimés **que si** aucun store v1
+  `format.lock` (`cargo xtask format-lock` vert). Vérifié 2026-07-19.
+- [x] Les anciens codecs crypto ne sont supprimés **que si** aucun store v1
   ne doit plus être ouvert par ce build — décision explicite prise en PR3/PR
   finale, jamais par défaut dans cette PR de décision (le plan §14 exige
-  cette question posée avant l'implémentation, pas après).
-- [ ] `cargo xtask ci` vert, `cargo xtask test-crash-consistency` étendu pour
+  cette question posée avant l'implémentation, pas après). Satisfait par
+  inaction : les codecs v1 restent en place (voir critère v1 ci-dessus).
+- [x] `cargo xtask ci` vert, `cargo xtask test-crash-consistency` étendu pour
   couvrir le mode `--full` (même exigence que le kill-loop réel déjà
-  existant pour le mode `batch` chiffré, ADR-030 §6).
+  existant pour le mode `batch` chiffré, ADR-030 §6). Les deux vérifiés
+  2026-07-19 (le premier après correction d'un trou de gate qui laissait
+  `adr042_contract.rs` compilé mais jamais exécuté — voir `docs/status.md`).
 
 ## Alternatives rejetées
 
