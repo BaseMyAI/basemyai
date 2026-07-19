@@ -6,13 +6,9 @@ mod render;
 mod selection;
 mod temporal;
 mod token;
-// Le re-export racine des types R1.6/R1.7 est hors du perimetre d'ecriture
-// de ce lot. Ils restent publics ici pour que le raccord soit une simple liste.
-#[allow(unreachable_pub)]
 mod types;
 
 pub use token::{ApproximateTokenEstimator, TokenEstimator};
-#[allow(unreachable_pub)]
 pub use types::{
     ContextBundle, ContextCitation, ContextItem, ContextProfile, ContextRenderFormat, ContextRequest, ContextRole,
     ContextSection, ContextSectionKind, ContextSourcePolicy, ContextTemporalStatus, ContextTrace, ContextTraceEvent,

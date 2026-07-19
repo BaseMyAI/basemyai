@@ -32,9 +32,11 @@ pub use cognition::{
 };
 pub use config::ConfigDefaults;
 pub use context::{
-    ApproximateTokenEstimator, ContextBundle, ContextCitation, ContextItem, ContextRequest, ContextSection,
-    ContextSectionKind, ContextSourcePolicy, ContextTemporalStatus, ExcludedMemory, ExclusionReason,
-    MAX_CONTEXT_CANDIDATES, MergedMemory, TokenEstimator,
+    ApproximateTokenEstimator, ContextBundle, ContextCitation, ContextItem, ContextProfile, ContextRenderFormat,
+    ContextRequest, ContextRole, ContextSection, ContextSectionKind, ContextSourcePolicy, ContextTemporalStatus,
+    ContextTrace, ContextTraceEvent, ContextTraceLevel, ContextTraceSummary, ContextWarning, DedupCluster,
+    ExcludedMemory, ExclusionReason, InclusionReason, MAX_CONTEXT_CANDIDATES, MAX_CONTEXT_TRACE_EVENTS, MergedMemory,
+    RetrievalContribution, TokenEstimator,
 };
 pub use error::{MemoryError, Result};
 pub use maintenance::{
