@@ -215,6 +215,30 @@ the Candle embedder (they go through `basemyai::storage::MemoryStore`
 directly) — they don't pay the model-load cost for operations that do no
 embedding.
 
+## Context Engine
+
+`context` compiles a hybrid recall into a bounded, traceable context —
+deterministic, no LLM in the loop (`basemyai::Memory::compile_context`).
+
+```bash
+basemyai context "how does basemyai store memory" --token-budget 256
+basemyai context "deploy checklist" --token-budget 256 --profile coding --render text
+basemyai context "deploy checklist" --token-budget 256 --render json    # machine-readable content
+basemyai context "billing plan" --token-budget 256 --explain             # bounded, detailed trace
+basemyai context "billing plan" --token-budget 256 --source-policy allow-all --include-procedural
+```
+
+`--profile` (`balanced` default, `conversation`, `coding`, `execution`,
+`safety-critical`) tunes selection weights and per-role quotas only — never
+permissions. `--render` (`markdown` default, `text`, `json`) controls the
+*content* format returned inside the bundle — independent from the global
+`--format` flag, which controls the CLI's own output framing (human text vs.
+`{"error": ...}`-shaped JSON). `--explain` keeps a detailed, size-bounded
+trace of inclusion/exclusion reasons, retrieval contributions, dedup
+clusters, and warnings; `--format json` surfaces the full structured bundle
+(sections, citations, trace, …), plain `context` prints just the rendered
+content.
+
 ## Graph
 
 ```bash

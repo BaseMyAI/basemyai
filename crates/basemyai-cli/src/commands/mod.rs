@@ -3,6 +3,7 @@
 //! propre fichier (`config`, `container`, `memory`, `graph`, `maintenance`,
 //! `provision`) ; ce module ne fait que router `cli::Command` vers eux.
 
+mod compile_context;
 mod config;
 mod config_key;
 mod container;
@@ -14,7 +15,7 @@ mod provision;
 use std::path::PathBuf;
 
 use crate::cli::{Cli, Command, GraphAction, LlmAction};
-use crate::context::open_memory;
+use crate::context::{context_profile, context_render_format, context_source_policy, open_memory};
 use crate::error::CliError;
 use crate::output::Format;
 use crate::persisted_config::CliConfig;
@@ -106,6 +107,33 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
             let agent = resolve_agent()?;
             let mem = open_memory(&path, &agent).await?;
             memory::recall(&mem, &query, k, hybrid, layer, graph, format).await
+        }
+        Command::Context {
+            query,
+            token_budget,
+            candidate_limit,
+            include_procedural,
+            source_policy,
+            profile,
+            render_format,
+            explain,
+        } => {
+            let path = resolve_path()?;
+            let agent = resolve_agent()?;
+            let mem = open_memory(&path, &agent).await?;
+            compile_context::run(
+                &mem,
+                &query,
+                token_budget,
+                candidate_limit,
+                include_procedural,
+                context_source_policy(source_policy),
+                context_profile(profile),
+                context_render_format(render_format),
+                explain,
+                format,
+            )
+            .await
         }
         Command::List {
             layer,

@@ -95,6 +95,36 @@ pub(crate) enum Command {
         #[arg(long)]
         graph: bool,
     },
+    /// Compile un recall hybride en contexte borné et traçable, prêt pour un
+    /// agent (Context Engine — déterministe, sans LLM).
+    Context {
+        /// Texte de la requête.
+        query: String,
+        /// Budget de tokens estimé, dur (jamais dépassé).
+        #[arg(long)]
+        token_budget: usize,
+        /// Taille du pool de candidats du recall hybride sous-jacent.
+        #[arg(long, default_value_t = 64)]
+        candidate_limit: usize,
+        /// Inclut explicitement la couche procédurale dans le recall.
+        #[arg(long)]
+        include_procedural: bool,
+        /// Politique de filtrage de provenance appliquée après le recall.
+        #[arg(long, value_enum, default_value_t = ContextSourcePolicyArg::ExcludeImported)]
+        source_policy: ContextSourcePolicyArg,
+        /// Profil de compilation : poids et quotas par rôle, jamais des permissions.
+        #[arg(long, value_enum, default_value_t = ContextProfileArg::Balanced)]
+        profile: ContextProfileArg,
+        /// Format du contenu compilé (indépendant de `--format`, qui contrôle
+        /// la sortie de la CLI elle-même).
+        #[arg(long = "render", value_enum, default_value_t = ContextRenderFormatArg::Markdown)]
+        render_format: ContextRenderFormatArg,
+        /// Conserve une trace détaillée et bornée (raisons d'inclusion/
+        /// exclusion, contributions de retrieval, clusters de déduplication,
+        /// avertissements).
+        #[arg(long)]
+        explain: bool,
+    },
     /// Liste les souvenirs bruts d'un agent (sans recherche sémantique).
     List {
         /// Filtre sur une seule couche mémoire.
@@ -315,4 +345,30 @@ pub(crate) enum Layer {
     Episodic,
     Procedural,
     Semantic,
+}
+
+/// Politique de provenance exposée en CLI (miroir de `basemyai::ContextSourcePolicy`).
+#[derive(Copy, Clone, ValueEnum)]
+pub(crate) enum ContextSourcePolicyArg {
+    AllowAll,
+    ExcludeImported,
+    UserAndConsolidationOnly,
+}
+
+/// Profil de compilation exposé en CLI (miroir de `basemyai::ContextProfile`).
+#[derive(Copy, Clone, ValueEnum)]
+pub(crate) enum ContextProfileArg {
+    Balanced,
+    Conversation,
+    Coding,
+    Execution,
+    SafetyCritical,
+}
+
+/// Format de rendu exposé en CLI (miroir de `basemyai::ContextRenderFormat`).
+#[derive(Copy, Clone, ValueEnum)]
+pub(crate) enum ContextRenderFormatArg {
+    Text,
+    Markdown,
+    Json,
 }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use basemyai_core::{EncryptionKey, KeyResolveError};
 
-use crate::cli::Layer;
+use crate::cli::{ContextProfileArg, ContextRenderFormatArg, ContextSourcePolicyArg, Layer};
 use crate::error::CliError;
 
 pub(crate) fn memory_layer(layer: Layer) -> basemyai::MemoryLayer {
@@ -18,6 +18,35 @@ pub(crate) fn memory_layer(layer: Layer) -> basemyai::MemoryLayer {
         Layer::Episodic => MemoryLayer::Episodic,
         Layer::Procedural => MemoryLayer::Procedural,
         Layer::Semantic => MemoryLayer::Semantic,
+    }
+}
+
+pub(crate) fn context_source_policy(policy: ContextSourcePolicyArg) -> basemyai::ContextSourcePolicy {
+    use basemyai::ContextSourcePolicy;
+    match policy {
+        ContextSourcePolicyArg::AllowAll => ContextSourcePolicy::AllowAll,
+        ContextSourcePolicyArg::ExcludeImported => ContextSourcePolicy::ExcludeImported,
+        ContextSourcePolicyArg::UserAndConsolidationOnly => ContextSourcePolicy::UserAndConsolidationOnly,
+    }
+}
+
+pub(crate) fn context_profile(profile: ContextProfileArg) -> basemyai::ContextProfile {
+    use basemyai::ContextProfile;
+    match profile {
+        ContextProfileArg::Balanced => ContextProfile::Balanced,
+        ContextProfileArg::Conversation => ContextProfile::Conversation,
+        ContextProfileArg::Coding => ContextProfile::Coding,
+        ContextProfileArg::Execution => ContextProfile::Execution,
+        ContextProfileArg::SafetyCritical => ContextProfile::SafetyCritical,
+    }
+}
+
+pub(crate) fn context_render_format(format: ContextRenderFormatArg) -> basemyai::ContextRenderFormat {
+    use basemyai::ContextRenderFormat;
+    match format {
+        ContextRenderFormatArg::Text => ContextRenderFormat::Text,
+        ContextRenderFormatArg::Markdown => ContextRenderFormat::Markdown,
+        ContextRenderFormatArg::Json => ContextRenderFormat::Json,
     }
 }
 
