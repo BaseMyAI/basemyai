@@ -634,3 +634,111 @@ async fn remember_is_rate_limited_per_agent() {
     let body = json_body(resp).await;
     assert_eq!(body["error"]["code"], "RATE_LIMITED");
 }
+
+#[tokio::test]
+async fn compile_context_returns_a_cited_bundle_with_defaults() {
+    let app = app();
+
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/v1/remember",
+            &json!({"agent_id": "a", "text": "BaseMyAI stores local agent memory.", "layer": "semantic"}),
+            true,
+        ))
+        .await
+        .expect("remember");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = json_body(resp).await["id"].as_str().expect("id").to_string();
+
+    let resp = app
+        .oneshot(post(
+            "/v1/compile_context",
+            &json!({"agent_id": "a", "query": "local agent memory", "token_budget": 128, "explain": true}),
+            true,
+        ))
+        .await
+        .expect("compile_context");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert!(body["estimated_tokens"].as_u64().expect("estimated_tokens") <= 128);
+    assert!(
+        body["rendered"]
+            .as_str()
+            .expect("rendered")
+            .contains("BaseMyAI stores local agent memory.")
+    );
+    assert!(
+        body["citations"]
+            .as_array()
+            .expect("citations")
+            .iter()
+            .any(|c| c["memory_id"] == id)
+    );
+    assert_eq!(body["profile"], "balanced");
+    assert_eq!(body["render_format"], "markdown");
+    assert_eq!(body["trace"]["level"], "detailed");
+    assert!(body["trace"]["summary"]["included_items"].as_u64().expect("count") > 0);
+}
+
+#[tokio::test]
+async fn compile_context_honors_profile_and_render_format() {
+    let app = app();
+
+    app.clone()
+        .oneshot(post(
+            "/v1/remember",
+            &json!({"agent_id": "a", "text": "call the deploy script before merging", "layer": "semantic"}),
+            true,
+        ))
+        .await
+        .expect("remember");
+
+    let resp = app
+        .oneshot(post(
+            "/v1/compile_context",
+            &json!({
+                "agent_id": "a",
+                "query": "deploy script",
+                "token_budget": 256,
+                "profile": "coding",
+                "render_format": "json",
+            }),
+            true,
+        ))
+        .await
+        .expect("compile_context");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["profile"], "coding");
+    assert_eq!(body["render_format"], "json");
+    assert!(serde_json::from_str::<Value>(body["rendered"].as_str().expect("rendered")).is_ok());
+}
+
+#[tokio::test]
+async fn compile_context_rejects_unknown_profile() {
+    let resp = app()
+        .oneshot(post(
+            "/v1/compile_context",
+            &json!({"agent_id": "a", "query": "q", "token_budget": 128, "profile": "not-a-real-profile"}),
+            true,
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn compile_context_needs_auth() {
+    let resp = app()
+        .oneshot(post(
+            "/v1/compile_context",
+            &json!({"agent_id": "a", "query": "q", "token_budget": 128}),
+            false,
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}

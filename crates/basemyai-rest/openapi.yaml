@@ -213,6 +213,172 @@ components:
           default: false
           description: Exclure les souvenirs importés (ADR-036). Défaut false.
 
+    CompileContextRequest:
+      type: object
+      required: [agent_id, query, token_budget]
+      properties:
+        agent_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: "agent-42"
+        query:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          example: "current billing plan"
+        token_budget:
+          type: integer
+          minimum: 1
+          description: Budget de tokens estimé, dur (jamais dépassé).
+          example: 512
+        candidate_limit:
+          type: integer
+          minimum: 1
+          maximum: 256
+          default: 64
+          description: Taille du pool de candidats du recall hybride sous-jacent.
+        include_procedural:
+          type: boolean
+          default: false
+        source_policy:
+          type: string
+          enum: [allow_all, exclude_imported, user_and_consolidation_only]
+          default: exclude_imported
+        profile:
+          type: string
+          enum: [balanced, conversation, coding, execution, safety_critical]
+          default: balanced
+          description: Poids et quotas par rôle, jamais des permissions.
+        render_format:
+          type: string
+          enum: [text, markdown, json]
+          default: markdown
+        explain:
+          type: boolean
+          default: false
+          description: >
+            Conserve une trace détaillée et bornée (raisons d'inclusion/
+            exclusion, contributions de retrieval, clusters de déduplication,
+            avertissements) dans la réponse.
+
+    ContextItem:
+      type: object
+      properties:
+        text: { type: string }
+        source_memory_ids: { type: array, items: { type: string } }
+        layer: { $ref: "#/components/schemas/MemoryLayer" }
+        trust: { type: string }
+        role:
+          type: string
+          enum: [fact, constraint, procedure, event, reference, uncertain_data]
+        valid_from: { type: integer, format: int64 }
+        valid_until: { type: integer, format: int64, nullable: true }
+        temporal_status:
+          type: string
+          enum: [current, scheduled, expired]
+        retrieval_score: { type: number }
+        retrieval_rank: { type: integer }
+        retrieval_contributions:
+          type: array
+          items:
+            type: object
+            properties:
+              memory_id: { type: string }
+              retrieval_rank: { type: integer }
+              retrieval_score: { type: number }
+        estimated_tokens: { type: integer }
+        utility_score: { type: number }
+        value_per_token: { type: number }
+        freshness_score: { type: number }
+        inclusion_reason:
+          type: string
+          enum: [section_reservation, value_per_token, local_replacement]
+
+    CompileContextResponse:
+      type: object
+      required: [rendered, estimated_tokens, profile, render_format, sections, trace]
+      properties:
+        rendered:
+          type: string
+          description: Contenu compilé dans le format demandé (render_format).
+        estimated_tokens: { type: integer }
+        profile:
+          type: string
+          enum: [balanced, conversation, coding, execution, safety_critical]
+        render_format:
+          type: string
+          enum: [text, markdown, json]
+        compiled_at: { type: integer, format: int64 }
+        total_utility: { type: number }
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+                enum: [working_context, current_facts, procedures, recent_events]
+              items:
+                type: array
+                items: { $ref: "#/components/schemas/ContextItem" }
+        citations:
+          type: array
+          items:
+            type: object
+            properties:
+              memory_id: { type: string }
+              section: { type: string }
+        merged:
+          type: array
+          items:
+            type: object
+            properties:
+              memory_id: { type: string }
+              representative_memory_id: { type: string }
+        excluded:
+          type: array
+          description: "Non vide seulement si explain=true a été demandé."
+          items:
+            type: object
+            additionalProperties: true
+        dedup_clusters:
+          type: array
+          items:
+            type: object
+            properties:
+              representative_memory_id: { type: string }
+              memory_ids: { type: array, items: { type: string } }
+        warnings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        trace:
+          type: object
+          description: >
+            Résumé toujours présent (summary) ; events détaillés et bornés
+            seulement avec explain: true (voir truncated).
+          properties:
+            level:
+              type: string
+              enum: [compact, detailed]
+            summary:
+              type: object
+              properties:
+                included_items: { type: integer }
+                included_memories: { type: integer }
+                excluded_memories: { type: integer }
+                dedup_clusters: { type: integer }
+                warnings: { type: integer }
+            events:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            total_events: { type: integer }
+            truncated: { type: boolean }
+
     RecallGraphRequest:
       type: object
       required: [agent_id, start]
@@ -498,6 +664,40 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /compile_context:
+    post:
+      operationId: compileContext
+      summary: Compile un recall hybride en contexte borné et traçable (Context Engine).
+      description: >
+        Pipeline déterministe sans LLM : recall hybride borné → filtres
+        layer/provenance/validité → normalisation + estimation tokens →
+        dédup → sélection sous budget dur (pondérée par profile) → rendu
+        (render_format) + citations + trace observable.
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompileContextRequest"
+      responses:
+        "200":
+          description: Contexte compilé.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompileContextResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "500": { $ref: "#/components/responses/InternalError" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
