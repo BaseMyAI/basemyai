@@ -70,7 +70,7 @@ jobs:
             --n "${{ github.event.inputs.bench_n || '100000' }}" \
             --out artifacts/engine-bench-nightly.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: engine-bench-nightly-${{ matrix.os }}-${{ github.run_id }}
           path: artifacts/*.json
