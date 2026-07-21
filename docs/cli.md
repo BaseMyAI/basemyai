@@ -78,12 +78,15 @@ free-text messages. Defined in `crates/basemyai-cli/src/exit.rs` /
 | 9 | No local LLM backend detected — run `basemyai llm detect`. |
 | 10 | `verify`: container opens but doesn't match the expected `.bmai` format/version, or the engine integrity audit (`--physical`/`--logical`) found an error. |
 | 11 | `repair` (without `--dry-run`): primary data is at risk — refusing to auto-repair (ADR-040 §3). |
+| 12 | `eval run\|compare` (feature `eval-lab` only): dataset/report error propagated from `basemyai-eval` (invalid JSON, malformed case, IO). |
+| 13 | `eval run\|compare` (feature `eval-lab` only): the report/comparison was produced correctly, but a case failed a blocking assertion or `--fail-on-regression` detected a regression. |
 
 In `--format json`, every error is also printed on stderr as a single object
 with a stable `code` string (the same categories as the table above, e.g.
 `KEY_REQUIRED`, `KEY_INSECURE`, `NOT_CONFIGURED`, `INVALID_AGENT`, `ALREADY_EXISTS`,
 `CONFIRMATION_REQUIRED`, `MODEL_NOT_PROVISIONED`, `LLM_NOT_AVAILABLE`,
-`VERIFICATION_FAILED`, `REPAIR_REFUSED`) and a human `message` that **is not**
+`VERIFICATION_FAILED`, `REPAIR_REFUSED`, `EVAL_ERROR`, `EVAL_CASES_FAILED`,
+`EVAL_REGRESSION_DETECTED`) and a human `message` that **is not**
 part of the contract and may reword across releases:
 
 ```json
@@ -303,6 +306,29 @@ keep a worker running continuously (the CLI itself is one-shot, no
 background worker) — see `crates/basemyai/tests/maintenance_worker.rs`.
 Design details: `docs/adr/ADR-037-native-adaptive-forgetting.md`,
 `docs/adr/ADR-038-native-expired-memory-gc.md`.
+
+## Recall Quality Lab (feature `eval-lab`, off by default)
+
+```bash
+cargo build -p basemyai-cli --features eval-lab   # not part of the default/distributed build
+
+basemyai eval run eval/datasets/recall-core.jsonl --output report.json --human report.md
+basemyai eval compare eval/reports/baseline.json report.json --fail-on-regression
+```
+
+Thin CLI wrapper around `crates/basemyai-eval` (Recall Quality Lab) —
+deterministic, offline, model-free recall/Context Engine evaluation. `run`
+exits 13 (`EVAL_CASES_FAILED`) if any case fails a blocking assertion;
+`compare --fail-on-regression` exits 13 (`EVAL_REGRESSION_DETECTED`) if a
+quality metric regresses or the failed-case count increases. Dataset/report
+errors (invalid JSON, malformed case) surface as exit 12 (`EVAL_ERROR`).
+
+Off by default because `basemyai-eval` activates `basemyai/test-util`
+(`HashEmbedder`, ephemeral store) — not something a distributed release
+binary should ship. The standalone binary (`cargo run -p basemyai-eval --
+run|compare`, used by `cargo xtask eval-run` and CI) needs no feature flag
+and stays the canonical entry point for automation; this subcommand is an
+ergonomic addition on top of the same runner (`docs/recall-quality-lab.md`).
 
 ## Shell completions
 

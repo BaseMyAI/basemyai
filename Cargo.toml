@@ -11,13 +11,16 @@ members = [
     "crates/basemyai-rest",
     "crates/basemyai-cli",
     "crates/basemyai-engine",
+    "crates/basemyai-eval",
     "bindings/basemyai-py",
     "bindings/basemyai-node",
     "xtask",
 ]
 
 # `cargo build`/`test` sans `-p` ne compilent pas xtask (outil DX interne,
-# invoqué via l'alias `cargo xtask` — voir .cargo/config.toml).
+# invoqué via l'alias `cargo xtask` — voir .cargo/config.toml) ni
+# basemyai-eval (Recall Quality Lab, active `basemyai/test-util` — pas un
+# consommateur produit, jamais tiré par un build par défaut).
 default-members = [
     "crates/basemyai-core",
     "crates/basemyai",

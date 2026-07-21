@@ -81,6 +81,7 @@ jobs:
           cargo clippy -p basemyai-cli --all-targets -- -D warnings
           cargo clippy -p basemyai-py --no-default-features --features test-util --all-targets -- -D warnings
           cargo clippy -p basemyai-node --no-default-features --features test-util --all-targets -- -D warnings
+          cargo clippy -p basemyai-eval --all-targets -- -D warnings
 
       - name: Test
         run: |
@@ -118,6 +119,9 @@ jobs:
           cargo test -p basemyai-mcp --no-default-features --features stdio,http,test-util
           cargo test -p basemyai-rest --no-default-features --features test-util
           cargo test -p basemyai-cli
+          # Recall Quality Lab (R2.x) : tests unitaires du runner/schéma/
+          # comparaison + tests/cli.rs (assert_cmd sur le binaire basemyai-eval).
+          cargo test -p basemyai-eval
 
   # ── Zero network : mémoire locale sans socket (proxy invalide) ───────────────
 
@@ -203,6 +207,42 @@ jobs:
         run: |
           set -euxo pipefail
           cargo test -p basemyai-engine --features test-util --test crash_consistency -- --nocapture
+
+  # ── Recall Quality Lab : artefact non-bloquant (R2.x) ────────────────────────
+  # Exécute le dataset canonique et upload le rapport en artefact. Volontairement
+  # absent de `needs` ci-dessous : les assertions qualité (budget, provenance,
+  # déterminisme, must_include/must_exclude) ne deviennent un gate bloquant
+  # qu'une fois une baseline revue committée (docs/recall-quality-lab.md
+  # §"Required integrations", item 4) — décision produit séparée, pas prise ici.
+  # `basemyai-eval` lui-même (compile + tests unitaires/CLI) reste bloquant via
+  # le job `gate` ci-dessus ; seule l'exécution du dataset est avancée ici.
+
+  recall-quality-lab:
+    name: recall-quality-lab (artifact, non-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: recall-quality-lab
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run recall-core dataset
+        continue-on-error: true
+        run: |
+          cargo run -p basemyai-eval -- run \
+            eval/datasets/recall-core.jsonl \
+            --output eval/reports/recall-core.ci.json \
+            --human eval/reports/recall-core.ci.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recall-quality-lab-report
+          path: |
+            eval/reports/recall-core.ci.json
+            eval/reports/recall-core.ci.md
+          if-no-files-found: warn
 
   # ── Required checks gate ─────────────────────────────────────────────────────
   # Single job used as the branch-protection rule target.

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::schema::RetrievalMode;
 use crate::{EvalError, Result};
 
-pub const REPORT_VERSION: u32 = 1;
+pub(crate) const REPORT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EvalReport {

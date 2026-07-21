@@ -1,14 +1,20 @@
 # Recall Quality Lab
 
-Status: first autonomous R2 deliverable. The lab is deterministic, offline,
-model-free and network-free. It exercises the native ephemeral store,
-`recall`, `recall_hybrid`, graph-filtered recall and `compile_context`.
+Status: R2.x wiring complete (workspace/xtask/CI/CLI — see "Required
+integrations" below). The lab is deterministic, offline, model-free and
+network-free. It exercises the native ephemeral store, `recall`,
+`recall_hybrid`, graph-filtered recall and `compile_context`.
 
 ## Scope
 
-The implementation lives in `crates/basemyai-eval` as a standalone Cargo
-workspace. This keeps the first deliverable inside its exclusive write area and
-avoids changing the root workspace, xtask, existing CLI or CI.
+The implementation lives in `crates/basemyai-eval`, a regular member of the
+root Cargo workspace (outside `default-members`, like `xtask` — it activates
+`basemyai/test-util` and is never pulled in by a bare `cargo build`/`test`).
+`cargo xtask check`/`test`/`ci` cover it like any other crate. Its dataset
+run is also surfaced as a non-blocking CI artifact job
+(`.github/workflows/ci.yml` job `recall-quality-lab`), and as a thin
+subcommand of the product CLI (`basemyai eval run|compare`, feature
+`eval-lab`, off by default — see `docs/cli.md` §Recall Quality Lab).
 
 The core dataset covers:
 
@@ -53,16 +59,24 @@ and invalid bounds fail before any case executes.
 
 ## Commands
 
-From the repository root:
+From the repository root (the crate is a regular workspace member now — `-p`
+works like any other crate, no `--manifest-path` needed):
 
 ```powershell
-cargo test --manifest-path crates/basemyai-eval/Cargo.toml
-cargo clippy --manifest-path crates/basemyai-eval/Cargo.toml --all-targets -- -D warnings
+cargo test -p basemyai-eval
+cargo clippy -p basemyai-eval --all-targets -- -D warnings
 
-cargo run --manifest-path crates/basemyai-eval/Cargo.toml -- run `
+cargo run -p basemyai-eval -- run `
   eval/datasets/recall-core.jsonl `
   --output eval/reports/recall-core.json `
   --human eval/reports/recall-core.md
+
+# Equivalent shortcut, refreshes the canonical recall-core report/baseline:
+cargo xtask eval-run
+
+# Product CLI wrapper (feature eval-lab, off by default — see docs/cli.md):
+cargo build -p basemyai-cli --features eval-lab
+basemyai eval run eval/datasets/recall-core.jsonl --output report.json
 ```
 
 Default reports omit wall-clock measurements and are byte-stable when the
@@ -120,16 +134,26 @@ when filenames match.
 
 ## Required integrations
 
-The following raccords are deliberately not made in this scoped deliverable:
+Wiring status (R2.x):
 
-1. Add `crates/basemyai-eval` to the root workspace and shared dependency/lint
-   tables.
-2. Add `cargo xtask eval` entries for test, run and baseline comparison.
-3. Adapt `basemyai eval run|compare` in the existing CLI without duplicating
-   runner policy.
-4. Add a non-blocking CI artifact job first; make budget, provenance,
-   determinism and critical include/exclude assertions blocking only after a
-   reviewed baseline is committed.
+1. ✅ `crates/basemyai-eval` is a root workspace member (outside
+   `default-members`), sharing the root `[workspace.dependencies]` and
+   `[lints]` tables.
+2. ✅ `cargo xtask check`/`test`/`ci` run its clippy/tests; `cargo xtask
+   eval-run` refreshes the canonical dataset report/baseline.
+3. ✅ `basemyai eval run|compare` exists in the product CLI
+   (`crates/basemyai-cli`, feature `eval-lab`, off by default) — a thin
+   wrapper over the same `basemyai_eval::{run_dataset, compare_reports, ...}`
+   runner, no duplicated policy. `docs/cli.md` §Recall Quality Lab.
+4. ✅ A non-blocking CI artifact job (`recall-quality-lab` in
+   `.github/workflows/ci.yml`) runs the `recall-core` dataset and uploads the
+   report — **not** in `required-checks`. Budget, provenance, determinism and
+   critical include/exclude assertions remain non-blocking until a reviewed
+   baseline is committed and a follow-up change promotes this job to
+   required — that promotion is a deliberate product decision, not done here.
+
+Still deliberately out of scope (product-level evolutions, not wiring):
+
 5. Expose a controlled high-level ingestion path for consolidation/unknown
    provenance before any non-eval consumer needs to write those sources.
 6. Expose compilation from an explicit candidate set, or a graph-aware context

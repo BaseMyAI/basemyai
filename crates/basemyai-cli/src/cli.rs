@@ -274,10 +274,56 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: LlmAction,
     },
+    /// Recall Quality Lab (`basemyai-eval`) : exécute ou compare un dataset
+    /// déterministe hors ligne (recall + Context Engine, sans LLM ni réseau).
+    /// Nécessite la feature de build `eval-lab` (off par défaut dans les
+    /// binaires distribués — active `basemyai/test-util`).
+    #[cfg(feature = "eval-lab")]
+    Eval {
+        #[command(subcommand)]
+        action: EvalAction,
+    },
     /// Génère les complétions shell (à sourcer dans le profil du shell).
     Completions {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+}
+
+#[cfg(feature = "eval-lab")]
+#[derive(Subcommand)]
+pub(crate) enum EvalAction {
+    /// Exécute un dataset JSONL versionné contre recall et Context Engine.
+    Run {
+        /// Dataset JSONL (schéma documenté dans `docs/recall-quality-lab.md`).
+        dataset: PathBuf,
+        /// Rapport JSON agrégé + par cas.
+        #[arg(long)]
+        output: PathBuf,
+        /// Rapport Markdown lisible, en plus du JSON.
+        #[arg(long)]
+        human: Option<PathBuf>,
+        /// Enregistre la latence murale (`latency_micros`) ; absent, le
+        /// rapport reste byte-stable d'un run à l'autre.
+        #[arg(long)]
+        timings: bool,
+    },
+    /// Compare les métriques agrégées de deux rapports JSON (`eval run --output`).
+    Compare {
+        /// Rapport de référence.
+        baseline: PathBuf,
+        /// Rapport courant.
+        current: PathBuf,
+        /// Écrit la comparaison en JSON.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Écrit la comparaison en Markdown.
+        #[arg(long)]
+        human: Option<PathBuf>,
+        /// Sort en échec si une métrique de qualité régresse ou si le nombre
+        /// de cas échoués augmente.
+        #[arg(long)]
+        fail_on_regression: bool,
     },
 }
 

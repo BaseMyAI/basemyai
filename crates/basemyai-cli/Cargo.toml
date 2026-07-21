@@ -19,12 +19,18 @@ path = "src/main.rs"
 # (remember/recall) — les commandes purement structurelles
 # (forget/invalidate/purge/graph/list) ne le chargent pas. Le moteur natif
 # (ADR-032) est l'unique backend, plus un choix de feature.
-default = ["embed"]
-embed   = ["basemyai/embed"]
+default  = ["embed"]
+embed    = ["basemyai/embed"]
+# `basemyai eval run|compare` (Recall Quality Lab, R2.x). Off par défaut :
+# `basemyai-eval` active `basemyai/test-util` (HashEmbedder, store éphémère
+# de test), qu'on ne veut pas dans un binaire distribué par défaut
+# (cargo-dist). Build dev/CI explicite : `--features eval-lab`.
+eval-lab = ["dep:basemyai-eval"]
 
 [dependencies]
 basemyai      = { path = "../basemyai" }
 basemyai-core = { version = "0.2.0", path = "../basemyai-core" }
+basemyai-eval = { path = "../basemyai-eval", optional = true }
 
 clap          = { version = "4", features = ["derive"] }
 clap_complete = "4"

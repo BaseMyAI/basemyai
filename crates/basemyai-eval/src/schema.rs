@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{EvalError, Result};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub(crate) const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

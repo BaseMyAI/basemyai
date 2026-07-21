@@ -82,6 +82,25 @@ pub(crate) enum CliError {
     /// Échec IO (lecture d'un fichier `--file`, écriture d'un export `--out`).
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// `eval run|compare` : erreur dataset/rapport propagée depuis
+    /// `basemyai-eval` (JSON invalide, cas de dataset malformé, IO).
+    #[cfg(feature = "eval-lab")]
+    #[error(transparent)]
+    Eval(#[from] basemyai_eval::EvalError),
+
+    /// `eval run` : le rapport s'est produit correctement mais au moins un
+    /// cas a échoué une assertion bloquante (pas une erreur système).
+    #[cfg(feature = "eval-lab")]
+    #[error("one or more Recall Quality Lab cases failed their blocking assertions")]
+    EvalCasesFailed,
+
+    /// `eval compare --fail-on-regression` : la comparaison s'est produite
+    /// correctement mais une métrique a régressé ou le nombre de cas
+    /// échoués a augmenté.
+    #[cfg(feature = "eval-lab")]
+    #[error("Recall Quality Lab comparison detected a regression")]
+    EvalRegressionDetected,
 }
 
 impl CliError {
@@ -104,6 +123,12 @@ impl CliError {
             Self::Core(e) => core_error_code(e),
             Self::Config(_) => "CONFIG_ERROR",
             Self::Io(_) => "IO_ERROR",
+            #[cfg(feature = "eval-lab")]
+            Self::Eval(_) => "EVAL_ERROR",
+            #[cfg(feature = "eval-lab")]
+            Self::EvalCasesFailed => "EVAL_CASES_FAILED",
+            #[cfg(feature = "eval-lab")]
+            Self::EvalRegressionDetected => "EVAL_REGRESSION_DETECTED",
         }
     }
 
@@ -125,6 +150,12 @@ impl CliError {
             Self::Core(e) => core_error_exit(e),
             Self::Config(_) => exit::USAGE,
             Self::Io(_) => exit::GENERIC,
+            #[cfg(feature = "eval-lab")]
+            Self::Eval(_) => exit::EVAL_ERROR,
+            #[cfg(feature = "eval-lab")]
+            Self::EvalCasesFailed => exit::EVAL_FAILED,
+            #[cfg(feature = "eval-lab")]
+            Self::EvalRegressionDetected => exit::EVAL_FAILED,
         }
     }
 }

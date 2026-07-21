@@ -95,6 +95,7 @@ const CLIPPY: &[&[&str]] = &[
         "-D",
         "warnings",
     ],
+    &["clippy", "-p", "basemyai-eval", "--all-targets", "--", "-D", "warnings"],
 ];
 
 /// Matrice de tests du job `gate` (config légère : ni Candle ni tests `#[ignore]`).
@@ -250,6 +251,11 @@ const TEST: &[&[&str]] = &[
         "test-util",
     ],
     &["test", "-p", "basemyai-cli"],
+    // Recall Quality Lab (R2.x) : tests unitaires du runner/schéma/comparaison
+    // + `tests/cli.rs` (assert_cmd sur le binaire `basemyai-eval`). Crate
+    // membre du workspace mais hors `default-members` (active
+    // `basemyai/test-util`) — donc explicitement listé ici comme les autres.
+    &["test", "-p", "basemyai-eval"],
 ];
 
 /// Job `embed` (compile Candle — lourd ; les tests réels sont `#[ignore]`).
@@ -343,6 +349,8 @@ fn main() {
         "engine-bench" => engine_bench(&args.collect::<Vec<_>>()),
         "engine-soak" => engine_soak(&args.collect::<Vec<_>>()),
         "engine-fuzz" => engine_fuzz(),
+        // ── Recall Quality Lab (R2.x) ─────────────────────────────────────
+        "eval-run" => eval_run(&args.collect::<Vec<_>>()),
         "ci" => {
             fmt_check();
             doc_drift_check();
@@ -380,6 +388,7 @@ fn usage(code: i32) -> ! {
          \x20 engine-corrupt  tests adversariaux de corruption (corruption_smoke + malformed_open)\n\
          \x20 engine-soak   boucle du banc (défaut 10 cycles à n=100000) — manuel/nightly\n\
          \x20 engine-fuzz   cibles cargo-fuzz (WSL/Linux seulement — libFuzzer ≠ Windows natif)\n\
+         \x20 eval-run      Recall Quality Lab : rafraîchit eval/reports/recall-core.json/.md (basemyai-eval run)\n\
          \x20 ci           check + test (embed/crash-consistency restent des jobs séparés)\n\
          \x20 help         affiche cette aide\n\n\
          NB : `cargo clippy --workspace` ne reproduit PAS la CI (features par crate)."
@@ -549,6 +558,31 @@ fn engine_soak(extra: &[String]) {
         println!("── engine-soak cycle {cycle}/{cycles} (n={n}) ──");
         engine_bench(&["--n".to_string(), n.clone()]);
     }
+}
+
+/// `eval-run` (R2.x) : rafraîchit le rapport du Recall Quality Lab en local.
+/// Sans argument : dataset canonique `eval/datasets/recall-core.jsonl` →
+/// `eval/reports/recall-core.json` (+ `.md`). Avec des arguments, ils
+/// remplacent entièrement la ligne de commande passée à `basemyai-eval run`
+/// (dataset, `--output`, `--human`, `--timings`…) — pas de fusion implicite.
+fn eval_run(extra: &[String]) {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "-p".into(),
+        "basemyai-eval".into(),
+        "--".into(),
+        "run".into(),
+    ];
+    if extra.is_empty() {
+        args.push("eval/datasets/recall-core.jsonl".into());
+        args.push("--output".into());
+        args.push("eval/reports/recall-core.json".into());
+        args.push("--human".into());
+        args.push("eval/reports/recall-core.md".into());
+    } else {
+        args.extend(extra.iter().cloned());
+    }
+    run(&args.iter().map(String::as_str).collect::<Vec<_>>());
 }
 
 /// `engine-fuzz` (N7.3) : pointeur d'exécution des cibles cargo-fuzz.

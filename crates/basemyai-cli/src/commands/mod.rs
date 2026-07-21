@@ -7,6 +7,8 @@ mod compile_context;
 mod config;
 mod config_key;
 mod container;
+#[cfg(feature = "eval-lab")]
+mod eval;
 mod graph;
 mod maintenance;
 mod memory;
@@ -14,6 +16,8 @@ mod provision;
 
 use std::path::PathBuf;
 
+#[cfg(feature = "eval-lab")]
+use crate::cli::EvalAction;
 use crate::cli::{Cli, Command, GraphAction, LlmAction};
 use crate::context::{context_profile, context_render_format, context_source_policy, open_memory};
 use crate::error::CliError;
@@ -216,6 +220,22 @@ pub(crate) async fn dispatch(cli: Cli, format: Format) -> Result<(), CliError> {
         Command::Llm { action } => match action {
             LlmAction::Detect => provision::llm_detect(format).await,
             LlmAction::Suggest => provision::llm_suggest(format).await,
+        },
+        #[cfg(feature = "eval-lab")]
+        Command::Eval { action } => match action {
+            EvalAction::Run {
+                dataset,
+                output,
+                human,
+                timings,
+            } => eval::run(&dataset, &output, human, timings, format).await,
+            EvalAction::Compare {
+                baseline,
+                current,
+                output,
+                human,
+                fail_on_regression,
+            } => eval::compare(&baseline, &current, output, human, fail_on_regression, format).await,
         },
         Command::Completions { shell } => {
             completions(shell);
