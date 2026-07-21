@@ -7,12 +7,14 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::crypto::{self, CryptoContext};
 use crate::error::{EngineError, Result};
 use crate::fail_point;
 use crate::format::generation_meta;
+use crate::format::sst_manifest;
 use crate::format::store_meta::{self, StoreMeta};
 use crate::format::wal::{BatchOp, WalOp};
 use crate::key::Key;
@@ -21,6 +23,7 @@ use crate::store::block_cache::BlockCache;
 use crate::store::memtable::Memtable;
 use crate::store::sst_block::{self, BlockSstFile};
 use crate::store::stats::{Counters, EngineStats};
+use crate::store::version::{Snapshot, SstHandle, Version, VersionEdit};
 use crate::store::wal::Wal;
 
 /// Default `EngineOptions::block_size` — the winning value from the N8.1
@@ -165,8 +168,11 @@ pub struct Engine {
     store_id: uuid::Uuid,
     wal: Wal,
     memtable: Memtable,
-    /// Ordered oldest to newest.
-    ssts: Vec<BlockSstFile>,
+    /// The published, immutable set of live SSTs (ADR-043 §2 amended, J3).
+    /// Replaced wholesale by [`Self::apply_version_edit`] — never mutated
+    /// in place (INV-VS-1/2). [`Self::snapshot`] pins it by cloning the
+    /// `Arc`.
+    current: Arc<Version>,
     next_sst_id: u64,
     options: EngineOptions,
     /// `Some` = encrypted at rest (ADR-030): WAL records and SST files are
@@ -176,6 +182,20 @@ pub struct Engine {
     /// Monotonic activity counters since open (N7.1) — the gauge half of
     /// [`EngineStats`] is derived from live state in [`Engine::stats`].
     counters: Counters,
+    /// Bytes of orphaned `*.tmp` files found in `dir` at open time (R0,
+    /// [`EngineStats::orphan_bytes`]) — a one-time snapshot, never
+    /// refreshed for the life of this `Engine`.
+    orphan_bytes_at_open: u64,
+    /// Deferred SST removals that still failed after retries (ENG-DUR-002)
+    /// — an `Arc<AtomicU64>` shared with every [`SstHandle`], because the
+    /// failing attempt now runs at handle drop (possibly when a snapshot
+    /// releases, outside any `&mut Engine` context), no longer inline in
+    /// `compact()`. See [`EngineStats::compaction_remove_failures`].
+    sst_remove_failures: Arc<AtomicU64>,
+    /// Live [`Snapshot`]s not yet dropped (ENG-RES-003 / ADR-043 J3 exit
+    /// criterion) — incremented by [`Self::snapshot`], decremented by
+    /// `Snapshot::drop`. See [`EngineStats::active_snapshots`].
+    active_snapshots: Arc<AtomicU64>,
     /// Counter: point lookups that read more than one on-disk data block
     /// within a single SST (ADR-039 §4/§5.5). `AtomicU64`, not a plain
     /// field in [`Counters`], because [`Engine::get`] is `&self` (Engine's
@@ -349,8 +369,17 @@ impl Engine {
             (false, None) => None,
         };
 
-        let ssts = sst_block::scan_existing(&dir, crypto.as_ref())?;
-        let next_sst_id = ssts.iter().map(|s| s.id + 1).max().unwrap_or(0);
+        let scanned = sst_block::scan_existing(&dir, crypto.as_ref())?;
+        // `next_sst_id` derives from the *unfiltered* scan — including any
+        // id `confront_manifest_with_disk` is about to drop as an orphan —
+        // so a fresh SST never reuses an id an orphan file still occupies
+        // on disk (ENG-DUR-002).
+        let next_sst_id = scanned.iter().map(|s| s.id + 1).max().unwrap_or(0);
+        let (ssts, manifest_generation) = confront_manifest_with_disk(&dir, scanned)?;
+        // Observation only (R0): counts pre-existing `*.tmp` orphans without
+        // touching or removing them — `scan_existing`/`sst_files_present`
+        // above already ignored them exactly as before this counter existed.
+        let orphan_bytes_at_open = scan_orphan_tmp_bytes(&dir)?;
 
         // Everything loaded at open was read from disk: the O(metadata)
         // bytes each SST's lazy `load` actually reads (N8.4 — never the
@@ -359,6 +388,15 @@ impl Engine {
             bytes_read: ssts.iter().map(|s| s.bytes_read_at_open).sum(),
             ..Counters::default()
         };
+
+        let sst_remove_failures = Arc::new(AtomicU64::new(0));
+        let current = Arc::new(Version {
+            manifest_generation,
+            ssts: ssts
+                .into_iter()
+                .map(|file| SstHandle::new(file, Arc::clone(&sst_remove_failures)))
+                .collect(),
+        });
 
         let wal_path = dir.join("wal.log");
         let mut wal = Wal::open_for_append(wal_path, crypto.clone())?;
@@ -390,11 +428,14 @@ impl Engine {
             store_id,
             wal,
             memtable,
-            ssts,
+            current,
             next_sst_id,
             options,
             crypto,
             counters,
+            orphan_bytes_at_open,
+            sst_remove_failures,
+            active_snapshots: Arc::new(AtomicU64::new(0)),
             point_lookup_full_sst_read: AtomicU64::new(0),
             block_cache,
         })
@@ -421,9 +462,9 @@ impl Engine {
             wal_bytes: self.wal.size_on_disk()?,
             wal_records: self.counters.wal_records,
             memtable_bytes,
-            sst_count: self.ssts.len(),
-            sst_bytes: self.ssts.iter().map(|s| s.file_bytes).sum(),
-            tombstone_count: memtable_tombstones + self.ssts.iter().map(|s| s.tombstones).sum::<u64>(),
+            sst_count: self.current.ssts.len(),
+            sst_bytes: self.current.ssts.iter().map(|h| h.file.file_bytes).sum(),
+            tombstone_count: memtable_tombstones + self.current.ssts.iter().map(|h| h.file.tombstones).sum::<u64>(),
             flush_count: self.counters.flush_count,
             compaction_count: self.counters.compaction_count,
             compaction_input_bytes: self.counters.compaction_input_bytes,
@@ -433,6 +474,11 @@ impl Engine {
             block_cache_hits: self.block_cache.hits(),
             block_cache_misses: self.block_cache.misses(),
             point_lookup_full_sst_read: self.point_lookup_full_sst_read.load(Ordering::Relaxed),
+            fsync_count: self.counters.fsync_count + self.wal.fsync_count(),
+            orphan_bytes: self.orphan_bytes_at_open,
+            compaction_remove_failures: self.sst_remove_failures.load(Ordering::Relaxed),
+            manifest_generation: self.current.manifest_generation,
+            active_snapshots: self.active_snapshots.load(Ordering::Relaxed),
         })
     }
 
@@ -568,8 +614,8 @@ impl Engine {
             // This directly folds the unflushed tail into the output, so no
             // intermediate old-DEK SST and no WAL re-sealing pass is needed.
             let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
-            for sst in &self.ssts {
-                for (key, value) in sst.entries()? {
+            for h in &self.current.ssts {
+                for (key, value) in h.file.entries()? {
                     merged.insert(key, value);
                 }
             }
@@ -584,6 +630,13 @@ impl Engine {
                 fail_point!("after_full_rotation_sst_write");
                 Some(sst)
             };
+
+            // ENG-DUR-001: `next_dir` gets its own manifest, listing its
+            // (at most one) merged SST — part of the same all-or-nothing
+            // build as the rest of this closure. If anything below fails,
+            // the existing `remove_dir_all(&next_dir)` error path (below)
+            // discards this manifest along with everything else half-built.
+            publish_sst_manifest(&next_dir, 0, &new_sst.iter().map(|s| s.id).collect::<Vec<_>>())?;
 
             // The new generation is published only after even its empty WAL
             // exists durably. Keep this handle ready for the live-state swap.
@@ -618,16 +671,36 @@ impl Engine {
         let old_dir = std::mem::replace(&mut self.dir, next_dir);
         self.generation_id = next_generation;
         let old_wal = std::mem::replace(&mut self.wal, new_wal);
+        // The retired `Wal` never counts its fsyncs anywhere else — fold
+        // them into `Counters` now, or they vanish once `self.wal` (fresh,
+        // starting from zero) replaces it as the source `Engine::stats`
+        // reads from.
+        self.counters.fsync_count += old_wal.fsync_count();
         drop(old_wal); // mandatory before remove_dir_all on Windows
-        let old_ssts = std::mem::replace(&mut self.ssts, new_sst.into_iter().collect());
-        let input_bytes = old_ssts.iter().map(|sst| sst.file_bytes).sum::<u64>();
-        let output_bytes = self.ssts.iter().map(|sst| sst.file_bytes).sum::<u64>();
-        for old in &old_ssts {
-            self.block_cache.invalidate_sst(old.id);
+        // `next_dir`'s manifest was already published inside `build` above
+        // (generation 0, listing this same 0-or-1 merged SST) — the new
+        // `Version` mirrors it so `Engine::stats`/future flushes agree with
+        // what's on disk. The old generation's handles are deliberately
+        // *not* retired: their whole directory is GC'd wholesale below
+        // (`gc_old_generation`), never file by file — a `Snapshot` taken
+        // before a full rotation does not survive it (typed I/O error on
+        // its next read, per ADR-043 §2 amended).
+        let new_version = Arc::new(Version {
+            manifest_generation: 0,
+            ssts: new_sst
+                .into_iter()
+                .map(|file| SstHandle::new(file, Arc::clone(&self.sst_remove_failures)))
+                .collect(),
+        });
+        let old_version = std::mem::replace(&mut self.current, new_version);
+        let input_bytes = old_version.ssts.iter().map(|h| h.file.file_bytes).sum::<u64>();
+        let output_bytes = self.current.ssts.iter().map(|h| h.file.file_bytes).sum::<u64>();
+        for old in &old_version.ssts {
+            self.block_cache.invalidate_sst(old.file.id);
         }
-        drop(old_ssts);
+        drop(old_version);
         self.memtable.clear();
-        self.next_sst_id = u64::from(!self.ssts.is_empty());
+        self.next_sst_id = u64::from(!self.current.ssts.is_empty());
         self.crypto = Some(new_crypto);
         self.counters.compaction_count += 1;
         self.counters.compaction_input_bytes += input_bytes;
@@ -705,8 +778,8 @@ impl Engine {
         if let Some(hit) = self.memtable.get(&key) {
             return Ok(hit.cloned());
         }
-        for s in self.ssts.iter().rev() {
-            let (hit, blocks_read) = s.get(&key, &self.block_cache)?;
+        for h in self.current.ssts.iter().rev() {
+            let (hit, blocks_read) = h.file.get(&key, &self.block_cache)?;
             if blocks_read > 1 {
                 self.point_lookup_full_sst_read.fetch_add(1, Ordering::Relaxed);
             }
@@ -734,8 +807,8 @@ impl Engine {
     /// ([`BlockSstFile::entries_with_prefix`]) — never a full-file decode.
     pub fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Key, Value)>> {
         let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
-        for s in &self.ssts {
-            let (matches, _blocks_read) = s.entries_with_prefix(prefix)?;
+        for h in &self.current.ssts {
+            let (matches, _blocks_read) = h.file.entries_with_prefix(prefix)?;
             for (k, v) in matches {
                 merged.insert(k, v);
             }
@@ -763,8 +836,8 @@ impl Engine {
             return Ok(Vec::new());
         }
         let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
-        for s in &self.ssts {
-            let (matches, _blocks_read) = s.entries_with_range(start, end)?;
+        for h in &self.current.ssts {
+            let (matches, _blocks_read) = h.file.entries_with_range(start, end)?;
             for (k, v) in matches {
                 merged.insert(k, v);
             }
@@ -818,8 +891,8 @@ impl Engine {
             (Some(c), None) => Some(c),
             (None, f) => f,
         };
-        for s in &self.ssts {
-            let (matches, truncated, _blocks_read) = s.entries_with_range_limited(start, end, limit)?;
+        for h in &self.current.ssts {
+            let (matches, truncated, _blocks_read) = h.file.entries_with_range_limited(start, end, limit)?;
             if truncated {
                 let last = matches.last().map(|(k, _)| k.as_bytes().to_vec());
                 frontier = clip(last, frontier);
@@ -881,18 +954,39 @@ impl Engine {
 
         let id = self.next_sst_id;
         let new_sst = BlockSstFile::write_new(&self.dir, id, entries, self.options.block_size, self.crypto.as_ref())?;
+        // Claim the id as soon as the file exists on disk — same placement
+        // as `compact()`. Incrementing only after `wal.reset()` (the old
+        // ordering) would let a caller that keeps using this instance after
+        // a reset error re-`write_new` the same id, overwriting a file the
+        // published version already reads.
+        self.next_sst_id += 1;
         self.counters.flush_count += 1;
         self.counters.bytes_written += new_sst.file_bytes;
-        // The new SST is fsynced and durably renamed at this point — only
-        // now is it safe to truncate the WAL (ADR-025 ordering rule).
+        self.counters.fsync_count += 1; // write_new's one sync_all of the new SST
+
+        // ENG-DUR-001: publish the manifest listing this new SST *before*
+        // truncating the WAL — SST → manifest → WAL truncate, in that exact
+        // order (the roadmap's own ordering rule for J2). If a crash lands
+        // before the manifest is durable, the WAL still holds the untouched
+        // tail to replay from, and `confront_manifest_with_disk` correctly
+        // treats the new SST as not-yet-live (dropped as an orphan) on
+        // reopen — never a case where truncated data depended on a
+        // manifest entry that was never published. A flush is the edit
+        // `{ added: [S_new], deleted: [] }` (ADR-043 §2 amended).
+        self.apply_version_edit(VersionEdit {
+            added: vec![SstHandle::new(new_sst, Arc::clone(&self.sst_remove_failures))],
+            deleted: Vec::new(),
+        })?;
+
+        // The new SST *and* its manifest entry are fsynced and durably
+        // renamed at this point — only now is it safe to truncate the WAL
+        // (ADR-025 ordering rule).
         fail_point!("before_wal_truncate");
         self.wal.reset()?;
 
-        self.next_sst_id += 1;
-        self.ssts.push(new_sst);
         self.memtable.clear();
 
-        if self.ssts.len() > self.options.compaction_sst_threshold {
+        if self.current.ssts.len() > self.options.compaction_sst_threshold {
             self.compact()?;
         }
         Ok(())
@@ -910,10 +1004,29 @@ impl Engine {
     /// nothing to flush.
     pub fn compact_now(&mut self) -> Result<()> {
         self.flush()?;
-        if self.ssts.is_empty() {
+        if self.current.ssts.is_empty() {
             return Ok(());
         }
         self.compact()
+    }
+
+    /// Pins the current version as a stable read view — an **S1 snapshot**
+    /// (ADR-043 §2 amended, audit §6): it freezes the *files*, not the
+    /// *view*. The memtable is not captured — an unflushed write present at
+    /// snapshot time is invisible through the snapshot, and writes/flushes/
+    /// compactions after it stay visible through this `Engine` only. What
+    /// it guarantees: every SST of the pinned version remains on disk and
+    /// readable for the snapshot's whole lifetime, however many compactions
+    /// supersede it (deferred physical removal, INV-VS-6). Cost: one `Arc`
+    /// clone — no lock held beyond this call, no data copied.
+    ///
+    /// A snapshot does not usefully survive [`Self::rotate_key_full`] (the
+    /// old generation directory is GC'd wholesale; later reads fail with a
+    /// typed I/O error) nor a drop-and-reopen of the `Engine` (the reopen
+    /// sweeps the pinned files as manifest orphans).
+    #[must_use]
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot::new(Arc::clone(&self.current), Arc::clone(&self.active_snapshots))
     }
 
     /// Naive full-merge compaction: folds every existing SST (oldest to
@@ -923,10 +1036,17 @@ impl Engine {
     /// first; a tiered/leveled strategy is deferred (ADR-025).
     fn compact(&mut self) -> Result<()> {
         fail_point!("during_compaction");
-        let input_bytes: u64 = self.ssts.iter().map(|s| s.file_bytes).sum();
+        // The merge's input set. Under J3 flush/compaction still run under
+        // `&mut self`, so this is trivially the version the edit below
+        // commits against; under J4 the merge runs off-lock from this pinned
+        // snapshot while `self.current` may advance (a concurrent flush) —
+        // the edit's `deleted` names exactly these inputs, so anything
+        // published in between survives (INV-VS-5, ENG-COR-001).
+        let input = Arc::clone(&self.current);
+        let input_bytes: u64 = input.ssts.iter().map(|h| h.file.file_bytes).sum();
         let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
-        for s in &self.ssts {
-            for (k, v) in s.entries()? {
+        for h in &input.ssts {
+            for (k, v) in h.file.entries()? {
                 merged.insert(k, v);
             }
         }
@@ -939,23 +1059,81 @@ impl Engine {
         self.counters.compaction_input_bytes += input_bytes;
         self.counters.compaction_output_bytes += new_sst.file_bytes;
         self.counters.bytes_written += new_sst.file_bytes;
+        self.counters.fsync_count += 1; // write_new's one sync_all of the merged output SST
 
-        let old_ssts = std::mem::replace(&mut self.ssts, vec![new_sst]);
-        for old in old_ssts {
-            // Best-effort cleanup: the merged SST above is already fsynced
-            // and durably renamed, so failing to remove an old (now
-            // redundant) file is a space leak, not a correctness issue —
-            // `get` always finds the newest SST first, and there is now
-            // exactly one.
-            let _ = fs::remove_file(&old.path);
-            // A stale block from a deleted SST must never survive in the
-            // cache: its `sst_id` could be reused by a future SST (or, if
-            // not, would just be dead weight) — either way, drop it now.
-            self.block_cache.invalidate_sst(old.id);
-        }
+        // ENG-DUR-001/ENG-DUR-002: the edit publishes the manifest *before*
+        // any old file can be removed — from that point a leftover old SST
+        // is an orphan per the manifest, never resurrectable as live on a
+        // future reopen. Physical removal itself is deferred to each
+        // handle's last-`Arc` drop (INV-VS-6): with no snapshot alive that
+        // happens synchronously inside this call (the old version's only
+        // reference is `self.current`, replaced by the edit), preserving
+        // the historical inline-removal timing; with a snapshot alive the
+        // files persist, still readable, until the snapshot drops.
+        let deleted: Vec<u64> = input.ssts.iter().map(|h| h.file.id).collect();
+        drop(input);
+        self.apply_version_edit(VersionEdit {
+            added: vec![SstHandle::new(new_sst, Arc::clone(&self.sst_remove_failures))],
+            deleted,
+        })?;
         Ok(())
     }
 
+    /// Publishes `edit` (ADR-043 §2 amended, J3): validates that every
+    /// `deleted` id is present in the current version (INV-VS-4), computes
+    /// `V_next = (V_current ∖ deleted) ∪ added`, publishes `manifest.meta`
+    /// listing exactly `V_next` (INV-VS-7), then atomically replaces
+    /// `self.current` (INV-VS-2) after retiring the deleted handles for
+    /// deferred physical removal (INV-VS-6). On error nothing is published
+    /// and `self.current` is unchanged.
+    ///
+    /// Under J3's exclusive `&mut self` the current version cannot move
+    /// between the caller reading it and this commit; the validation exists
+    /// so J4's out-of-lock compaction fails typed instead of publishing a
+    /// manifest that silently drops a concurrently-flushed SST
+    /// (ENG-COR-001).
+    fn apply_version_edit(&mut self, edit: VersionEdit) -> Result<()> {
+        let current_ids: std::collections::HashSet<u64> = self.current.ssts.iter().map(|h| h.file.id).collect();
+        for id in &edit.deleted {
+            if !current_ids.contains(id) {
+                return Err(EngineError::VersionEditMissingInput { id: *id });
+            }
+        }
+        let deleted: std::collections::HashSet<u64> = edit.deleted.iter().copied().collect();
+        let mut next_ssts: Vec<_> = self
+            .current
+            .ssts
+            .iter()
+            .filter(|h| !deleted.contains(&h.file.id))
+            .map(Arc::clone)
+            .collect();
+        next_ssts.extend(edit.added);
+        let next = Version {
+            manifest_generation: self.current.manifest_generation + 1,
+            ssts: next_ssts,
+        };
+        publish_sst_manifest(&self.dir, next.manifest_generation, &next.ids())?;
+        self.counters.fsync_count += 1; // publish_sst_manifest's one sync_all
+
+        // The manifest no longer lists the deleted ids: retire their
+        // handles (their files are removed at last-`Arc` drop) and evict
+        // their cached blocks now — the cache belongs to the live view, and
+        // a snapshot re-reading a retired SST uses its own private cache.
+        for h in &self.current.ssts {
+            if deleted.contains(&h.file.id) {
+                self.block_cache.invalidate_sst(h.file.id);
+                h.retire();
+            }
+        }
+        // Single visibility point (INV-VS-2). Dropping the old version's
+        // `Arc` here is what triggers the synchronous removal in the
+        // no-snapshot case.
+        self.current = Arc::new(next);
+        Ok(())
+    }
+}
+
+impl Engine {
     /// Flushes any pending memtable data and releases the store. Skipping
     /// `close` is safe too — durability is already established per-`put`/
     /// `delete` via WAL fsync — it just avoids leaving unflushed data to be
@@ -992,6 +1170,33 @@ fn sst_files_present(dir: &Path) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// Sums the on-disk size of every `*.tmp` file directly inside `dir` — the
+/// [`EngineStats::orphan_bytes`] observation (R0): `*.sst.tmp`,
+/// `crypto.meta.tmp`, `generation.meta.tmp`, `store.meta.tmp` left behind by
+/// a crash mid atomic-replace. Purely observational: does not remove or
+/// otherwise touch any file, and does not change which artifacts
+/// `scan_existing`/`sst_files_present` treat as live (they already skip
+/// `.tmp` files by extension, unaffected by this function).
+fn scan_orphan_tmp_bytes(dir: &Path) -> Result<u64> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let mut total = 0u64;
+    for entry in fs::read_dir(dir).map_err(|e| EngineError::io(dir.to_path_buf(), e))? {
+        let entry = entry.map_err(|e| EngineError::io(dir.to_path_buf(), e))?;
+        let path = entry.path();
+        let is_tmp = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".tmp"));
+        if is_tmp {
+            let metadata = entry.metadata().map_err(|e| EngineError::io(path.clone(), e))?;
+            total += metadata.len();
+        }
+    }
+    Ok(total)
 }
 
 /// Store-generation gate (N8.9, ADR-039 §7) — the very first thing
@@ -1065,7 +1270,96 @@ fn publish_generation(root_dir: &Path, generation_id: u64) -> Result<()> {
         file.sync_all().map_err(|e| EngineError::io(tmp_path.clone(), e))?;
     }
     fs::rename(&tmp_path, &final_path).map_err(|e| EngineError::io(final_path, e))?;
+    // ENG-DUR-003/004: the generation pointer's rename must be durable
+    // before any caller (`rotate_key_full`) acts on the strength of it —
+    // notably the old-generation GC that follows immediately after.
+    crate::fs_util::sync_dir(root_dir)?;
     Ok(())
+}
+
+/// Publishes `dir`'s durable SST manifest (ENG-DUR-001): tmp+fsync+rename,
+/// then [`crate::fs_util::sync_dir`] (ENG-DUR-003) so the rename itself
+/// survives a crash before any caller acts on the strength of it. Called
+/// after `live_sst_ids`' SSTs are themselves already fsynced and durably
+/// renamed — the manifest is the last thing published in a flush/compaction,
+/// never the first (same ordering discipline as WAL-after-SST, ADR-025).
+fn publish_sst_manifest(dir: &Path, manifest_generation: u64, live_sst_ids: &[u64]) -> Result<()> {
+    let final_path = dir.join(sst_manifest::SST_MANIFEST_FILENAME);
+    let tmp_path = final_path.with_extension("meta.tmp");
+    let bytes = sst_manifest::encode(&sst_manifest::SstManifest {
+        manifest_generation,
+        live_sst_ids: live_sst_ids.to_vec(),
+    });
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .map_err(|e| EngineError::io(tmp_path.clone(), e))?;
+        file.write_all(&bytes)
+            .map_err(|e| EngineError::io(tmp_path.clone(), e))?;
+        file.sync_all().map_err(|e| EngineError::io(tmp_path.clone(), e))?;
+    }
+    fail_point!("before_sst_manifest_publish");
+    fs::rename(&tmp_path, &final_path).map_err(|e| EngineError::io(final_path, e))?;
+    crate::fs_util::sync_dir(dir)?;
+    Ok(())
+}
+
+/// Confronts `scan_existing`'s result against `dir`'s durable manifest
+/// (ENG-DUR-001, `docs/audits/2026-07-engine-architecture-safety-audit.md`).
+/// Returns the live subset of `found` (orphans dropped) and the manifest's
+/// current publication counter.
+///
+/// - **Manifest absent**: bootstrap — publish one now listing exactly
+///   `found`'s ids (generation 0), keep everything `found` contains. Under
+///   `STORE_FORMAT_VERSION` 3, `check_or_create_store_meta` already rejects
+///   any store built before this milestone, so the only way to reach this
+///   branch is a genuinely fresh store, or a crash between a flush/
+///   compaction's SST publish and the manifest publish meant to record it
+///   — both are safe to treat as "adopt what's on disk as the live set
+///   right now" (a deliberate simplification over the ADR-043 §1 draft's
+///   additive-migration proposal, enabled by the version bump — see the
+///   design note in that ADR).
+/// - **Manifest present**: an id it lists but `found` doesn't contain is
+///   [`EngineError::MissingLiveSst`] — a live SST silently missing from
+///   disk, closing the N11.3 gap
+///   (`corruption_smoke.rs::deleted_sst_is_detected_once_catalog_lands`).
+///   An id `found` contains but the manifest doesn't list is an orphan:
+///   dropped from the returned set and removed best-effort — a failed
+///   removal here is inert, not a resurrection risk, because the manifest
+///   (not the directory listing) decides liveness from here on.
+fn confront_manifest_with_disk(dir: &Path, found: Vec<BlockSstFile>) -> Result<(Vec<BlockSstFile>, u64)> {
+    let manifest_path = dir.join(sst_manifest::SST_MANIFEST_FILENAME);
+    if !manifest_path.exists() {
+        let live_sst_ids: Vec<u64> = found.iter().map(|s| s.id).collect();
+        publish_sst_manifest(dir, 0, &live_sst_ids)?;
+        return Ok((found, 0));
+    }
+    let bytes = fs::read(&manifest_path).map_err(|e| EngineError::io(manifest_path.clone(), e))?;
+    let manifest = sst_manifest::decode(&bytes, &manifest_path)?;
+
+    let found_ids: std::collections::HashSet<u64> = found.iter().map(|s| s.id).collect();
+    for id in &manifest.live_sst_ids {
+        if !found_ids.contains(id) {
+            return Err(EngineError::MissingLiveSst {
+                id: *id,
+                path: sst_block::sst_path(dir, *id),
+            });
+        }
+    }
+
+    let live: std::collections::HashSet<u64> = manifest.live_sst_ids.iter().copied().collect();
+    let mut kept = Vec::with_capacity(found.len());
+    for sst in found {
+        if live.contains(&sst.id) {
+            kept.push(sst);
+        } else {
+            let _ = fs::remove_file(&sst.path);
+        }
+    }
+    Ok((kept, manifest.manifest_generation))
 }
 
 fn gc_old_generation(root_dir: &Path, old_dir: &Path, current_generation: u64) {
@@ -1133,6 +1427,48 @@ fn gc_inactive_generations(root_dir: &Path, current_generation: u64) {
     }
 }
 
+/// True if `root_dir` contains at least one `gen-<id>` directory. Used only
+/// by [`resolve_active_generation`] to tell a genuinely fresh/legacy store
+/// (no pointer, no generation directories) apart from a store whose
+/// generation pointer was lost while real data still lives under `gen-N`
+/// (ENG-DUR-004, `docs/audits/2026-07-engine-architecture-safety-audit.md`).
+fn any_generation_dir_present(root_dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(root_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("gen-"))
+            .is_some_and(|id| id.parse::<u64>().is_ok())
+    })
+}
+
+/// True if `root_dir` itself still holds its own generation-0 artifacts
+/// (`wal.log`, `crypto.meta`, or any `*.sst`). Distinguishes the two ways a
+/// `gen-N` directory can sit next to a missing pointer:
+///
+/// - A **full rotation aborted before `publish_generation`** (e.g. killed at
+///   `after_full_rotation_new_dek`) leaves a half-built `gen-N` next to a
+///   root that is still fully intact — generation 0 never stopped being
+///   live, and `gc_inactive_generations` sweeping the incomplete `gen-N`
+///   away at the end of a normal open is the correct, already-tested
+///   recovery (`full_rotation_abort_boundaries_keep_the_published_generation_healthy`).
+/// - A **lost pointer rename after a completed rotation** (ENG-DUR-004's
+///   actual danger) leaves root *empty* — `gc_old_generation` already swept
+///   `wal.log`/`crypto.meta`/`*.sst` out of it, durably, as part of the very
+///   rotation whose pointer publication didn't survive. Only this case is
+///   the impossible, refuse-typed state.
+fn root_generation_zero_artifacts_present(root_dir: &Path) -> Result<bool> {
+    Ok(
+        root_dir.join("wal.log").exists()
+            || crypto::crypto_meta_path(root_dir).exists()
+            || sst_files_present(root_dir)?,
+    )
+}
+
 /// Resolves the only data directory an opener may inspect. Before a full
 /// rotation there is no pointer and the root is the legacy logical generation
 /// zero. Once a pointer exists, arbitrary root artifacts and sibling
@@ -1140,6 +1476,26 @@ fn gc_inactive_generations(root_dir: &Path, current_generation: u64) {
 fn resolve_active_generation(root_dir: &Path) -> Result<(PathBuf, u64)> {
     let pointer_path = root_dir.join(generation_meta::GENERATION_META_FILENAME);
     if !pointer_path.exists() {
+        // ENG-DUR-004: a missing pointer next to a live `gen-N` *and* a root
+        // with no generation-0 artifacts of its own is an impossible state
+        // outside a crash mid-rotation *after* the old generation was
+        // already swept — treating it as "generation 0" would make the
+        // unconditional post-open GC (`gc_inactive_generations`) delete the
+        // only real generation, destroying the store it was meant to
+        // protect. Refuse instead of "repairing". A `gen-N` next to a root
+        // that *still* has its own artifacts is the ordinary "rotation
+        // aborted before publish" case — root is still genuinely live, and
+        // ignoring the half-built `gen-N` (swept up by the routine
+        // post-open GC below) is correct, not a state to refuse.
+        if any_generation_dir_present(root_dir) && !root_generation_zero_artifacts_present(root_dir)? {
+            return Err(EngineError::CorruptGenerationMeta {
+                path: pointer_path,
+                reason: "generation pointer missing, a gen-N directory exists, and the root has no \
+                         generation-0 artifacts of its own — refusing to treat this store as a \
+                         fresh generation 0"
+                    .to_string(),
+            });
+        }
         return Ok((root_dir.to_path_buf(), 0));
     }
     let bytes = fs::read(&pointer_path).map_err(|e| EngineError::io(pointer_path.clone(), e))?;
@@ -1227,6 +1583,11 @@ fn write_store_meta(meta_path: &Path, meta: &StoreMeta) -> Result<()> {
     }
     fail_point!("before_manifest_publish");
     fs::rename(&tmp_path, meta_path).map_err(|e| EngineError::io(meta_path, e))?;
+    // ENG-DUR-003: see `crate::fs_util`. `store.meta` has no meaningful
+    // parent besides the store root itself.
+    if let Some(dir) = meta_path.parent() {
+        crate::fs_util::sync_dir(dir)?;
+    }
     Ok(())
 }
 
@@ -1733,6 +2094,48 @@ mod tests {
         let stats = engine.stats().expect("stats");
         assert_eq!(stats.sst_count, 0);
         assert_eq!(stats.compaction_count, 0, "nothing to compact, nothing counted");
+    }
+
+    /// INV-VS-4 (ADR-043 §2 amendé) : un `VersionEdit` dont un id de
+    /// `deleted` n'est pas dans le `Version` courant est refusé typé, sans
+    /// rien publier — ni manifest, ni bascule de `current`. Inatteignable
+    /// via l'API publique tant que flush/compaction tiennent `&mut self`
+    /// (J3) ; forgé ici directement, c'est le garde-fou que J4 (compaction
+    /// hors verrou) viendra exercer pour de vrai.
+    #[test]
+    fn forged_version_edit_with_unknown_deleted_id_is_refused_and_publishes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut engine = Engine::open(dir.path()).expect("open");
+        engine.put(b"a", b"1").expect("put");
+        engine.flush().expect("flush -> SST 0");
+
+        let manifest_path = dir.path().join(sst_manifest::SST_MANIFEST_FILENAME);
+        let manifest_before = fs::read(&manifest_path).expect("read manifest before");
+        let ids_before = engine.current.ids();
+        let generation_before = engine.current.manifest_generation;
+
+        let err = engine
+            .apply_version_edit(VersionEdit {
+                added: Vec::new(),
+                deleted: vec![999],
+            })
+            .expect_err("an edit deleting an id absent from the current version must be refused");
+        assert!(matches!(err, EngineError::VersionEditMissingInput { id: 999 }));
+
+        // Rien n'a été publié : manifest bit-à-bit identique, `current`
+        // inchangé (génération et ids), moteur toujours pleinement utilisable.
+        assert_eq!(
+            fs::read(&manifest_path).expect("read manifest after"),
+            manifest_before,
+            "a refused edit must not publish any manifest"
+        );
+        assert_eq!(engine.current.manifest_generation, generation_before);
+        assert_eq!(engine.current.ids(), ids_before);
+        assert_eq!(engine.get(b"a").expect("get").as_deref(), Some(&b"1"[..]));
+        engine
+            .put(b"b", b"2")
+            .expect("the engine stays fully usable after a refused edit");
+        assert_eq!(engine.get(b"b").expect("get").as_deref(), Some(&b"2"[..]));
     }
 
     #[test]

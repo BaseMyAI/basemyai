@@ -98,7 +98,17 @@ jobs:
           # + N11.2/N11.3 : model_based (BTreeMap de référence vs Engine réel sur
           # séquences aléatoires déterministes), io_faults (accès refusé + tmp
           # orphelin déjà présent).
-          cargo test -p basemyai-engine --features test-util --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test malformed_open --test engine_stats --test failpoints --test corruption_smoke --test model_based --test io_faults --test format_lock
+          # + N12/ADR-042 : adr042_contract — présent dans xtask (le miroir de
+          # référence de ce fichier) depuis a3842e7 mais absent d'ici jusqu'à
+          # cette ligne ; câblage manuel oublié (même défaut que celui déjà
+          # documenté §8.3/status.md), corrigé au passage.
+          # + J0 preflight (ENG-DUR-002/004,
+          # docs/audits/2026-07-engine-architecture-safety-audit.md) :
+          # generation_pointer_loss_is_rejected_and_gen1_survives,
+          # compaction_remove_retry.
+          # + N13/J3 (ADR-043 §2 amendé) : snapshot_compaction — snapshots
+          # S1 + suppression différée des SST remplacées.
+          cargo test -p basemyai-engine --features test-util --lib --bins --test basic --test vector_recall --test vector_persistence --test vector_churn --test graph_parity --test malformed_open --test engine_stats --test failpoints --test corruption_smoke --test adr042_contract --test generation_pointer_loss_is_rejected_and_gen1_survives --test compaction_remove_retry --test model_based --test io_faults --test format_lock --test snapshot_compaction
           cargo test -p basemyai --features test-util
           # --test memory_tests : runner déclaratif du contrat MemoryStore sur
           # le backend natif (clair + chiffré), zéro divergence tolérée.

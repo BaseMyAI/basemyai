@@ -19,11 +19,12 @@
 //!   `create_new`), donc l'écrasement doit être propre par construction ;
 //!   ce fichier en est la preuve exécutable, pas une relecture du source.
 //!
-//! Un dernier test documente, en complément de
-//! `corruption_smoke.rs::deleted_sst_is_currently_silent_data_loss_no_manifest_yet`,
-//! que `verify_store` (même `FullLogical`) ne détecte pas non plus une SST
-//! vivante supprimée : aucun mode n'a de source indépendante listant les
-//! SSTs attendues.
+//! Un dernier test, `#[ignore]`d, affirme en complément de
+//! `corruption_smoke.rs::deleted_sst_is_detected_once_catalog_lands`
+//! l'assertion cible : `verify_store` (même `FullLogical`) devrait détecter
+//! une SST vivante supprimée. Aujourd'hui aucun mode n'a de source
+//! indépendante listant les SSTs attendues (R2/R3, invariant I4) — voir le
+//! commentaire du test pour la portée exacte.
 
 use std::path::{Path, PathBuf};
 
@@ -213,13 +214,22 @@ fn crypto_meta_rotation_overwrites_a_stale_orphan_tmp_file_cleanly() {
 
 // ── manifest gap : verify n'y voit pas plus clair que open ──
 
-/// Complète `corruption_smoke.rs::deleted_sst_is_currently_silent_data_loss_no_manifest_yet` :
-/// même une passe `verify` en profondeur maximale (`FullLogical`) est
-/// aveugle à une SST vivante supprimée, faute de manifest indépendant
-/// listant les SSTs attendues — la vue logique n'est reconstruite qu'à
-/// partir des SSTs *présentes* sur disque.
+/// Target-architecture assertion (ENGINE-TARGET-ARCHITECTURE.md §17/§20,
+/// invariant I4), companion to
+/// `corruption_smoke.rs::deleted_sst_is_detected_once_catalog_lands`: a
+/// `verify_store` pass in maximum depth (`FullLogical`) should flag a
+/// missing live SST as unhealthy.
+///
+/// **Currently `#[ignore]`d**: today no `verify` mode has an independent
+/// manifest listing the SSTs it expects — the logical pass only ever
+/// reconstructs the KV view from the SSTs *present* on disk, so it reports
+/// `healthy: true` with no warning even though data is missing (the inverse
+/// of the assertion below). Closing this needs the durable catalog (R2/R3
+/// of the roadmap) — once that lands, drop the `#[ignore]` and this test
+/// becomes the closing proof.
 #[test]
-fn verify_full_logical_does_not_catch_a_deleted_sst_either() {
+#[ignore = "detection requires the durable catalog (ENGINE-TARGET-ARCHITECTURE.md R2/R3, invariant I4) — not implemented yet; un-ignore once verify_store flags a missing live SST"]
+fn verify_full_logical_detects_a_deleted_sst_once_catalog_lands() {
     let dir = tempfile::tempdir().expect("tempdir");
     {
         let mut engine = Engine::open_with_options(dir.path(), small_options()).expect("open");
@@ -237,8 +247,8 @@ fn verify_full_logical_does_not_catch_a_deleted_sst_either() {
 
     let report = verify_store(dir.path(), None, VerifyMode::FullLogical).expect("verify runs");
     assert!(
-        report.healthy && report.errors.is_empty() && report.warnings.is_empty(),
-        "documents the current gap: a deleted SST is invisible to verify too (no manifest to \
-         cross-check against) — got {report:?}"
+        !report.healthy,
+        "a live SST deleted from disk must be flagged unhealthy once the durable catalog gives \
+         verify an independent source to cross-check against — got {report:?}"
     );
 }

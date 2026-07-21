@@ -79,6 +79,50 @@ pub struct EngineStats {
     /// degrading. See `tests/engine_stats.rs` for the test pinning this at
     /// zero across a canonical multi-block workload.
     pub point_lookup_full_sst_read: u64,
+    /// Counter: `sync_all()` calls on a `File` performed since open, on the
+    /// two write-path hot loops only — every WAL append/truncate fsync
+    /// (`store::wal::Wal`) plus one fsync per flushed/compacted SST
+    /// (`store::sst_block::BlockSstFile::write_new`, called from
+    /// `Engine::flush`/`Engine::compact`). Feeds the group-commit sizing
+    /// decision (ADR-047, ENGINE-TARGET-ARCHITECTURE.md §17/§20 R0). Scope
+    /// deliberately excludes the rare metadata fsyncs of `store.meta`,
+    /// `generation.meta` and `crypto.meta` (open/rotation only, never under
+    /// write load) and the SST/WAL fsyncs of `Engine::rotate_key_full` (a
+    /// rare full-rewrite operation, not the per-op hot path this counter
+    /// targets) — a deliberate, documented scope line, not an oversight.
+    pub fsync_count: u64,
+    /// Gauge: bytes of orphaned `*.tmp` files found in the active store
+    /// directory at the last [`Engine::open`](crate::Engine::open) (or
+    /// equivalent) call — `*.sst.tmp`, `crypto.meta.tmp`,
+    /// `generation.meta.tmp`, `store.meta.tmp` left behind by a crash mid
+    /// atomic-replace. A one-time snapshot taken at open, never refreshed
+    /// afterward; these files are already ignored by `scan_existing`/
+    /// `sst_files_present` exactly as before this counter existed — this
+    /// only observes them, it does not touch or remove anything. Feeds a
+    /// future GC-aggressiveness decision (ENGINE-TARGET-ARCHITECTURE.md
+    /// §17/§20 R0).
+    pub orphan_bytes: u64,
+    /// Counter: old SST removals that still failed after `compact()`'s
+    /// retries (ENG-DUR-002 minimal correction,
+    /// `docs/audits/2026-07-engine-architecture-safety-audit.md`). Zero on a
+    /// healthy filesystem. A persistently failed removal is a real, if
+    /// narrow, risk — a leftover pre-compaction SST can resurrect a deleted
+    /// key on a future reopen until the durable manifest (ENG-DUR-001, N13
+    /// jalon J2) makes orphan detection a construction guarantee instead of
+    /// a best-effort cleanup. This counter turns a previously fully silent
+    /// failure into an observable one; it does not by itself close the gap.
+    pub compaction_remove_failures: u64,
+    /// Gauge: the durable SST-manifest's current publication counter
+    /// (ENG-DUR-001, `manifest.meta` — incremented on every flush that adds
+    /// an SST and every compaction that replaces the set).
+    pub manifest_generation: u64,
+    /// Gauge: live [`Snapshot`](crate::store::Snapshot)s not yet dropped
+    /// (ADR-043 §2 amended, J3 — the "active snapshots" metric ENG-RES-003
+    /// asks for). Every live snapshot pins its version's SST files on disk
+    /// (deferred removal, INV-VS-6): a snapshot that never drops is a
+    /// space leak in the making, and this gauge is how it gets seen before
+    /// it is felt.
+    pub active_snapshots: u64,
 }
 
 /// The engine's private monotonic counters (the gauges of [`EngineStats`]
@@ -97,4 +141,10 @@ pub(crate) struct Counters {
     pub(crate) compaction_output_bytes: u64,
     pub(crate) bytes_read: u64,
     pub(crate) bytes_written: u64,
+    /// See [`EngineStats::fsync_count`] for exact scope (WAL + flush/compact
+    /// SST fsyncs only). WAL fsyncs are tracked on the live `Wal` handle
+    /// itself (not here) and folded in here only when a `Wal` is retired
+    /// mid-life (`Engine::rotate_key_full`'s old-WAL swap) — see
+    /// `Engine::stats`/`Engine::rotate_full`.
+    pub(crate) fsync_count: u64,
 }

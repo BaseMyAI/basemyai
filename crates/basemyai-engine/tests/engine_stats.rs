@@ -248,6 +248,67 @@ fn block_cache_hits_and_misses_reflect_real_lookups() {
 }
 
 #[test]
+fn fsync_count_tracks_wal_and_sst_fsyncs_and_never_resets() {
+    // R0 (ENGINE-TARGET-ARCHITECTURE.md §17/§20): fsync_count feeds a future
+    // group-commit decision, so it must reflect real sync_all() activity on
+    // the WAL + SST hot loops and stay monotonic across repeated stats()
+    // calls within the same open.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = Engine::open(dir.path()).expect("open");
+    assert_eq!(engine.stats().expect("stats").fsync_count, 0, "nothing written yet");
+
+    engine.put(b"a", b"1").expect("put"); // one WAL fsync
+    engine.put(b"b", b"2").expect("put"); // one more WAL fsync
+    let after_puts = engine.stats().expect("stats").fsync_count;
+    assert!(after_puts >= 2, "each put fsyncs its WAL record, got {after_puts}");
+
+    engine.flush().expect("flush"); // one SST fsync (write_new)
+    let after_flush = engine.stats().expect("stats").fsync_count;
+    assert!(
+        after_flush > after_puts,
+        "flush must add at least one SST fsync on top of the WAL fsyncs, before={after_puts} after={after_flush}"
+    );
+
+    // Monotonic: calling stats() again without further writes must not
+    // change or reset the counter.
+    assert_eq!(engine.stats().expect("stats").fsync_count, after_flush);
+}
+
+#[test]
+fn fsync_count_is_per_open_not_persisted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let mut engine = Engine::open(dir.path()).expect("open");
+        engine.put(b"a", b"1").expect("put");
+        engine.flush().expect("flush");
+        assert!(engine.stats().expect("stats").fsync_count > 0);
+    }
+    let engine = Engine::open(dir.path()).expect("reopen");
+    assert_eq!(
+        engine.stats().expect("stats").fsync_count,
+        0,
+        "counters are per-open, never persisted, same contract as the other Counters fields"
+    );
+}
+
+#[test]
+fn orphan_bytes_counts_preexisting_tmp_files_at_open() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A healthy store with nothing orphaned reports zero.
+    {
+        let engine = Engine::open(dir.path()).expect("open");
+        assert_eq!(engine.stats().expect("stats").orphan_bytes, 0);
+    }
+    // Seed a crash-artifact-looking orphan directly in the store directory,
+    // then reopen: the byte count must reflect exactly its size.
+    let payload = vec![0xABu8; 4096];
+    std::fs::write(dir.path().join("bogus.sst.tmp"), &payload).expect("seed orphan tmp");
+
+    let engine = Engine::open(dir.path()).expect("reopen with orphan present");
+    assert_eq!(engine.stats().expect("stats").orphan_bytes, payload.len() as u64);
+}
+
+#[test]
 fn block_cache_fields_stay_zero_before_any_sst_lookup() {
     // No SST exists yet (nothing flushed), so `get` resolves entirely from
     // the memtable — the block cache is never even consulted.

@@ -119,6 +119,7 @@ pub fn all_specs() -> Vec<FormatSpec> {
         super::crypto::wal_envelope_spec(),
         super::crypto::encrypted_sst_block_spec(),
         super::generation_meta::spec(),
+        super::sst_manifest::spec(),
         super::sst_block::sst_header_spec(),
         super::sst_block::sst_data_block_spec(),
         super::sst_block::sst_block_index_spec(),

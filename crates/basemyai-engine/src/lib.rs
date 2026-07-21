@@ -59,6 +59,7 @@ pub mod key;
 pub mod store;
 
 pub(crate) mod crypto;
+pub(crate) mod fs_util;
 
 /// Fault-injection site (N7.4). Compiles to **nothing** without
 /// `test-util`/`cfg(test)`; with them, consults the [`failpoint`] registry
@@ -81,6 +82,6 @@ pub use idx::vector::{PersistentVectorIndex, VectorIndex, VectorIndexParams};
 pub use key::Key;
 pub use store::{
     Batch, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, EngineStats, IntegrityIssue, IssueKind, RebuildReport,
-    RepairAction, RepairPlan, ScanPage, Value, VerifyMode, VerifyReport, plan_repair, rebuild_indexes, verify_store,
-    verify_store_with_passphrase,
+    RepairAction, RepairPlan, ScanPage, Snapshot, Value, VerifyMode, VerifyReport, plan_repair, rebuild_indexes,
+    verify_store, verify_store_with_passphrase,
 };

@@ -405,13 +405,11 @@ impl BlockSstFile {
         }
         fs::rename(&tmp_path, &final_path).map_err(|e| EngineError::io(final_path.clone(), e))?;
         fail_point!("after_sst_rename");
-        // Same known, documented deviation as the superseded whole-file
-        // writer: no extra fsync of the containing directory entry after
-        // the rename (not portable on Windows, the primary dev/CI target).
-        // Not a correctness gap for the WAL-truncate ordering rule — if the
-        // rename itself doesn't survive a crash, the SST simply doesn't
-        // exist on reopen and the data replays out of the (not yet
-        // truncated) WAL instead.
+        // ENG-DUR-003: fsync the containing directory so this rename's
+        // directory-entry mutation is itself durable before the caller
+        // truncates the WAL on the strength of it (`Engine::flush`) — see
+        // `crate::fs_util` for why the rename alone is not enough.
+        crate::fs_util::sync_dir(dir)?;
 
         let tombstones = sum_tombstones(&block_index);
         Ok(Self {

@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **N13/J3 — immutable version set, S1 snapshots, deferred SST removal
+  (ADR-043 §2 as amended for ENG-COR-001).** `Engine` now publishes its live
+  SST set as an immutable `Version` (one shared `Arc` handle per file);
+  every publication — flush or compaction — is a `VersionEdit { added,
+  deleted }` applied to the *current* version at commit time (validated:
+  a `deleted` id absent from the current version is the new typed
+  `EngineError::VersionEditMissingInput`, and nothing is published). New
+  `Engine::snapshot() -> Snapshot`: an S1 snapshot that freezes the *files*,
+  not the *view* (the memtable is not captured) — every pinned SST stays on
+  disk and readable for the snapshot's lifetime; superseded SSTs are now
+  physically removed only when their last referencing version/snapshot
+  drops (previously: inline in `compact()`), a removal failure still being
+  counted (`compaction_remove_failures`) and the leftover swept as a
+  manifest orphan at the next open. New `EngineStats::active_snapshots`
+  gauge. Compaction itself still runs under the exclusive writer — J4
+  (out-of-lock compaction) is the next milestone and only changes locking,
+  not the publication protocol.
+
 - **N10 — scalable maintenance (ADR-041, §7.1→§7.5).**
   - Importance API: `Memory::remember_with_importance` / `Memory::set_importance`
     (NaN/infinite rejected via `MemoryError::InvalidImportance`); `NewMemory`
@@ -36,6 +54,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking (trait `MemoryStore`)**: `scan_for_forgetting` is now paginated
   (`after_id`/`limit`, active-only candidates) and `forget_many` is a new
   required method.
+
+### Fixed
+
+- **N13 preflight (ENG-DUR-003, `docs/audits/2026-07-engine-architecture-safety-audit.md`).**
+  Every publication `rename` (SST, `store.meta`, `generation.meta`,
+  `crypto.meta`) is now followed by an `fsync` of its containing directory
+  (`crate::fs_util::sync_dir`, no-op on non-Unix) — POSIX gives no ordering
+  guarantee between a rename's directory-entry mutation and any other file's
+  own metadata mutation without it.
+- **N13 preflight (ENG-DUR-004).** `resolve_active_generation` no longer
+  treats a missing `generation.meta` as an unconditional "generation 0" when
+  a `gen-N` directory already exists next to it — that combination used to
+  make the unconditional post-open GC delete the real generation, a silent
+  total data loss. It is now refused as a typed
+  `EngineError::CorruptGenerationMeta`.
+- **N13 preflight (ENG-DUR-002, minimal correction).** `compact()` no longer
+  silently ignores a failed removal of a superseded SST. It retries a few
+  times, then counts a persistent failure via the new
+  `EngineStats::compaction_remove_failures` instead of swallowing it. Full
+  closure of the underlying resurrection risk still depends on the durable
+  SST manifest (N13).
 
 ## [0.2.0] - 2026-07-10
 

@@ -148,6 +148,24 @@ const TEST: &[&[&str]] = &[
         "corruption_smoke",
         "--test",
         "adr042_contract",
+        // J0 preflight (ENG-DUR-002/004,
+        // docs/audits/2026-07-engine-architecture-safety-audit.md).
+        "--test",
+        "generation_pointer_loss_is_rejected_and_gen1_survives",
+        "--test",
+        "compaction_remove_retry",
+        // N11.2/N11.3 — présents dans ci.yml depuis leur introduction mais
+        // absents d'ici ; drift xtask/ci.yml pré-existant (même défaut que
+        // celui documenté §8.3/status.md pour adr042_contract), corrigé au
+        // passage en ajoutant ce plan J0 juste au-dessus.
+        "--test",
+        "model_based",
+        "--test",
+        "io_faults",
+        // N13/J3 (ADR-043 §2 amendé) : snapshots S1 + suppression différée
+        // des SST remplacées par compaction.
+        "--test",
+        "snapshot_compaction",
     ],
     &["test", "-p", "basemyai", "--features", "test-util"],
     // `--test memory_tests` : runner déclaratif du contrat MemoryStore sur le

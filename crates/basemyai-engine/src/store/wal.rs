@@ -23,6 +23,13 @@ pub(crate) struct Wal {
     file: File,
     /// `Some` = every record is sealed into a `WalEnvelope` (ADR-030 §3).
     crypto: Option<CryptoContext>,
+    /// Monotonic count of `sync_all()` calls performed by this handle since
+    /// it was opened (write-record fsyncs plus truncation fsyncs) — folded
+    /// into [`crate::EngineStats::fsync_count`] by `Engine::stats` (current
+    /// handle) and `Engine::rotate_full` (retired handle, accumulated into
+    /// `Counters` before drop, since a fresh `Wal` after rotation would
+    /// otherwise reset this to zero and lose the pre-rotation count).
+    fsync_count: u64,
 }
 
 impl Wal {
@@ -45,7 +52,12 @@ impl Wal {
             .write(true)
             .open(&path)
             .map_err(|e| EngineError::io(path.clone(), e))?;
-        Ok(Self { path, file, crypto })
+        Ok(Self {
+            path,
+            file,
+            crypto,
+            fsync_count: 0,
+        })
     }
 
     /// Reads every fully-formed, checksum-valid record from the start of the
@@ -156,6 +168,7 @@ impl Wal {
         self.file
             .sync_all()
             .map_err(|e| EngineError::io(self.path.clone(), e))?;
+        self.fsync_count += 1;
         fail_point!("after_wal_fsync");
         Ok(on_disk.len() as u64)
     }
@@ -186,7 +199,14 @@ impl Wal {
         self.file
             .sync_all()
             .map_err(|e| EngineError::io(self.path.clone(), e))?;
+        self.fsync_count += 1;
         Ok(())
+    }
+
+    /// Total `sync_all()` calls performed by this handle since it was
+    /// opened (write-record fsyncs plus truncation fsyncs).
+    pub(crate) fn fsync_count(&self) -> u64 {
+        self.fsync_count
     }
 
     #[cfg(test)]

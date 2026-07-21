@@ -249,6 +249,30 @@ pub enum EngineError {
     #[error("corrupt generation.meta at {}: {reason}", .path.display())]
     CorruptGenerationMeta { path: PathBuf, reason: String },
 
+    /// The durable SST-manifest (`manifest.meta`, ENG-DUR-001) is malformed
+    /// or fails its checksum.
+    #[error("corrupt manifest.meta at {}: {reason}", .path.display())]
+    CorruptSstManifest { path: PathBuf, reason: String },
+
+    /// `manifest.meta` lists an SST id that a directory scan does not find
+    /// on disk — a live SST went missing (deleted, a failed backup, a crash
+    /// mid-cleanup) and is now provably, not just suspiciously, gone
+    /// (ENG-DUR-001, closes the N11.3 gap: previously `Engine::open`
+    /// silently succeeded against a directory missing a live SST).
+    #[error("live SST {id} (expected at {}) is listed in manifest.meta but missing from disk", .path.display())]
+    MissingLiveSst { id: u64, path: PathBuf },
+
+    /// A version-set publication (`VersionEdit`, ADR-043 §2 amended for
+    /// ENG-COR-001) named a `deleted` SST id that the current version does
+    /// not contain — an internal invariant violation (INV-VS-4). Refused
+    /// before anything is published: no manifest is written, the current
+    /// version is unchanged. Unreachable while flush/compaction run under
+    /// the exclusive writer (J3); it exists so an out-of-lock compaction
+    /// (J4) whose input set drifted fails typed instead of publishing a
+    /// manifest that silently drops a concurrently-flushed SST.
+    #[error("version edit deletes SST id {id}, which the current version does not contain")]
+    VersionEditMissingInput { id: u64 },
+
     /// An AEAD seal operation failed — not reachable through corruption of
     /// on-disk data (those surface as `CorruptWal`/`CorruptSstFooter`/
     /// `CorruptEncryptedSstBlock`/etc.), only through an internal cipher

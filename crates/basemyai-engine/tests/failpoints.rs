@@ -129,6 +129,52 @@ fn before_wal_truncate_leaves_sst_and_wal_coexisting_without_duplication() {
 }
 
 #[test]
+fn before_sst_manifest_publish_leaves_the_new_sst_an_orphan_and_wal_recovers() {
+    // ENG-DUR-001: the manifest now publishes *before* WAL truncate (SST →
+    // manifest → WAL truncate). An armed failure here must leave the new
+    // SST durable-but-unlisted (an orphan the next open drops) and the WAL
+    // un-truncated — data recovers via replay, not via the orphaned SST.
+    let _serial = lock();
+    let _clear = ClearOnDrop;
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let mut engine = Engine::open_with_options(dir.path(), small_options()).expect("open");
+        // First flush (4th put): publishes manifest.meta listing SST 0.
+        for i in 0..4u32 {
+            engine.put(format!("k{i}").as_bytes(), b"v").expect("put");
+        }
+        assert_eq!(
+            engine.stats().expect("stats").sst_count,
+            1,
+            "first flush must have landed"
+        );
+
+        for i in 4..7u32 {
+            engine.put(format!("k{i}").as_bytes(), b"v").expect("put");
+        }
+        failpoint::set("before_sst_manifest_publish", Action::Error);
+        // This put crosses the flush threshold again: SST 1 is written and
+        // durable, then the armed manifest publish fails before it's ever
+        // added to manifest.meta (still listing only SST 0).
+        let err = engine.put(b"k7", b"v").expect_err("armed flush must fail");
+        assert_injected_io(&err, "before_sst_manifest_publish");
+    }
+    failpoint::clear_all();
+    // SST 1 exists on disk but manifest.meta never listed it — the
+    // confrontation at reopen must drop it as an orphan, while the
+    // un-truncated WAL replays k4..k7 back into the memtable.
+    let engine = Engine::open_with_options(dir.path(), small_options()).expect("reopen");
+    for i in 0..8u32 {
+        assert_eq!(
+            engine.get(format!("k{i}").as_bytes()).expect("get").as_deref(),
+            Some(&b"v"[..]),
+            "k{i} must survive: k0..k3 via the manifest-confirmed SST 0, k4..k7 via WAL replay \
+             after the orphaned, never-published SST 1 was dropped"
+        );
+    }
+}
+
+#[test]
 fn during_compaction_failure_keeps_every_pre_compaction_sst_readable() {
     let _serial = lock();
     let _clear = ClearOnDrop;
@@ -157,6 +203,46 @@ fn during_compaction_failure_keeps_every_pre_compaction_sst_readable() {
             "key-{i:03} must survive an aborted compaction"
         );
     }
+}
+
+#[test]
+fn during_compaction_sst_removal_site_is_armable() {
+    // ENG-DUR-002 minimal correction
+    // (docs/audits/2026-07-engine-architecture-safety-audit.md): a failed
+    // removal of a superseded SST during compaction is retried, then counted
+    // (`EngineStats::compaction_remove_failures`) rather than failing the
+    // compaction itself — the merged SST is already fsynced and durably
+    // renamed by the time cleanup runs, so a cleanup failure is not a
+    // correctness failure of `compact_now()`. Complements the single-SST
+    // case in `tests/compaction_remove_retry.rs` by proving the site fires
+    // for real during a genuine multi-SST compaction (at least two old SSTs
+    // to remove), and that every retry failing still lets `compact_now()`
+    // return `Ok`.
+    let _serial = lock();
+    let _clear = ClearOnDrop;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut engine = Engine::open_with_options(dir.path(), small_options()).expect("open");
+    // compaction_sst_threshold is 2 in small_options(): drive enough flushes
+    // to guarantee a compaction with at least two old SSTs to remove.
+    for i in 0..20u32 {
+        engine.put(format!("key-{i:03}").as_bytes(), b"v").expect("put");
+    }
+    engine
+        .compact_now()
+        .expect("seed at least one prior compaction/flush cycle");
+
+    engine.put(b"trigger", b"v").expect("put a second SST's worth of data");
+    failpoint::set("during_compaction_sst_removal", Action::Error);
+    engine.compact_now().expect(
+        "compact_now must still succeed: every old-SST removal fails all its retries, but that is \
+         counted, never propagated",
+    );
+    failpoint::clear_all();
+
+    assert!(
+        engine.stats().expect("stats").compaction_remove_failures >= 1,
+        "the armed site must have caused at least one counted removal failure"
+    );
 }
 
 #[test]

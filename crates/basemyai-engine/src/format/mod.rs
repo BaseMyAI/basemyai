@@ -16,6 +16,7 @@ pub mod crypto;
 pub mod generation_meta;
 pub mod lock;
 pub mod sst_block;
+pub mod sst_manifest;
 pub mod store_meta;
 pub mod wal;
 

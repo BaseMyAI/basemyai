@@ -29,12 +29,16 @@ mod verify;
 // Cross-structure logical checks over the reserved `idx/` keyspaces — the
 // `FullLogical` half of `verify` (ADR-040 §2, N9.3).
 mod verify_logical;
+// Immutable version set + S1 read snapshots + deferred SST removal
+// (ADR-043 §2 as amended for ENG-COR-001, milestone J3).
+mod version;
 mod wal;
 
 pub use engine::{Batch, DEFAULT_BLOCK_CACHE_CAPACITY_BYTES, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, ScanPage};
 pub use repair::{RebuildReport, RepairAction, RepairPlan, plan_repair, rebuild_indexes};
 pub use stats::EngineStats;
 pub use verify::{IntegrityIssue, IssueKind, VerifyMode, VerifyReport, verify_store, verify_store_with_passphrase};
+pub use version::Snapshot;
 
 /// A stored value. Kept as a plain alias (not a newtype) since, unlike
 /// [`crate::key::Key`], nothing about its ordering or encoding is

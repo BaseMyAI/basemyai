@@ -14,10 +14,15 @@
 //!
 //! ```text
 //! magic:            u32  = STORE_META_MAGIC
-//! store_format_version: u16  = STORE_FORMAT_VERSION (currently 2 — the
-//!                               block-based-SST generation this ADR
-//!                               introduces; there is no generation-1
-//!                               store.meta, see above)
+//! store_format_version: u16  = STORE_FORMAT_VERSION (currently 3 — J2/
+//!                               ENG-DUR-001 added the durable SST manifest,
+//!                               `format::sst_manifest`; a store stamped at
+//!                               version 2 has no manifest and is rejected
+//!                               typed rather than tolerated, per the
+//!                               project's no-back-compat-before-freeze
+//!                               policy — see `resolve_active_generation`'s
+//!                               doc for the one legitimate case a manifest
+//!                               can still be absent under version 3)
 //! store_id:         [u8; 16] UUIDv7, absent in legacy `StoreMeta:1`
 //! crc32:            u32  over every byte above (magic..store_id)
 //!
@@ -37,7 +42,7 @@ pub const STORE_META_MAGIC: u32 = 0x424D_5354; // "TSMB" LE
 /// The store-generation this build creates and expects to find. Bump this
 /// (and the doc comment above) whenever the on-disk store layout changes in
 /// a way that makes older stores unreadable.
-pub const STORE_FORMAT_VERSION: u16 = 2;
+pub const STORE_FORMAT_VERSION: u16 = 3;
 
 const STORE_META_LEN: usize = 4 + 2; // magic, store_format_version
 const STORE_META_V1_TOTAL_LEN: usize = STORE_META_LEN + 4; // + crc32

@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: BUSL-1.1
 //! Corruption smoke test (N7 → gate à chaque PR, `PLAN-NATIVE-ENGINE.md`
-//! §8.3) : pour chaque artefact on-disk (SST, WAL, `crypto.meta`), un octet
-//! corrompu doit produire une **erreur typée** à l'ouverture — jamais un
-//! panic, jamais des données silencieusement fausses. Clair et chiffré.
+//! §8.3) : pour chaque artefact on-disk (SST, WAL, `crypto.meta`,
+//! `manifest.meta`), un octet corrompu doit produire une **erreur typée** à
+//! l'ouverture — jamais un panic, jamais des données silencieusement
+//! fausses. Clair et chiffré.
 //!
-//! Ce fichier documente aussi, en tant que test, un **gap connu et toujours
-//! ouvert** : sans manifest, une SST supprimée du disque disparaît
-//! silencieusement (l'ouverture réussit, les données sont juste absentes).
-//! N9/ADR-040 a livré `verify`, mais confirmé empiriquement (N11.3) que
-//! `verify` ne le détecte pas non plus — aucun mode n'a de source
-//! indépendante listant les SSTs attendues. Le test est le marqueur
-//! exécutable du gap, pas une promesse que N9 le ferme.
+//! Ce fichier documentait aussi, en tant que test `#[ignore]`, un gap connu
+//! (N11.3) : sans manifest, une SST supprimée du disque disparaissait
+//! silencieusement (l'ouverture réussissait, les données étaient juste
+//! absentes) — ni `Engine::open` ni `verify --logical` ne le détectaient.
+//! **Fermé par le manifest durable des SST vivantes** (ENG-DUR-001,
+//! `docs/audits/2026-07-engine-architecture-safety-audit.md`,
+//! `format::sst_manifest`, N13/J2) : `deleted_sst_is_detected_once_catalog_lands`
+//! est maintenant la preuve exécutable positive, plus un test `#[ignore]`.
 
 use std::path::{Path, PathBuf};
 
@@ -156,34 +158,66 @@ fn crypto_meta_bit_flip_is_typed_error_never_garbage() {
     );
 }
 
-/// **Gap connu, assumé, toujours ouvert après N9 (ADR-040)** : le moteur n'a
-/// aucun manifest listant les SSTs attendues — ni `Engine::open` (toujours
-/// O(métadonnées), par design) ni `verify_store` en mode `FullLogical`
-/// (confirmé empiriquement, N11.3 : `verify_store` rapporte `healthy: true`
-/// sans warning sur un store dont une SST vivante a été supprimée — la passe
-/// logique reconstruit la vue KV à partir des SSTs *présentes*, elle n'a
-/// aucune source indépendante pour savoir qu'il en manque une). Une SST
-/// supprimée (rm accidentel, ransomware, disque partiel) ne fait donc échouer
-/// **ni** l'ouverture **ni** `verify` — les données qu'elle portait sont
-/// juste absentes, silencieusement. Ce test pinne ce comportement ; le
-/// fermer réclame un manifest/version-set (candidat naturel : N13/ADR-043),
-/// pas juste `verify`.
+/// Target-architecture assertion (ENGINE-TARGET-ARCHITECTURE.md §17/§20,
+/// invariant I4): a live SST silently missing from disk **must** be
+/// detected — `Engine::open` fails rather than silently proceeding without
+/// it. **Closes the N11.3 gap**: the durable SST manifest (ENG-DUR-001,
+/// `docs/audits/2026-07-engine-architecture-safety-audit.md`,
+/// `format::sst_manifest`) now gives `Engine::open` an independent source
+/// of truth for the live set, so a deleted live SST is a typed
+/// [`EngineError::MissingLiveSst`], not a silent miss.
 #[test]
-fn deleted_sst_is_currently_silent_data_loss_no_manifest_yet() {
+fn deleted_sst_is_detected_once_catalog_lands() {
     let dir = tempfile::tempdir().expect("tempdir");
     build_store(dir.path(), false);
     let ssts = sst_files(dir.path());
     std::fs::remove_file(&ssts[0]).expect("delete the only SST");
 
-    let engine = reopen(dir.path(), false).expect(
-        "sans manifest, open réussit sans la SST manquante — voir le commentaire du test \
-         pour la portée exacte du gap (N13/ADR-043 est le candidat naturel pour le fermer)",
+    let Err(err) = reopen(dir.path(), false) else {
+        panic!(
+            "a live SST silently missing from disk must fail open — the durable manifest \
+             (ENG-DUR-001) now distinguishes a missing file from a never-existing one (I4)"
+        )
+    };
+    assert!(
+        matches!(err, EngineError::MissingLiveSst { .. }),
+        "expected MissingLiveSst, got {err:?}"
     );
-    assert_eq!(
-        engine.get(b"k0").expect("get"),
-        None,
-        "flushed data silently gone — aucun manifest pour le détecter, ni à l'open ni via verify"
+}
+
+/// `manifest.meta` bit-flip is typed corruption, same discipline as every
+/// other on-disk artifact in this file — never a panic, never silently
+/// ignored.
+#[test]
+fn manifest_bit_flip_is_typed_corruption() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    build_store(dir.path(), false);
+    flip_byte(&dir.path().join("manifest.meta"), 0);
+
+    let Err(err) = reopen(dir.path(), false) else {
+        panic!("a flipped manifest.meta byte must fail the open")
+    };
+    assert!(
+        matches!(err, EngineError::CorruptSstManifest { .. }),
+        "expected CorruptSstManifest, got {err:?}"
     );
-    // La queue WAL, elle, survit (fichier séparé).
-    assert_eq!(engine.get(b"tail").expect("get").as_deref(), Some(&b"unflushed"[..]));
+}
+
+/// A truncated `manifest.meta` is typed corruption too — not just a full
+/// bit-flip.
+#[test]
+fn manifest_truncation_is_typed_corruption() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    build_store(dir.path(), false);
+    let manifest_path = dir.path().join("manifest.meta");
+    let bytes = std::fs::read(&manifest_path).expect("read manifest");
+    std::fs::write(&manifest_path, &bytes[..bytes.len() - 3]).expect("truncate manifest");
+
+    let Err(err) = reopen(dir.path(), false) else {
+        panic!("a truncated manifest.meta must fail the open")
+    };
+    assert!(
+        matches!(err, EngineError::CorruptSstManifest { .. }),
+        "expected CorruptSstManifest, got {err:?}"
+    );
 }

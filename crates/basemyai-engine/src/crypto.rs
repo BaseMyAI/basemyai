@@ -334,6 +334,8 @@ fn write_meta_with_mode(
     }
     fs::rename(&tmp_path, &final_path).map_err(|e| EngineError::io(final_path.clone(), e))?;
     crate::fail_point!("after_crypto_meta_write");
+    // ENG-DUR-003: see `crate::fs_util`.
+    crate::fs_util::sync_dir(dir)?;
     Ok(())
 }
 

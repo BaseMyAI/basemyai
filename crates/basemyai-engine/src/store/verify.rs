@@ -34,10 +34,11 @@ use crate::crypto::{self, CryptoContext};
 use crate::error::{EngineError, Result};
 use crate::format::generation_meta;
 use crate::format::sst_block::SST_HEADER_TOTAL_LEN;
+use crate::format::sst_manifest;
 use crate::format::store_meta;
 use crate::format::wal::WalOp;
 use crate::store::Value;
-use crate::store::sst_block::BlockSstFile;
+use crate::store::sst_block::{self, BlockSstFile};
 use crate::store::{verify_logical, wal};
 
 /// How deep a [`verify_store`] audit goes — see the module doc for what
@@ -177,6 +178,13 @@ pub enum IssueKind {
     /// first, then re-verify. Always paired with the physical errors that
     /// caused it.
     LogicalChecksSkipped,
+    /// `manifest.meta` (ENG-DUR-001) is present but unreadable or fails its
+    /// checksum.
+    SstManifestCorrupt,
+    /// `manifest.meta` lists an SST id as live, but no such file exists on
+    /// disk — a live SST silently went missing (ENG-DUR-001, closes the
+    /// N11.3 gap: `FullLogical` previously did not detect this either).
+    LiveSstMissing,
     /// Any anomaly not covered by a more specific kind.
     Other,
 }
@@ -311,6 +319,11 @@ fn inventory(dir: &Path, report: &mut VerifyReport) -> Result<Inventory> {
             // ADR-042's live-writer advisory lock is engine-owned metadata,
             // not an integrity artifact. Verification never reads or mutates it.
             ".basemyai.lock" => {}
+            // ENG-DUR-001's durable SST manifest — recognized here so it is
+            // never reported as an unknown file; its own structural checks
+            // and confrontation against `inv.ssts` happen later, gated on
+            // `FullLogical` (step 4.5 below).
+            sst_manifest::SST_MANIFEST_FILENAME => {}
             _ if name.ends_with(".tmp") => {
                 report.warning(
                     IssueKind::OrphanTmpFile,
@@ -699,6 +712,39 @@ fn verify_store_with_key_mode(
             VerifyMode::Quick => {}
             VerifyMode::FullPhysical => check_sst_blocks(&sst, path, &mut report, None),
             VerifyMode::FullLogical => check_sst_blocks(&sst, path, &mut report, Some(&mut kv)),
+        }
+    }
+
+    // 4.5. Durable SST manifest (ENG-DUR-001, ADR-043 §1) — confront the
+    //    directory listing above against manifest.meta's live-SST list,
+    //    the same check `Engine::open`'s `confront_manifest_with_disk`
+    //    performs. Gated on `FullLogical` alongside the rest of the deepest
+    //    audit. A missing `manifest.meta` itself is not flagged here: it is
+    //    a legitimate, transient state (bootstrap on next open), never
+    //    reported as corruption by construction — only a *present* manifest
+    //    that disagrees with disk is a real finding.
+    if mode == VerifyMode::FullLogical {
+        let manifest_path = dir.join(sst_manifest::SST_MANIFEST_FILENAME);
+        if manifest_path.is_file() {
+            report.files_checked += 1;
+            match fs::read(&manifest_path) {
+                Err(e) => report.error(IssueKind::Io, &manifest_path, e.to_string()),
+                Ok(bytes) => match sst_manifest::decode(&bytes, &manifest_path) {
+                    Err(e) => report.error(IssueKind::SstManifestCorrupt, &manifest_path, e.to_string()),
+                    Ok(manifest) => {
+                        let found_ids: std::collections::HashSet<u64> = inv.ssts.iter().map(|(id, _)| *id).collect();
+                        for id in &manifest.live_sst_ids {
+                            if !found_ids.contains(id) {
+                                report.error(
+                                    IssueKind::LiveSstMissing,
+                                    &sst_block::sst_path(&dir, *id),
+                                    format!("manifest.meta lists SST {id} as live, but no such file exists on disk"),
+                                );
+                            }
+                        }
+                    }
+                },
+            }
         }
     }
 
