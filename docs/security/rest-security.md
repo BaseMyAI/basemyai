@@ -7,7 +7,9 @@
 | `bind` | `127.0.0.1:7743` | Ne pas exposer sans reverse-proxy + TLS |
 | `dev` (`BASEMYAI_REST_DEV=1`) | `false` | Désactive Bearer **uniquement** si bind loopback |
 
-`Config::validate()` **refuse** `dev=true` avec un bind non-loopback — échec au
+`basemyai_rest::config::validate()` (`StartupConfig`/`RuntimeConfig` séparés
+depuis la restructuration en tranches verticales) **refuse** `dev=true` avec
+un bind non-loopback, et refuse l'absence d'`api_key` hors `dev` — échec au
 démarrage, pas à la première requête.
 
 ## Authentification
@@ -17,9 +19,10 @@ démarrage, pas à la première requête.
 
 ## Erreurs crypto stables
 
-Les erreurs de déchiffrement remontent avec des codes JSON distincts
-(`WRONG_ENCRYPTION_KEY`, `ENCRYPTION_KEY_REQUIRED`, …) — voir
-[encryption-model.md](encryption-model.md).
+Les erreurs de déchiffrement remontent avec des codes JSON stables et
+snake_case (`wrong_encryption_key`, `store_locked`, …), mappés une seule fois
+dans `http::error::RestError` — voir [encryption-model.md](encryption-model.md)
+et `crates/basemyai-rest/README.md` pour la liste complète des codes.
 
 ## Recall et poisoning
 
