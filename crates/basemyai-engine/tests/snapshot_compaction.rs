@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use basemyai_engine::failpoint::{self, Action};
-use basemyai_engine::{Engine, EngineOptions};
+use basemyai_engine::{Engine, EngineError, EngineOptions};
 
 fn lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -256,4 +256,178 @@ fn failed_deferred_removal_is_counted_then_swept_as_orphan_at_reopen() {
         leftovers.iter().all(|p| !p.exists()),
         "the reopen's manifest confrontation sweeps the orphans"
     );
+}
+
+/// ADR-043 §3, milestone J4: `compact_prepare`/`compact_commit` split the
+/// merge from its commit — `compact_prepare` takes `&self` only, so nothing
+/// stops a caller from flushing new data (and publishing its own edit)
+/// between the two calls. This is the ENG-COR-001 scenario exercised through
+/// real code (not a forged edit like
+/// `forged_version_edit_with_unknown_deleted_id_is_refused_and_publishes_nothing`
+/// in `engine.rs`'s own test module, which pins the validation directly —
+/// this pins the end-to-end protocol that validation exists for): the
+/// concurrently-flushed SST must survive the commit untouched, every key
+/// (merged and concurrent) must read correctly, and a snapshot taken before
+/// `compact_prepare` must stay exactly as it was throughout.
+#[test]
+fn compact_prepare_then_concurrent_flush_then_commit_keeps_both() {
+    let _serial = lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let options = EngineOptions {
+        memtable_flush_threshold: 1,
+        compaction_sst_threshold: 2,
+        block_size: 256,
+        // This test drives `compact_prepare`/`compact_commit` by hand to
+        // stage the exact ENG-COR-001 interleaving below — the `flush()`
+        // safety net (`auto_compact_on_flush`, ADR-043 §3/J4) would collapse
+        // the three SSTs below back to one on its own third call, before the
+        // test ever gets to call `compact_prepare`.
+        auto_compact_on_flush: false,
+        ..EngineOptions::default()
+    };
+    let mut engine = Engine::open_with_options(dir.path(), options).expect("open");
+
+    // Three SSTs (0, 1, 2) — past the threshold of 2, so `compact_prepare`
+    // has a job to stage.
+    engine.put(b"a", b"1").expect("put a -> SST 0");
+    engine.put(b"b", b"2").expect("put b -> SST 1");
+    engine.put(b"c", b"3").expect("put c -> SST 2");
+    assert_eq!(engine.stats().expect("stats").sst_count, 3);
+    assert!(engine.compaction_pending());
+
+    // A snapshot pinned *before* prepare — must stay exactly as it was
+    // through the whole sequence below (INV-VS-1/INV-VS-6), regardless of
+    // however many edits land on `current` around it.
+    let snap = engine.snapshot();
+    assert_eq!(snap.sst_count(), 3);
+
+    // Prepare: `&self` only, no mutation of `current` — the input set is
+    // fixed to {0, 1, 2} right here, at prepare time, not at commit time.
+    let job = engine
+        .compact_prepare()
+        .expect("compact_prepare")
+        .expect("threshold exceeded, a job must be staged");
+
+    // "Concurrently" (in production this runs off the write lock the merge
+    // above never took): a fresh write, flushed to a brand-new SST 3 —
+    // published into `current` *before* the compaction commits. `job`'s
+    // `deleted` was fixed to {0, 1, 2} at prepare time, so SST 3 is not
+    // among them — exactly the ENG-COR-001 scenario.
+    engine
+        .put(b"d", b"4")
+        .expect("put d -> SST 3, concurrent with the pending job");
+    assert_eq!(engine.stats().expect("stats").sst_count, 4);
+
+    // Commit: publishes { added: [merged], deleted: [0, 1, 2] } against
+    // `current` *now* (which already includes SST 3), never against the
+    // snapshot the merge started from (INV-VS-3).
+    engine.compact_commit(job).expect("compact_commit");
+
+    // SST 3 survived (INV-VS-5): the live version is the merged output plus
+    // SST 3 — nothing lost, nothing resurrected.
+    assert_eq!(
+        engine.stats().expect("stats").sst_count,
+        2,
+        "the merged output plus the concurrently-flushed SST 3"
+    );
+
+    // Every key — both merged and concurrently-flushed — reads correctly
+    // through the live engine.
+    assert_eq!(engine.get(b"a").expect("get a"), Some(b"1".to_vec()));
+    assert_eq!(engine.get(b"b").expect("get b"), Some(b"2".to_vec()));
+    assert_eq!(engine.get(b"c").expect("get c"), Some(b"3".to_vec()));
+    assert_eq!(engine.get(b"d").expect("get d"), Some(b"4".to_vec()));
+
+    // The pre-prepare snapshot is untouched throughout: same 3 SSTs, same
+    // values, oblivious both to the compaction that superseded them and to
+    // the concurrent write that arrived after it was pinned.
+    assert_eq!(snap.sst_count(), 3);
+    assert_eq!(snap.get(b"a").expect("snap get a"), Some(b"1".to_vec()));
+    assert_eq!(snap.get(b"b").expect("snap get b"), Some(b"2".to_vec()));
+    assert_eq!(snap.get(b"c").expect("snap get c"), Some(b"3".to_vec()));
+    assert_eq!(
+        snap.get(b"d").expect("snap get d"),
+        None,
+        "SST 3 was flushed after the snapshot was pinned"
+    );
+    drop(snap);
+
+    // Survives a reopen too — the manifest is the source of truth.
+    drop(engine);
+    let reopened = Engine::open_with_options(dir.path(), options).expect("reopen");
+    for (k, v) in [(&b"a"[..], &b"1"[..]), (b"b", b"2"), (b"c", b"3"), (b"d", b"4")] {
+        assert_eq!(reopened.get(k).expect("get"), Some(v.to_vec()));
+    }
+}
+
+/// Pins a correctness gap found in code review of J4, not by any test above:
+/// `compact_prepare` runs under a *shared* lock (`&self`), so two independent
+/// callers (in production, two `NativeInner::with_inner` writers each
+/// observing `compaction_pending()` off the exclusive write lock, ADR-043
+/// §3/J4) can stage a job over the identical input set before either
+/// commits. The second `compact_commit` must be refused typed
+/// (`EngineError::VersionEditMissingInput`, INV-VS-4) — already exercised by
+/// `forged_version_edit_with_unknown_deleted_id_is_refused_and_publishes_nothing`
+/// with a hand-forged edit — but the bug this test actually pins is
+/// different: the rejected commit must not silently inflate
+/// `EngineStats::compaction_count`/`bytes_written`/etc. as though a second
+/// compaction had actually happened, breaking `apply_version_edit`'s own
+/// documented promise ("on error nothing is published and `self.current` is
+/// unchanged") for the counters specifically.
+#[test]
+fn second_commit_of_two_racing_compact_prepare_jobs_is_refused_and_does_not_inflate_counters() {
+    let _serial = lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let options = EngineOptions {
+        memtable_flush_threshold: 1,
+        compaction_sst_threshold: 2,
+        block_size: 256,
+        auto_compact_on_flush: false,
+        ..EngineOptions::default()
+    };
+    let mut engine = Engine::open_with_options(dir.path(), options).expect("open");
+
+    engine.put(b"a", b"1").expect("put a -> SST 0");
+    engine.put(b"b", b"2").expect("put b -> SST 1");
+    engine.put(b"c", b"3").expect("put c -> SST 2");
+    assert!(engine.compaction_pending());
+
+    // Two jobs staged over the same input set {0, 1, 2} — the race this
+    // test pins, not a hypothetical (see doc comment above).
+    let job_a = engine.compact_prepare().expect("prepare a").expect("job a staged");
+    let job_b = engine.compact_prepare().expect("prepare b").expect("job b staged");
+
+    engine.compact_commit(job_a).expect("first commit wins");
+    let stats_after_first = engine.stats().expect("stats");
+    assert_eq!(stats_after_first.compaction_count, 1);
+
+    let err = engine
+        .compact_commit(job_b)
+        .expect_err("second commit races a version already advanced");
+    assert!(
+        matches!(err, EngineError::VersionEditMissingInput { .. }),
+        "must be refused typed (INV-VS-4), not a corrupted publish: {err:?}"
+    );
+
+    // The bug this test pins: a rejected commit must not look like a second
+    // successful compaction happened.
+    let stats_after_second = engine.stats().expect("stats");
+    assert_eq!(
+        stats_after_second.compaction_count, stats_after_first.compaction_count,
+        "a refused compact_commit must not increment compaction_count"
+    );
+    assert_eq!(
+        stats_after_second.bytes_written, stats_after_first.bytes_written,
+        "a refused compact_commit must not increment bytes_written"
+    );
+    assert_eq!(
+        stats_after_second.sst_count, stats_after_first.sst_count,
+        "a refused compact_commit must not change the live SST count"
+    );
+
+    // And the store itself is still exactly as healthy as after the first
+    // commit alone — every key still reads correctly.
+    assert_eq!(engine.get(b"a").expect("get a"), Some(b"1".to_vec()));
+    assert_eq!(engine.get(b"b").expect("get b"), Some(b"2".to_vec()));
+    assert_eq!(engine.get(b"c").expect("get c"), Some(b"3".to_vec()));
 }

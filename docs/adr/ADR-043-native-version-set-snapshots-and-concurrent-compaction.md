@@ -5,9 +5,20 @@
 `VersionEdit`, correction ENG-COR-001 exigée par l'audit §9 avant tout code)
 et **implémentés côté J3 le même jour** (`store/version.rs`,
 `Engine::snapshot()`, suppression différée — flush/compaction toujours sous
-le verrou exclusif) ; la part J4 de §3 (merge hors verrou, test
-flush-pendant-compaction) reste non implémentée. Acceptation à la clôture
-de N13.
+le verrou exclusif) ; **J4 implémenté le 2026-07-21** (`Engine::compact_prepare`/
+`compact_commit`/`compaction_pending`, `store/engine.rs` — le merge tourne
+`&self` seul, hors verrou d'écriture ; câblage `NativeMemoryStore::with_inner`,
+`crates/basemyai/src/storage/native_store/mod.rs`, qui interroge
+`compaction_pending` sous le verrou d'écriture déjà tenu puis lance
+`compact_prepare` sous verrou de lecture / `compact_commit` sous verrou
+d'écriture bref). Preuves : `compact_prepare_then_concurrent_flush_then_commit_keeps_both`
+(`crates/basemyai-engine/tests/snapshot_compaction.rs`, protocole edit/
+ENG-COR-001 avec du vrai code, pas un edit forgé) et
+`native_reads_are_not_blocked_for_the_duration_of_a_concurrent_compaction`
+(`crates/basemyai/tests/memory_tests.rs`, niveau `NativeMemoryStore`/tokio —
+un lecteur concurrent complète des dizaines de lectures pendant qu'une
+compaction réelle tourne, contre 1-2 seulement quand le protocole pré-J4
+est simulé localement). Acceptation à la clôture de N13.
 **Date** : 2026-07-19
 
 ## Amendement 2026-07-20 — §1 implémenté

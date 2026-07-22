@@ -27,6 +27,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (out-of-lock compaction) is the next milestone and only changes locking,
   not the publication protocol.
 
+- **N13/J4 — compaction runs off the write lock (ADR-043 §3).** The merge
+  pass (`Engine::compact_prepare`, `&self`) is split from the commit
+  (`Engine::compact_commit`, `&mut self`, publishes the `VersionEdit`
+  built at prepare time against whatever `current` is *now* — INV-VS-4
+  refuses typed if a concurrent commit already retired one of its inputs,
+  rather than publishing an incoherent manifest). `NativeMemoryStore`
+  wires this once, in `with_inner`: after a write's own flush, a cheap
+  `Engine::compaction_pending` check off the just-released write lock
+  decides whether to run `compact_prepare` under a shared read lock
+  (concurrent with readers) and `compact_commit` under a brief exclusive
+  one — proven by `native_reads_are_not_blocked_for_the_duration_of_a_concurrent_compaction`
+  (`crates/basemyai/tests/memory_tests.rs`): dozens of concurrent reads
+  complete during a real compaction window, not the 1-2 the pre-J4 fully
+  synchronous design would allow. A losing race between two opportunistic
+  triggers (or one racing a full key rotation) is treated as a harmless
+  no-op — the triggering write's own result is never clobbered by an
+  unrelated compaction-commit failure, and a refused commit no longer
+  inflates `EngineStats::compaction_count`/`bytes_written`/etc. as if it
+  had actually run. New `EngineOptions::auto_compact_on_flush` (default
+  `true`) keeps `flush()`'s historical inline auto-compact as the safety
+  net for any direct `Engine` caller with no equivalent to
+  `NativeInner::with_inner` driving compaction externally (`NativeMemoryStore`
+  is the one production caller that opts out via
+  `Engine::set_auto_compact_on_flush(false)`) — without it, such a caller's
+  live SST count grows unbounded, which is exactly what turned
+  `crash_consistency.rs`'s `batch_kill_reopen_verify_loop` into a
+  multi-hour hang during this milestone's own validation.
+
 - **N10 — scalable maintenance (ADR-041, §7.1→§7.5).**
   - Importance API: `Memory::remember_with_importance` / `Memory::set_importance`
     (NaN/infinite rejected via `MemoryError::InvalidImportance`); `NewMemory`

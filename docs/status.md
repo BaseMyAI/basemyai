@@ -502,14 +502,60 @@ maintenance,agents,events,context}` + `config/`, `context/`, `http/`,
   (unit test engine.rs : INV-VS-4 exercé sur edit forgé — le garde-fou que
   J4 rendra atteignable). `cargo xtask test-crash-consistency` re-passé
   vert (8/8) sur le chemin de publication réécrit.
+- **J4 (compaction hors verrou) : ✅ clos 2026-07-21.** `Engine::compact()`
+  scindé en `compact_prepare(&self)` (matérialise le merge + réserve un id
+  de SST via `next_sst_id` désormais `AtomicU64` — plus de mutation hors de
+  l'id atomique) et `compact_commit(&mut self, job)` (publie le
+  `VersionEdit` au commit contre `current` _à cet instant_, jamais contre le
+  snapshot d'entrée — INV-VS-3/4/5, protocole inchangé depuis J3, seul le
+  verrouillage change). Câblage `NativeMemoryStore::with_inner`
+  (`crates/basemyai/src/storage/native_store/mod.rs`) : après l'écriture,
+  toujours sous le verrou d'écriture déjà tenu, vérifie
+  `Engine::compaction_pending` (comparaison d'entiers, gratuite) ; si dû,
+  lance `compact_prepare` sous verrou de **lecture** partagé (concurrent aux
+  lecteurs) puis `compact_commit` sous verrou d'écriture bref (coût O(1)).
+  Preuves : `compact_prepare_then_concurrent_flush_then_commit_keeps_both`
+  (protocole ENG-COR-001 avec du vrai code, pas un edit forgé) et
+  `native_reads_are_not_blocked_for_the_duration_of_a_concurrent_compaction`
+  (niveau `NativeMemoryStore`/tokio — critère de sortie du plan §10 rendu
+  concret : des dizaines de lectures concurrentes complètent pendant une
+  vraie fenêtre de compaction, contre 1-2 sous l'ancien design pleinement
+  synchrone).
+  Deux bugs trouvés et corrigés en validant à la main (pas seulement par
+  agent) avant clôture : (1) `flush()` avait perdu tout déclenchement
+  automatique de compaction pour les appelants directs d'`Engine` sans
+  équivalent à `with_inner` — `crash_writer`
+  (`crash_consistency.rs::batch_kill_reopen_verify_loop`) a tourné
+  plusieurs heures (CPU quasi nul, vrai blocage par accumulation non bornée
+  de SST, pas juste lent) avant diagnostic ; fixé par
+  `EngineOptions::auto_compact_on_flush` (défaut `true` = filet de sécurité
+  historique restauré pour tout appelant direct) + `Engine::
+  set_auto_compact_on_flush(false)`, appelé une seule fois en production
+  dans `NativeMemoryStore::from_engine`. (2) Une revue de correction
+  adversariale post-fix a trouvé qu'une course bénigne entre deux
+  déclenchements de compaction (possible précisément parce que
+  `compact_prepare` tourne sous verrou de lecture partagé, pas exclusif)
+  faisait remonter l'échec `VersionEditMissingInput` du second commit
+  jusqu'à l'appelant de l'écriture qui l'avait _involontairement_
+  déclenché — un écrit réussi rapporté comme échoué à l'appelant ; et que
+  `compact_commit` incrémentait ses compteurs _avant_ la validation de
+  l'edit, les gonflant même sur un commit refusé. Les deux corrigés
+  (`with_inner` traite l'échec de compaction opportuniste comme non fatal
+  pour l'écrit déclencheur ; `compact_commit` n'incrémente ses compteurs
+  qu'après succès de `apply_version_edit`), pinnés par
+  `second_commit_of_two_racing_compact_prepare_jobs_is_refused_and_does_not_inflate_counters`.
+  `cargo xtask check`/`engine-check` (kill-loop 8/8 réellement réexécuté,
+  ~315-395s) + `cargo test -p basemyai --features test-util` en entier
+  verts.
 - **Reste ouvert (priorité)** : release 0.2.0. Image Docker REST écrite
   (build non vérifié, cf. §5). CUDA/NVML : détection ajoutée (feature
   `cuda-detect`) — validation sur GPU NVIDIA réel encore à faire. N13 :
-  **J4** (compaction hors verrou — publication par edit déjà en place,
-  activer le test flush-pendant-compaction, critère « aucun lecteur
-  bloqué », p99 vs baseline N7) puis J5/ADR-045 (memtable scellée) ;
-  ADR-043 toujours 🟡 Proposed (§1+J3 implémentés, acceptation à la clôture
-  N13 ; `docs/PLAN-NATIVE-ENGINE.md` §10). Une session précédente non identifiée
+  J5/ADR-045 (memtable scellée) reste à faire ; le p99 vs baseline N7
+  mentionné comme critère de sortie du plan §10 n'a volontairement pas été
+  chiffré à la clôture de J4 (secondaire face aux deux bugs trouvés en
+  validation, cf. ci-dessus) — à faire avant la clôture complète de N13.
+  ADR-043 toujours 🟡 Proposed (§1+J3+J4 implémentés, acceptation à la
+  clôture N13 ; `docs/PLAN-NATIVE-ENGINE.md` §10). Une session précédente non identifiée
   a aussi laissé `docs/architecture/ENGINE-TARGET-ARCHITECTURE.md` (cible
   long terme, catalogue durable/VersionSet/WAL segmenté) non committé —
   proposition plus large que ce que l'audit retient (§9 : « manifest seul,

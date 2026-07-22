@@ -482,6 +482,182 @@ async fn native_concurrent_reads_are_correct_and_faster_than_sequential() {
     );
 }
 
+/// ADR-043 §3/J4 (N13) exit criterion, made concrete at the `NativeMemoryStore`
+/// level — not just `Engine` (the edit/snapshot protocol itself is already
+/// pinned there by `compact_prepare_then_concurrent_flush_then_commit_keeps_both`,
+/// `basemyai-engine/tests/snapshot_compaction.rs`): "aucun lecteur … n'est
+/// jamais bloqué pendant toute la durée d'une compaction — seulement pendant
+/// la bascule finale, dont le coût est O(1)".
+///
+/// Design note: on this engine a single ordinary `put_memory` is itself not
+/// free (real vector-index maintenance — tens of ms), comparable to or
+/// larger than a moderate compaction merge's own cost (a plain KV
+/// materialize-and-rewrite, cheap per entry). So neither "one read's latency
+/// vs. an idle baseline" nor "aggregate throughput with vs. without
+/// compaction" isolates the property under test at an affordable dataset
+/// size — both are dominated by ordinary per-write lock contention (real,
+/// expected, out of scope: writes stay exclusive and serialized, ADR-043
+/// §4/§5), not by the compaction itself. The test instead isolates a single,
+/// deliberately large compaction in its own window and counts how many
+/// concurrent reads *complete* while that window is open:
+///
+/// 1. Seed a sizeable dataset spread across many SSTs with compaction
+///    structurally disabled (`compaction_sst_threshold: usize::MAX`) — no
+///    reader running, so this phase is only as slow as ordinary writes are.
+/// 2. Reopen the same on-disk store with `compaction_sst_threshold: 1` and
+///    start a background reader hammering `vector_ranking_ids`.
+/// 3. Issue exactly one more `put_memory` — its flush immediately exceeds
+///    the threshold, so this single call schedules exactly one compaction
+///    covering everything phase 1 built up, big enough to take a genuinely
+///    measurable slice of wall-clock time.
+///
+/// If that compaction's merge still held the write lock for its full
+/// duration (the pre-J4 design), the reader would be excluded from
+/// acquiring even a read lock for that whole window — zero reads could
+/// complete while the triggering call is in flight. Under the ADR-043 §3/J4
+/// design the merge runs under a shared read lock (concurrent with readers)
+/// and only the O(1) commit is exclusive, so multiple reads should complete
+/// during that window despite the compaction running.
+#[tokio::test]
+async fn native_reads_are_not_blocked_for_the_duration_of_a_concurrent_compaction() {
+    use basemyai::MemoryLayer;
+    use basemyai::storage::{MemoryStore, NativeMemoryStore};
+    use basemyai::temporal::Validity;
+    use basemyai_engine::EngineOptions;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let agent = basemyai::AgentId::new("compaction-concurrency-agent").expect("agent id");
+    let query = memory_tests::vec_for(7);
+
+    // Phase 1: build up a dataset spread across many SSTs, sequentially, no
+    // reader contention — deliberately sizeable so the single compaction
+    // triggered in phase 3 covers enough real live data (memory record +
+    // vector-index node + graph edges + FTS postings, all real, nothing
+    // synthetic) to take a genuinely measurable slice of wall-clock time.
+    {
+        let seed_options = EngineOptions {
+            memtable_flush_threshold: 60,
+            compaction_sst_threshold: usize::MAX,
+            ..EngineOptions::default()
+        };
+        let store = NativeMemoryStore::open_with_engine_options(dir.path(), seed_options).expect("open for seeding");
+        const N: usize = 1200;
+        for i in 0..N {
+            let vector = memory_tests::vec_for((i % 251) as u8);
+            store
+                .put_memory(
+                    &format!("m{i}"),
+                    &agent,
+                    MemoryLayer::Episodic,
+                    &format!("mémoire numéro {i}"),
+                    Validity::since(0),
+                    &vector,
+                    "user",
+                    1.0,
+                )
+                .await
+                .expect("seed");
+        }
+    } // dropped here: releases the writer lock before the reopen below.
+
+    // Phase 2: reopen with threshold 1 — the very next flush guarantees a
+    // compaction covering everything phase 1 built up.
+    let compact_options = EngineOptions {
+        memtable_flush_threshold: 1,
+        compaction_sst_threshold: 1,
+        ..EngineOptions::default()
+    };
+    let store = Arc::new(
+        NativeMemoryStore::open_with_engine_options(dir.path(), compact_options).expect("reopen for compaction"),
+    );
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_store = Arc::clone(&store);
+    let reader_agent = agent.clone();
+    let reader_query = query.clone();
+    let reader_stop = Arc::clone(&stop);
+    let reader = tokio::spawn(async move {
+        let mut completions = Vec::new();
+        while !reader_stop.load(Ordering::Relaxed) {
+            reader_store
+                .vector_ranking_ids(&reader_agent, &reader_query, 10, 0, true)
+                .await
+                .expect("read concurrent with compaction");
+            completions.push(Instant::now());
+        }
+        completions
+    });
+
+    // Give the reader a moment to start hammering before the trigger, and a
+    // moment after to keep sampling past it, without pinning the whole
+    // window to a fixed sleep for correctness (only for giving the
+    // background task room to run — the assertion below depends only on
+    // real timestamps, not on this delay's exact length).
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Phase 3: the single triggering write — its own `with_inner` call
+    // awaits the whole scheduled compaction before returning (see
+    // `NativeMemoryStore::with_inner`'s doc), so `trigger_start..trigger_end`
+    // brackets the compaction's real wall-clock window.
+    let trigger_start = Instant::now();
+    store
+        .put_memory(
+            "trigger",
+            &agent,
+            MemoryLayer::Episodic,
+            "trigger",
+            Validity::since(0),
+            &memory_tests::vec_for(255),
+            "user",
+            1.0,
+        )
+        .await
+        .expect("trigger write + compaction");
+    let trigger_end = Instant::now();
+    let trigger_duration = trigger_end - trigger_start;
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    stop.store(true, Ordering::Relaxed);
+    let completions = reader.await.expect("reader task");
+
+    let reads_during_trigger = completions
+        .iter()
+        .filter(|&&t| t >= trigger_start && t <= trigger_end)
+        .count();
+
+    eprintln!(
+        "native_reads_during_compaction: trigger write+compaction took {trigger_duration:?}, \
+         {reads_during_trigger} reads completed concurrently during that window ({} total reads)",
+        completions.len()
+    );
+
+    assert!(
+        trigger_duration > Duration::from_millis(15),
+        "the triggering write should have scheduled a genuinely measurable compaction (got \
+         {trigger_duration:?}) — the seeded dataset may be too small for this test to be meaningful"
+    );
+    // A handful of reads already in flight when the trigger's write lock is
+    // requested can still complete afterward under *either* design (they
+    // don't need to re-acquire anything) — empirically, up to ~2 on this
+    // dataset even when compaction is forced through a single exclusive
+    // lock for its whole duration (verified by temporarily simulating that
+    // pre-J4 shape locally: 2 reads completed in a comparable ~270ms
+    // window). Genuine concurrency during the merge itself looks
+    // completely different in scale — 36 reads completed in a comparable
+    // ~256ms window under the real ADR-043 §3/J4 code path. `>= 6` sits
+    // solidly between the two (3x above the blocked-design ceiling, 6x
+    // below the concurrent-design floor observed), not a hair-thin margin.
+    assert!(
+        reads_during_trigger >= 6,
+        "only {reads_during_trigger} read(s) completed while the triggering write's compaction was in \
+         flight ({trigger_duration:?}) — looks like reads were blocked for (most of) the merge, not \
+         just its brief commit"
+    );
+}
+
 #[tokio::test]
 async fn native_rotate_key_on_plaintext_store_fails() {
     let store = support::open_native_store();

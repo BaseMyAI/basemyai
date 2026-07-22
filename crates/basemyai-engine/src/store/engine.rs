@@ -137,6 +137,26 @@ pub struct EngineOptions {
     /// by `(sst_id, block_no)`. Default: [`DEFAULT_BLOCK_CACHE_CAPACITY_BYTES`]
     /// (32 MiB).
     pub block_cache_capacity_bytes: usize,
+    /// Whether `flush()` runs compaction inline, synchronously, once
+    /// `compaction_sst_threshold` is exceeded — `true` (the historical
+    /// behavior, ADR-025) keeps `Engine` self-contained: any direct caller
+    /// (a standalone binary, a test harness — nothing wraps `Engine` in a
+    /// lock it could hold too long) gets bounded SST growth for free, at the
+    /// cost of that caller's `put`/`delete`/`apply_batch` occasionally
+    /// paying a full-merge pass. `false` (ADR-043 §3/J4) opts out of that:
+    /// `flush()` only exposes [`Self::compaction_pending`], the merge never
+    /// runs inline, and it is the caller's responsibility to poll that and
+    /// drive [`Self::compact_prepare`]/[`Self::compact_commit`] itself —
+    /// correct only for a caller with somewhere better to run the merge off
+    /// its own lock (`NativeInner::with_inner`, the sole `false` setter).
+    /// Getting this wrong for a direct `Engine` user doesn't corrupt
+    /// anything (SSTs just never merge), but every lookup degrades to
+    /// scanning an ever-growing, never-compacted SST list — this is exactly
+    /// what made `crash_consistency.rs`'s kill-loop balloon from ~35s to
+    /// unbounded before this option existed, since `crash_writer` opens an
+    /// `Engine` directly with no `NativeInner` equivalent driving compaction
+    /// for it.
+    pub auto_compact_on_flush: bool,
 }
 
 impl Default for EngineOptions {
@@ -146,6 +166,7 @@ impl Default for EngineOptions {
             compaction_sst_threshold: 4,
             block_size: DEFAULT_BLOCK_SIZE,
             block_cache_capacity_bytes: DEFAULT_BLOCK_CACHE_CAPACITY_BYTES,
+            auto_compact_on_flush: true,
         }
     }
 }
@@ -173,7 +194,14 @@ pub struct Engine {
     /// in place (INV-VS-1/2). [`Self::snapshot`] pins it by cloning the
     /// `Arc`.
     current: Arc<Version>,
-    next_sst_id: u64,
+    /// Next SST id to allocate. `AtomicU64`, not a plain field, because
+    /// `Engine::compact_prepare` (ADR-043 §3/J4) reserves an id from `&self`
+    /// — the merge it stages runs off the write lock, so id allocation can
+    /// no longer assume exclusive access. Reservation is a single
+    /// `fetch_add`; nothing else about compaction depends on ordering
+    /// relative to other memory, so `Relaxed` — same reasoning as
+    /// `active_snapshots`/`sst_remove_failures` below.
+    next_sst_id: AtomicU64,
     options: EngineOptions,
     /// `Some` = encrypted at rest (ADR-030): WAL records and SST files are
     /// sealed under the store's DEK; `crypto.meta` holds the DEK wrapped by
@@ -209,6 +237,20 @@ pub struct Engine {
     /// `&self`; see `store::block_cache` for the "no lock across I/O"
     /// contract.
     block_cache: BlockCache,
+}
+
+/// A compaction merge already written to disk, staged for a brief exclusive
+/// commit (ADR-043 §3/J4). Produced by [`Engine::compact_prepare`] off the
+/// write lock (`&self`, no mutation beyond an atomic SST-id reservation);
+/// consumed by [`Engine::compact_commit`] (`&mut self`, no merge work — just
+/// the `VersionEdit` and its deferred counters). Opaque outside this crate:
+/// its fields are private, so a caller can only carry it from one call to
+/// the other, never construct or inspect it directly.
+pub struct CompactionJob {
+    merged: Arc<SstHandle>,
+    deleted: Vec<u64>,
+    input_bytes: u64,
+    output_bytes: u64,
 }
 
 impl Engine {
@@ -429,7 +471,7 @@ impl Engine {
             wal,
             memtable,
             current,
-            next_sst_id,
+            next_sst_id: AtomicU64::new(next_sst_id),
             options,
             crypto,
             counters,
@@ -700,7 +742,7 @@ impl Engine {
         }
         drop(old_version);
         self.memtable.clear();
-        self.next_sst_id = u64::from(!self.current.ssts.is_empty());
+        self.next_sst_id = AtomicU64::new(u64::from(!self.current.ssts.is_empty()));
         self.crypto = Some(new_crypto);
         self.counters.compaction_count += 1;
         self.counters.compaction_input_bytes += input_bytes;
@@ -952,14 +994,13 @@ impl Engine {
         }
         let entries: Vec<(Key, Option<Value>)> = self.memtable.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
-        let id = self.next_sst_id;
+        // Reserved up front (not incremented after the write) — same
+        // reasoning as before this counter became atomic: a caller that
+        // keeps using this instance after a later error must never
+        // `write_new` the same id twice, overwriting a file the published
+        // version already reads.
+        let id = self.next_sst_id.fetch_add(1, Ordering::Relaxed);
         let new_sst = BlockSstFile::write_new(&self.dir, id, entries, self.options.block_size, self.crypto.as_ref())?;
-        // Claim the id as soon as the file exists on disk — same placement
-        // as `compact()`. Incrementing only after `wal.reset()` (the old
-        // ordering) would let a caller that keeps using this instance after
-        // a reset error re-`write_new` the same id, overwriting a file the
-        // published version already reads.
-        self.next_sst_id += 1;
         self.counters.flush_count += 1;
         self.counters.bytes_written += new_sst.file_bytes;
         self.counters.fsync_count += 1; // write_new's one sync_all of the new SST
@@ -986,10 +1027,42 @@ impl Engine {
 
         self.memtable.clear();
 
-        if self.current.ssts.len() > self.options.compaction_sst_threshold {
+        // `auto_compact_on_flush` (ADR-043 §3/J4, `EngineOptions` doc):
+        // `false` callers (`NativeInner`) poll `compaction_pending` and run
+        // the merge off their own lock instead — inline here would hold
+        // *this* call's exclusive access (whatever the caller wraps `Engine`
+        // in) for the whole merge, defeating the point. `true` (default)
+        // callers have nothing else driving compaction for them, so this
+        // stays the safety net.
+        if self.options.auto_compact_on_flush && self.compaction_pending() {
             self.compact()?;
         }
         Ok(())
+    }
+
+    /// Cheap opportunistic check (ADR-043 §3/J4): `true` once the live SST
+    /// count exceeds `compaction_sst_threshold`, i.e. a [`Self::compact_prepare`]
+    /// call would return `Some`. `flush()` no longer triggers compaction
+    /// itself (see that method's doc) — a caller with a natural place to run
+    /// the merge off any exclusive lock it holds (`NativeInner::with_inner`)
+    /// polls this right after a flush to decide whether to schedule one.
+    /// `&self`, one integer comparison — safe to call as often as needed.
+    #[must_use]
+    pub fn compaction_pending(&self) -> bool {
+        self.current.ssts.len() > self.options.compaction_sst_threshold
+    }
+
+    /// Overrides `EngineOptions::auto_compact_on_flush` after open (ADR-043
+    /// §3/J4) — no `open*` constructor takes this per-call, since it's a
+    /// property of *how* a caller wraps `Engine`, not of the store on disk.
+    /// `NativeInner` is the one production caller that needs `false`: it
+    /// drives compaction itself, off its own lock, via
+    /// [`Self::compaction_pending`]/[`Self::compact_prepare`]/
+    /// [`Self::compact_commit`] from `with_inner`. Every other caller
+    /// (standalone binaries, test harnesses — anything with no equivalent
+    /// external scheduler) keeps the safe default (`true`).
+    pub fn set_auto_compact_on_flush(&mut self, enabled: bool) {
+        self.options.auto_compact_on_flush = enabled;
     }
 
     /// Operator-triggered compaction (ADR-040 §3, N9.4 — the engine half of
@@ -1029,19 +1102,30 @@ impl Engine {
         Snapshot::new(Arc::clone(&self.current), Arc::clone(&self.active_snapshots))
     }
 
-    /// Naive full-merge compaction: folds every existing SST (oldest to
+    /// Naive full-merge compaction, run unconditionally regardless of
+    /// [`EngineOptions::compaction_sst_threshold`] — the shared core behind
+    /// both [`Self::compact_prepare`]'s opportunistic, threshold-gated path
+    /// and [`Self::compact`]/[`Self::compact_now`]'s "merge even a single
+    /// SST" contract (that method's doc: rewriting drops tombstones even
+    /// below threshold — a real behavior `compact_now_merges_below_threshold_and_purges_tombstones`
+    /// and the J3 snapshot tests pin). Folds every existing SST (oldest to
     /// newest, later writes win) into a single new SST, dropping tombstones
     /// entirely — safe because this merge covers *all* existing data, so a
     /// deleted key has no older layer left to resurrect from. Correctness
     /// first; a tiered/leveled strategy is deferred (ADR-025).
-    fn compact(&mut self) -> Result<()> {
+    ///
+    /// `&self` only (ADR-043 §3/J4): touches `self.current` (via `Arc::clone`,
+    /// a snapshot of the merge's input set) and `self.next_sst_id` (atomic)
+    /// — never `self.counters`, which the caller applies at commit time
+    /// under `&mut self`, so nothing here mutates state outside exclusive
+    /// access. Under J3 flush/compaction ran under `&mut self`, so the input
+    /// set was trivially the version the edit committed against; under J4
+    /// the merge runs off-lock from this pinned snapshot while `self.current`
+    /// may advance (a concurrent flush) — the edit's `deleted` names exactly
+    /// these inputs, so anything published in between survives (INV-VS-5,
+    /// ENG-COR-001).
+    fn build_compaction_job(&self) -> Result<CompactionJob> {
         fail_point!("during_compaction");
-        // The merge's input set. Under J3 flush/compaction still run under
-        // `&mut self`, so this is trivially the version the edit below
-        // commits against; under J4 the merge runs off-lock from this pinned
-        // snapshot while `self.current` may advance (a concurrent flush) —
-        // the edit's `deleted` names exactly these inputs, so anything
-        // published in between survives (INV-VS-5, ENG-COR-001).
         let input = Arc::clone(&self.current);
         let input_bytes: u64 = input.ssts.iter().map(|h| h.file.file_bytes).sum();
         let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
@@ -1052,14 +1136,71 @@ impl Engine {
         }
         let entries: Vec<(Key, Option<Value>)> = merged.into_iter().filter(|(_, v)| v.is_some()).collect();
 
-        let id = self.next_sst_id;
+        let id = self.next_sst_id.fetch_add(1, Ordering::Relaxed);
         let new_sst = BlockSstFile::write_new(&self.dir, id, entries, self.options.block_size, self.crypto.as_ref())?;
-        self.next_sst_id += 1;
-        self.counters.compaction_count += 1;
-        self.counters.compaction_input_bytes += input_bytes;
-        self.counters.compaction_output_bytes += new_sst.file_bytes;
-        self.counters.bytes_written += new_sst.file_bytes;
-        self.counters.fsync_count += 1; // write_new's one sync_all of the merged output SST
+        let output_bytes = new_sst.file_bytes;
+        let deleted: Vec<u64> = input.ssts.iter().map(|h| h.file.id).collect();
+        Ok(CompactionJob {
+            merged: SstHandle::new(new_sst, Arc::clone(&self.sst_remove_failures)),
+            deleted,
+            input_bytes,
+            output_bytes,
+        })
+    }
+
+    /// Prepares a compaction merge off the write lock (ADR-043 §3/J4):
+    /// `&self` only, the opportunistic counterpart to
+    /// [`Self::build_compaction_job`] — `None` once the live SST count no
+    /// longer exceeds `compaction_sst_threshold` ([`Self::compaction_pending`]),
+    /// i.e. nothing to do. A caller with a natural place to run this off any
+    /// exclusive lock it holds (`NativeInner::with_inner`, under a shared
+    /// read lock) calls this, then commits the returned job with
+    /// [`Self::compact_commit`] under a brief exclusive lock — never holding
+    /// any lock for the merge itself.
+    ///
+    /// The returned [`CompactionJob`] already holds a fully-written SST on
+    /// disk; if the caller never commits it, that file simply becomes an
+    /// ordinary orphan swept at the next open (`confront_manifest_with_disk`)
+    /// — inert, not a correctness risk, since nothing ever links it into any
+    /// [`Version`].
+    ///
+    /// # Errors
+    /// I/O or corruption errors reading the input SSTs or writing the merged
+    /// output.
+    pub fn compact_prepare(&self) -> Result<Option<CompactionJob>> {
+        if !self.compaction_pending() {
+            return Ok(None);
+        }
+        self.build_compaction_job().map(Some)
+    }
+
+    /// Commits a [`CompactionJob`] prepared by [`Self::compact_prepare`]
+    /// (ADR-043 §3/J4): publishes its [`VersionEdit`] — `{ added: [merged],
+    /// deleted: inputs }` — against `self.current` **at this instant**, not
+    /// the snapshot the merge started from (INV-VS-3).
+    /// [`Self::apply_version_edit`]'s INV-VS-4 validation is what makes this
+    /// safe even when a flush published a new SST while the merge ran
+    /// off-lock: that SST is absent from `deleted` (fixed at prepare time),
+    /// so it survives into `V_next` untouched (INV-VS-5, ENG-COR-001).
+    /// Deferred counters — skipped by `compact_prepare`/`build_compaction_job`,
+    /// which must not mutate `self` beyond the atomic id reservation — are
+    /// applied here, under the same exclusive access as the edit, and only
+    /// once the edit actually publishes (see below). `&mut self`, brief: no
+    /// merge work happens in this call, only the edit (manifest write +
+    /// `Arc` swap).
+    ///
+    /// # Errors
+    /// [`EngineError::VersionEditMissingInput`] if a concurrent compaction
+    /// already retired one of `job`'s input ids — reachable under J4 (unlike
+    /// under J3's exclusive lock) because `compact_prepare` runs under a
+    /// *shared* read lock: two callers can both stage a job over the same
+    /// input set before either commits, and the second commit is refused
+    /// typed rather than publishing an incoherent manifest. Callers driving
+    /// this opportunistically (`NativeInner::with_inner`, ADR-043 §3/J4)
+    /// treat that as a harmless lost race, not a failure of whatever write
+    /// triggered the attempt; plus I/O errors publishing the manifest.
+    pub fn compact_commit(&mut self, job: CompactionJob) -> Result<()> {
+        let (input_bytes, output_bytes) = (job.input_bytes, job.output_bytes);
 
         // ENG-DUR-001/ENG-DUR-002: the edit publishes the manifest *before*
         // any old file can be removed — from that point a leftover old SST
@@ -1067,16 +1208,36 @@ impl Engine {
         // future reopen. Physical removal itself is deferred to each
         // handle's last-`Arc` drop (INV-VS-6): with no snapshot alive that
         // happens synchronously inside this call (the old version's only
-        // reference is `self.current`, replaced by the edit), preserving
+        // reference was `self.current`, replaced by the edit), preserving
         // the historical inline-removal timing; with a snapshot alive the
         // files persist, still readable, until the snapshot drops.
-        let deleted: Vec<u64> = input.ssts.iter().map(|h| h.file.id).collect();
-        drop(input);
+        //
+        // Counters are applied only after this succeeds — `apply_version_edit`
+        // promises "on error nothing is published and `self.current` is
+        // unchanged" (its own doc); a rejected edit (see `# Errors` above)
+        // must not inflate `compaction_count`/`bytes_written`/etc. as if a
+        // compaction had actually happened.
         self.apply_version_edit(VersionEdit {
-            added: vec![SstHandle::new(new_sst, Arc::clone(&self.sst_remove_failures))],
-            deleted,
+            added: vec![job.merged],
+            deleted: job.deleted,
         })?;
+        self.counters.compaction_count += 1;
+        self.counters.compaction_input_bytes += input_bytes;
+        self.counters.compaction_output_bytes += output_bytes;
+        self.counters.bytes_written += output_bytes;
+        self.counters.fsync_count += 1; // write_new's one sync_all of the merged output SST
         Ok(())
+    }
+
+    /// Naive full-merge compaction, unconditional (see
+    /// [`Self::build_compaction_job`]'s doc) — the synchronous path used by
+    /// [`Self::compact_now`], still `&mut self` for its whole duration:
+    /// callers that need the merge off the write lock use
+    /// [`Self::compact_prepare`]/[`Self::compact_commit`] instead
+    /// (ADR-043 §3/J4).
+    fn compact(&mut self) -> Result<()> {
+        let job = self.build_compaction_job()?;
+        self.compact_commit(job)
     }
 
     /// Publishes `edit` (ADR-043 §2 amended, J3): validates that every
@@ -1087,11 +1248,15 @@ impl Engine {
     /// deferred physical removal (INV-VS-6). On error nothing is published
     /// and `self.current` is unchanged.
     ///
-    /// Under J3's exclusive `&mut self` the current version cannot move
-    /// between the caller reading it and this commit; the validation exists
-    /// so J4's out-of-lock compaction fails typed instead of publishing a
-    /// manifest that silently drops a concurrently-flushed SST
-    /// (ENG-COR-001).
+    /// A `put`/`delete`/`apply_batch`-triggered `flush` always calls this
+    /// still under its own exclusive `&mut self`, so the current version
+    /// cannot move between it reading `self.current` and this commit — the
+    /// validation is a no-op there. It earns its keep for
+    /// [`Self::compact_commit`] (ADR-043 §3/J4): the merge that built its
+    /// `CompactionJob` ran off-lock, so `self.current` may have advanced (a
+    /// concurrent flush) by the time this runs — this validation is what
+    /// makes that safe, refusing typed instead of publishing a manifest that
+    /// silently drops a concurrently-flushed SST (ENG-COR-001).
     fn apply_version_edit(&mut self, edit: VersionEdit) -> Result<()> {
         let current_ids: std::collections::HashSet<u64> = self.current.ssts.iter().map(|h| h.file.id).collect();
         for id in &edit.deleted {

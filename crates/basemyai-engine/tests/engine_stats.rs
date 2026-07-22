@@ -70,7 +70,9 @@ fn flush_and_compaction_counters_track_real_activity() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut engine = Engine::open_with_options(dir.path(), small_options()).expect("open");
     // threshold 4 → 20 puts = 5 auto-flushes; compaction threshold 2 → at
-    // least one compaction fires along the way.
+    // least one compaction fires along the way (`auto_compact_on_flush`
+    // defaults to `true` — a direct `Engine` caller like this test has
+    // nothing else driving compaction for it, ADR-043 §3/J4).
     for i in 0..20u32 {
         engine
             .put(format!("key-{i:03}").as_bytes(), format!("value-{i}").as_bytes())

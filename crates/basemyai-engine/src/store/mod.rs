@@ -34,7 +34,9 @@ mod verify_logical;
 mod version;
 mod wal;
 
-pub use engine::{Batch, DEFAULT_BLOCK_CACHE_CAPACITY_BYTES, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, ScanPage};
+pub use engine::{
+    Batch, CompactionJob, DEFAULT_BLOCK_CACHE_CAPACITY_BYTES, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, ScanPage,
+};
 pub use repair::{RebuildReport, RepairAction, RepairPlan, plan_repair, rebuild_indexes};
 pub use stats::EngineStats;
 pub use verify::{IntegrityIssue, IssueKind, VerifyMode, VerifyReport, verify_store, verify_store_with_passphrase};

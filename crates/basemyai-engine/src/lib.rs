@@ -81,7 +81,7 @@ pub use idx::memory::{ForgetBatchOptions, MemoryRecord, NewMemoryRecord, Persist
 pub use idx::vector::{PersistentVectorIndex, VectorIndex, VectorIndexParams};
 pub use key::Key;
 pub use store::{
-    Batch, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, EngineStats, IntegrityIssue, IssueKind, RebuildReport,
-    RepairAction, RepairPlan, ScanPage, Snapshot, Value, VerifyMode, VerifyReport, plan_repair, rebuild_indexes,
-    verify_store, verify_store_with_passphrase,
+    Batch, CompactionJob, DEFAULT_BLOCK_SIZE, Engine, EngineOptions, EngineStats, IntegrityIssue, IssueKind,
+    RebuildReport, RepairAction, RepairPlan, ScanPage, Snapshot, Value, VerifyMode, VerifyReport, plan_repair,
+    rebuild_indexes, verify_store, verify_store_with_passphrase,
 };

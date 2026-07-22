@@ -57,6 +57,22 @@
 //! (verrou d'écriture exclusif) : lever *ça* exigerait de faire du moteur
 //! lui-même un multi-écrivain, hors périmètre N5.5 (voir
 //! `docs/adr/ADR-027-native-memory-store.md` §5).
+//!
+//! **Compaction concurrente (ADR-043 §3/J4, N13)** : une compaction
+//! déclenchée par un flush ne tient plus le verrou d'écriture pour toute sa
+//! durée. [`Self::with_inner`] vérifie, toujours sous le verrou d'écriture
+//! qu'il détient déjà pour `f` (coût quasi nul, pas de tour de verrou
+//! supplémentaire), si le flush qui vient de s'exécuter a fait passer le
+//! nombre de SST vivantes au-dessus du seuil (`Engine::compaction_pending`).
+//! Si oui, une fois ce verrou relâché, la passe de merge elle-même
+//! (potentiellement lente — tout le jeu de données vivant matérialisé en
+//! RAM) tourne sous verrou de **lecture** partagé (`Engine::compact_prepare`,
+//! via [`Self::with_inner_read`]) — donc concurrente aux lecteurs — et seule
+//! la bascule finale (`VersionEdit` + remplacement d'`Arc`, coût O(1), jamais
+//! O(données vivantes)) reprend brièvement le verrou d'écriture
+//! (`Engine::compact_commit`). Une seule passe par déclenchement : le commit
+//! ne redéclenche pas lui-même une vérification, un merge ramène toujours le
+//! compte de SST sous le seuil.
 
 mod inner;
 mod porting;
@@ -130,7 +146,11 @@ const OVERSAMPLE: usize = 8;
 /// ce `RwLock` ne change rien à ça, il ne fait qu'arrêter de sérialiser les
 /// lecteurs entre eux. Voir `docs/adr/ADR-027-native-memory-store.md` §5
 /// pour le contexte : ce `RwLock` remplace le `Mutex` que ce paragraphe
-/// décrivait comme la barre à lever en N5.5.
+/// décrivait comme la barre à lever en N5.5. Depuis ADR-043 §3/J4 (N13), la
+/// passe de merge d'une compaction déclenchée par un flush ne compte plus
+/// dans cette exclusion : elle tourne sous verrou de lecture partagé (donc
+/// concurrente aux lecteurs), seule la bascule finale (coût O(1)) reprend le
+/// verrou d'écriture — voir le doc du module.
 pub struct NativeMemoryStore {
     inner: Arc<RwLock<NativeInner>>,
     /// Garde de vie du répertoire temporaire d'[`Self::open_ephemeral`] —
@@ -195,6 +215,19 @@ impl NativeMemoryStore {
         Self::from_engine(Engine::open(path).map_err(map_engine_error)?)
     }
 
+    /// Comme [`Self::open`], avec des `EngineOptions` explicites — **réservé
+    /// aux tests** (`test-util`) qui doivent forcer flush/compaction à se
+    /// déclencher sur un jeu de données borné plutôt que d'attendre les
+    /// seuils par défaut (nécessaire pour exercer la compaction concurrente
+    /// d'ADR-043 §3/J4 sans construire un jeu de données massif).
+    ///
+    /// # Errors
+    /// Erreur de stockage si le moteur ou l'un de ses index ne s'ouvre pas.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn open_with_engine_options(path: impl AsRef<Path>, options: basemyai_engine::EngineOptions) -> Result<Self> {
+        Self::from_engine(Engine::open_with_options(path, options).map_err(map_engine_error)?)
+    }
+
     /// Ouvre (en le créant au besoin) un store natif **chiffré au repos**
     /// par une clé brute (ADR-030) : WAL et SST scellés sous la DEK du store,
     /// `key` vérifiée contre `crypto.meta` à l'ouverture — une mauvaise clé
@@ -251,6 +284,13 @@ impl NativeMemoryStore {
     }
 
     fn from_engine(mut engine: Engine) -> Result<Self> {
+        // ADR-043 §3/J4: this is the one production caller with somewhere
+        // better to run a compaction merge than inline under `flush()`'s
+        // exclusive access — `with_inner`'s post-write step, off the write
+        // lock (see its doc comment). Every direct `Engine` caller without
+        // that (standalone binaries, test harnesses) keeps the engine's own
+        // safe default instead.
+        engine.set_auto_compact_on_flush(false);
         let params = basemyai_engine::VectorIndexParams::with_dim(crate::EMBEDDING_DIM);
         let vectors = PersistentVectorIndex::open(&mut engine, params).map_err(storage)?;
         let memory = PersistentMemoryIndex::open(&engine).map_err(storage)?;
@@ -424,20 +464,102 @@ impl NativeMemoryStore {
     /// (jamais à travers un `.await`) — les mutations (`put_memory*`,
     /// `invalidate`, `forget`, `purge_agent`, `graph_upsert_*`,
     /// `rotate_key`, et le `touch` des chemins hybrides) passent par ici.
+    ///
+    /// Point de câblage unique de la compaction concurrente (ADR-043 §3/J4) :
+    /// une fois `f` exécuté et son résultat obtenu, encore sous le même
+    /// verrou d'écriture (donc à coût quasi nul), on interroge
+    /// `Engine::compaction_pending` — le flush que `f` vient éventuellement
+    /// de déclencher a-t-il fait passer le nombre de SST vivantes au-dessus
+    /// du seuil ? Le verrou relâché, si oui, [`Self::run_pending_compaction`]
+    /// lance la passe de merge hors de tout verrou d'écriture tenu ici.
+    /// Câblé une seule fois, ici : tous les appelants actuels de
+    /// `with_inner` en bénéficient automatiquement, sans dupliquer cette
+    /// logique à chaque site d'appel dispersé dans `inner.rs`/`trait_impl.rs`.
+    ///
+    /// Un échec de `run_pending_compaction` (typiquement
+    /// `EngineError::VersionEditMissingInput` — deux déclenchements
+    /// concurrents dont un a déjà tout compacté sous le verrou de lecture
+    /// partagé de `compact_prepare`, ADR-043 §3/J4 — ou une vraie erreur
+    /// d'I/O) est **délibérément non fatal** ici : `f` a déjà réussi et sa
+    /// donnée est déjà durable, le déclenchement de compaction n'était
+    /// qu'opportuniste. Le faire échouer via `?` renverrait à l'appelant de
+    /// `put_memory`/`invalidate`/`forget`/… un `Err` pour un écrit qui a en
+    /// réalité réussi — un caller raisonnable réessaierait ou lèverait une
+    /// alarme sur la mauvaise opération. La compaction manquée n'est pas
+    /// perdue : le prochain flush qui repasse par ici revérifiera
+    /// `compaction_pending` et retentera.
     async fn with_inner<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&mut NativeInner) -> Result<T> + Send + 'static,
     {
+        let (result, compaction_pending) = self.with_inner_write_and_pending(f).await?;
+        if compaction_pending && let Err(err) = self.run_pending_compaction().await {
+            tracing::warn!(
+                error = %err,
+                "compaction opportuniste (ADR-043 §3/J4) échouée après un écrit déjà réussi — \
+                 ignorée, retentée au prochain flush qui dépasse le seuil"
+            );
+        }
+        Ok(result)
+    }
+
+    /// Primitive partagée derrière [`Self::with_inner`] : exécute `f` sous le
+    /// verrou d'écriture et rapporte, dans la même acquisition, si une
+    /// compaction est désormais due (`Engine::compaction_pending` — une
+    /// simple comparaison d'entiers déjà résidents, gratuite ici).
+    ///
+    /// Utilisée aussi par [`Self::run_pending_compaction`] pour son étape de
+    /// commit (`Engine::compact_commit`) **sans** passer par `with_inner` —
+    /// volontaire : un merge ramène toujours le nombre de SST sous le seuil,
+    /// donc rebrancher `with_inner` (et son propre déclenchement) sur ce
+    /// commit ne ferait qu'une vérification supplémentaire sans effet, mais
+    /// le protocole voulu (ADR-043 §3/J4) est explicitement « une seule passe
+    /// par déclenchement » — pas de rebouclage, même inoffensif.
+    async fn with_inner_write_and_pending<T, F>(&self, f: F) -> Result<(T, bool)>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut NativeInner) -> Result<T> + Send + 'static,
+    {
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || -> Result<(T, bool)> {
             let mut guard = inner
                 .write()
                 .map_err(|_| storage("verrou d'écriture du store natif empoisonné"))?;
-            f(&mut guard)
+            let result = f(&mut guard)?;
+            let compaction_pending = guard.engine.compaction_pending();
+            Ok((result, compaction_pending))
         })
         .await
         .map_err(|e| storage(format!("tâche bloquante du store natif interrompue : {e}")))?
+    }
+
+    /// Lance une passe de compaction hors du verrou d'écriture (ADR-043
+    /// §3/J4) : la préparation du merge (potentiellement lente — tout le
+    /// jeu de données vivant matérialisé en RAM) tourne sous verrou de
+    /// **lecture** partagé via [`Self::with_inner_read`] — donc concurrente
+    /// aux lecteurs — puis le commit (édition du `Version` + rename, coût
+    /// O(1)) reprend brièvement le verrou d'écriture. `None` de
+    /// `compact_prepare` (rien à faire, p. ex. un autre déclenchement a déjà
+    /// tout compacté entre-temps) : no-op — ce cas est bien atteignable,
+    /// puisque `compact_prepare` tourne sous verrou de **lecture** partagé
+    /// (pas exclusif), donc deux déclenchements concurrents peuvent tous les
+    /// deux y lire le même `current` avant que l'un des deux ne commette.
+    /// Le second `compact_commit` échoue alors typé
+    /// (`EngineError::VersionEditMissingInput`, INV-VS-4) plutôt que de
+    /// publier un edit incohérent — [`Self::with_inner`] traite cette erreur
+    /// (comme toute autre ici) comme non fatale pour l'écrit qui a
+    /// initialement déclenché cette passe.
+    async fn run_pending_compaction(&self) -> Result<()> {
+        let Some(job) = self
+            .with_inner_read(|inner| inner.engine.compact_prepare().map_err(map_engine_error))
+            .await?
+        else {
+            return Ok(());
+        };
+        self.with_inner_write_and_pending(move |inner| inner.engine.compact_commit(job).map_err(map_engine_error))
+            .await
+            .map(|(result, _pending)| result)
     }
 
     /// [`Self::with_inner`], sous verrou de **lecture** partagé (N5.5) : `f`
