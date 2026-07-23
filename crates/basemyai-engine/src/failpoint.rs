@@ -26,6 +26,13 @@
 //! before_full_rotation_publish after all content fsyncs, before pointer rename
 //! after_full_rotation_publish after pointer rename, before old-generation GC
 //! during_full_rotation_gc immediately before best-effort old-generation GC
+//! during_generation_gc_removal one simulated failed removal attempt per hit
+//!                                (retried up to 3x, then counted via
+//!                                `EngineStats::generation_remove_failures`;
+//!                                GC-RETRY-P2) — checked on every attempt
+//!                                inside `remove_path_with_retries`, so
+//!                                `Action::Error` set for the whole call
+//!                                exhausts all retries deterministically
 //! before_manifest_publish before store.meta's tmp → final rename (N8.9,
 //!                          ADR-039 §7 — the site the original plan
 //!                          reserved this name for, before block-based SSTs

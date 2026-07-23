@@ -10,7 +10,7 @@ use std::path::Path;
 use candle_core::{DType, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
-use tokenizers::Tokenizer;
+use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
 
 use super::{Device, Embedder};
 use crate::{CoreError, Result};
@@ -54,8 +54,29 @@ impl CandleEmbedder {
         let config: Config = serde_json::from_slice(&config_bytes)
             .map_err(|e| CoreError::Embed(format!("parsing de config.json: {e}")))?;
 
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| CoreError::Embed(format!("chargement du tokenizer: {e}")))?;
+        // `encode_batch` ne pad pas tout seul : sans ceci, `stack_u32` reçoit des
+        // lignes de longueurs différentes et échoue dès qu'un lot contient plus
+        // d'un texte de tailles distinctes (le cas normal).
+        tokenizer.with_padding(Some(PaddingParams::default()));
+        // EMBED-TRUNC (BaseMyAI adversarial audit, 2026-07-22) : sans borne de
+        // troncature, un texte de plusieurs milliers de mots — bien en deçà
+        // des limites REST/MCP en caractères (`MAX_TEXT_LEN`), qui ne bornent
+        // que le nombre d'octets, jamais le nombre de tokens — produit une
+        // séquence tokenisée qui peut dépasser `max_position_embeddings` du
+        // modèle chargé, avec un coût d'auto-attention O(seq_len²) non borné
+        // et un comportement non garanti au-delà de cette longueur (panic ou
+        // sortie dégradée selon la version de `candle-transformers`). Dérivée
+        // du modèle réellement chargé (`config.max_position_embeddings`),
+        // jamais une constante en dur — un futur modèle avec une fenêtre
+        // différente reste correct sans y retoucher.
+        tokenizer
+            .with_truncation(Some(TruncationParams {
+                max_length: config.max_position_embeddings,
+                ..TruncationParams::default()
+            }))
+            .map_err(|e| CoreError::Embed(format!("configuration de la troncature du tokenizer: {e}")))?;
 
         // SAFETY (candle) : mmap d'un fichier safetensors de confiance, local.
         let vb = unsafe {

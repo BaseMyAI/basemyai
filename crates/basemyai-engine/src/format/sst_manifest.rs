@@ -100,8 +100,28 @@ pub fn decode(buf: &[u8], path: &Path) -> Result<SstManifest> {
     }
     let manifest_generation = u64::from_le_bytes(buf[6..14].try_into().expect("slice is exactly 8 bytes"));
     let count = u32::from_le_bytes(buf[14..18].try_into().expect("slice is exactly 4 bytes")) as usize;
-    let body_len = HEADER_LEN + count * 8;
-    let total_len = body_len + 4;
+    // CRYPTO-3 (BaseMyAI adversarial audit, 2026-07-22): `count` is an
+    // unauthenticated, attacker/corruption-controlled field read straight off
+    // disk — bound its arithmetic with `checked_mul`/`checked_add` rather
+    // than a raw `count * 8`, matching the discipline every other
+    // length-prefixed decoder in this crate already follows (bound before
+    // computing, never assume the multiplication fits). Inert on every
+    // target this project actually builds (64-bit; `count * 8` cannot wrap a
+    // 64-bit `usize` for any `u32` count), but a 32-bit build would wrap
+    // silently without this.
+    let body_len = count
+        .checked_mul(8)
+        .and_then(|ids_len| ids_len.checked_add(HEADER_LEN))
+        .ok_or_else(|| {
+            corrupt(format!(
+                "manifest.meta declares {count} ids — size computation overflows"
+            ))
+        })?;
+    let total_len = body_len.checked_add(4).ok_or_else(|| {
+        corrupt(format!(
+            "manifest.meta declares {count} ids — size computation overflows"
+        ))
+    })?;
     if buf.len() != total_len {
         return Err(corrupt(format!(
             "manifest.meta must be exactly {total_len} bytes for {count} ids, got {}",
@@ -178,6 +198,24 @@ mod tests {
         bytes[last] ^= 0xFF;
         let err = decode(&bytes, &path()).expect_err("bit flip should fail");
         assert!(matches!(err, EngineError::CorruptSstManifest { .. }));
+    }
+
+    #[test]
+    fn huge_count_is_rejected_typed_not_by_overflowing() {
+        // CRYPTO-3: a `count` chosen so `count * 8` would overflow a 32-bit
+        // `usize` (irrelevant on this 64-bit target, but the bound must
+        // still hold structurally) with a tiny real buffer — must return a
+        // typed error, never panic or attempt to size a buffer from the
+        // unchecked product.
+        let mut bytes = vec![0u8; HEADER_LEN + 4];
+        bytes[0..4].copy_from_slice(&SST_MANIFEST_MAGIC.to_le_bytes());
+        bytes[4..6].copy_from_slice(&SST_MANIFEST_VERSION.to_le_bytes());
+        bytes[14..18].copy_from_slice(&u32::MAX.to_le_bytes());
+        let err = decode(&bytes, &path()).expect_err("huge count must be rejected, not overflow");
+        assert!(
+            matches!(err, EngineError::CorruptSstManifest { .. }),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

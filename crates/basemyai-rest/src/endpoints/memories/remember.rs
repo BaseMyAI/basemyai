@@ -35,10 +35,10 @@ pub(super) async fn remember(
     JsonBody(req): JsonBody<RememberRequest>,
 ) -> Result<impl axum::response::IntoResponse, RestError> {
     validate_text(&req.text)?;
+    let mem = RequestContext::require_agent(&state, &req.agent_id).await?;
     if !state.memories().check_remember_rate(&req.agent_id).await {
         return Err(RestError::RateLimited);
     }
-    let mem = RequestContext::require_agent(&state, &req.agent_id).await?;
     let layer = MemoryLayer::from_table(&req.layer)?;
     let validity = Validity {
         valid_from: now_unix(),

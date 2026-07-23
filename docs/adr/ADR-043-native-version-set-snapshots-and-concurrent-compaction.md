@@ -19,6 +19,14 @@ ENG-COR-001 avec du vrai code, pas un edit forgé) et
 un lecteur concurrent complète des dizaines de lectures pendant qu'une
 compaction réelle tourne, contre 1-2 seulement quand le protocole pré-J4
 est simulé localement). Acceptation à la clôture de N13.
+**Amendé le 2026-07-22** (remédiation de l'audit adversarial BaseMyAI) :
+**DUR-LSM-01** (P0, ressuscitation silencieuse d'une valeur périmée/annulation
+d'un tombstone sous course clé-chevauchante) corrigé par INV-VS-8 (ordre
+canonique par id, constructeur privé `Version::build`) ; **CONC-P1** (le merge
+bloquait en réalité les écrivains via le `RwLock` de `NativeMemoryStore`, pas
+seulement en apparence documentaire) corrigé en sortant réellement le merge de
+tout verrou (`Engine::compaction_snapshot`/`CompactionSnapshot`). Voir le
+quatrième amendement plus bas.
 **Date** : 2026-07-19
 
 ## Amendement 2026-07-20 — §1 implémenté
@@ -163,6 +171,97 @@ par blocs) : le format des SST elles-mêmes ne change pas, seule la manière
 dont l'ensemble des SST vivantes est publié et référencé change. C'est le
 jalon **N13** du programme production-hardening
 (`docs/PLAN-NATIVE-ENGINE.md` §10).
+
+## Amendement 2026-07-22 — INV-VS-8 (DUR-LSM-01) et sortie réelle du merge hors verrou (CONC-P1)
+
+Corrige deux findings de l'audit de sécurité adversarial BaseMyAI
+(2026-07-22) directement issus de l'implémentation J4 ci-dessus.
+
+### DUR-LSM-01 (P0, fiabilité — aucun attaquant requis)
+
+**Défaut** : `apply_version_edit` (engine.rs) assemblait
+`Version.ssts` par `filter` (retirer les ids de `deleted`) puis
+`Vec::extend` (ajouter `edit.added` en toute fin), sans jamais retrier le
+résultat. Correct pour un flush (dont la nouvelle SST a toujours l'id le
+plus élevé du jeu), silencieusement faux pour un commit de compaction J4 :
+la SST fusionnée peut porter un id *inférieur* à celui d'une SST flushée
+pendant que le merge tournait hors verrou — `compact_prepare` réserve l'id
+de sortie *avant* que ce flush concurrent ne réserve le sien. Le `extend`
+plaçait donc la donnée périmée *après* la donnée fraîche dans le vecteur,
+et `Engine::get`'s `.iter().rev()` préférait la SST fusionnée (périmée) à
+la SST flushée (fraîche) pour toute clé présente dans les deux —
+symétriquement, `scan_prefix`'s overlay `BTreeMap` (forward) laissait
+l'entrée de la SST fusionnée écraser celle, plus récente, de la SST
+flushée. Concrètement : un `remember`/`forget` ordinaire arrivant pendant
+qu'une compaction opportuniste tourne peut faire réapparaître une valeur
+supprimée ou disparaître une mise à jour, silencieusement, sans crash, tant
+que le process reste up (auto-guéri à la prochaine réouverture, puisque
+`scan_existing` re-trie toujours par id ascendant).
+
+**Correction — INV-VS-8** : `Version` n'a plus qu'un seul constructeur,
+`Version::build(manifest_generation, ssts)` (`store/version.rs`), qui
+trie systématiquement `ssts` par `file.id` ascendant avant de rien exposer
+— peu importe l'ordre dans lequel l'appelant les a assemblées. Le champ
+`Version.ssts` est désormais privé au module `version` ; les trois anciens
+sites de construction directe (`open_inner`, `rotate_full`,
+`apply_version_edit`, tous dans `engine.rs`) passent tous par ce
+constructeur. `file.id` reste la clé d'ordre canonique — **pas** une
+séquence logique séparée : c'est un `AtomicU64` unique partagé par tout le
+moteur, réservé par chaque producteur (flush, merge de compaction) au
+moment exact où son contenu est figé (juste avant `BlockSstFile::write_new`),
+jamais réutilisé au sein d'une génération. Cette propriété fait de l'ordre
+par id un ordre chronologique exact — mais elle est maintenant *documentée
+et vérifiée à un seul endroit* (`debug_assert!` anti-doublon dans
+`Version::build`) plutôt qu'une hypothèse implicite que chaque site
+d'appel pouvait violer silencieusement, comme celui-ci l'a fait.
+
+Régression pinnée par `crates/basemyai-engine/tests/
+compaction_overlapping_key_race.rs` (8 tests : put/delete/delete-puis-
+réinsertion/batch/`scan_prefix`/deux jobs partiellement chevauchants/
+snapshot antérieur à la course/oracle différentiel `BTreeMap`) et, sous
+kill réel, `crash_writer` mode `compact-race` +
+`compact_race_kill_reopen_verify_loop` (`tests/crash_consistency.rs`) —
+voir Axe 4 du plan de correction, DUR-LSM-02.
+
+### CONC-P1 (P1, fiabilité — latence sous charge)
+
+**Défaut** : `NativeMemoryStore::run_pending_compaction` appelait
+`Engine::compact_prepare` (le merge potentiellement long) **à l'intérieur**
+de `with_inner_read`, qui tient le verrou de lecture de
+`RwLock<NativeInner>` pour toute la durée de la closure — pas seulement la
+capture. `std::sync::RwLock::write()` ne peut pas progresser tant qu'un
+lecteur (même unique) tient le verrou : tout écrivain concurrent
+(`put_memory`/`invalidate`/`forget`/…) restait donc bloqué pour la durée
+complète du merge, pas seulement pour la bascule finale — alors même que
+`Engine::compact_prepare` lui-même (`&self`, ADR-043 §3/J4 initial) était
+déjà sans verrou à son propre niveau. Le critère de sortie testé de ce
+document (« aucun lecteur bloqué pendant toute une compaction ») était bien
+respecté ; la phrase sur les écritures entrantes (§3 : « continuent d'être
+acceptées… exactement comme aujourd'hui ») ne l'était pas.
+
+**Correction** : `Engine::compact_prepare` est décomposé en une capture bon
+marché, `Engine::compaction_snapshot() -> Option<CompactionSnapshot>`
+(quelques clonages d'`Arc`, aucune I/O), et une exécution,
+`CompactionSnapshot::build() -> Result<CompactionJob>` (le merge lui-même —
+c'est une **valeur**, pas un emprunt d'`Engine`, donc exécutable sans
+qu'aucun verrou ne soit tenu, ni celui d'`Engine` ni celui d'un appelant
+externe). `run_pending_compaction` capture sous `with_inner_read` (coût
+quasi nul), **relâche ce verrou**, exécute `CompactionSnapshot::build` dans
+le pool bloquant de tokio sans aucun verrou de `NativeInner` tenu, puis
+commet sous `with_inner_write_and_pending` comme avant (coût O(1)). Le
+protocole en trois étapes (capture immuable → merge hors verrou sur des
+handles épinglés → commit court validé) demandé par la remédiation de
+l'audit est donc bien celui déjà décrit au §3 ci-dessus — la correction
+porte sur le fait que l'implémentation `NativeMemoryStore` ne le respectait
+pas réellement au niveau de son propre verrou, pas sur une refonte du
+protocole `Engine` lui-même, qui était déjà correct à son niveau.
+
+### Invariant testable ajouté
+
+- **INV-VS-8 — Ordre canonique.** `Version.ssts` est toujours strictement
+  ascendant par `SstHandle.file.id`, quel que soit l'ordre d'assemblage —
+  garanti par construction (`Version::build`, seul constructeur), jamais
+  par convention d'appel.
 
 ## Contexte
 

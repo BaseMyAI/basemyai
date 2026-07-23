@@ -23,6 +23,8 @@ pub struct MemoryOpenOptions {
     pub credential_mode: Option<String>,
     pub model_path: Option<String>,
     pub allow_model_download: Option<bool>,
+    /// `auto` (default) | `cpu` | `metal` | `cuda` | `cuda:<index>`.
+    pub device: Option<String>,
 }
 
 /// Un tour de conversation brut (rôle + contenu) à ingérer via

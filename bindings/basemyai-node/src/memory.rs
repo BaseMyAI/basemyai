@@ -291,6 +291,35 @@ impl Drop for WatchHandle {
     }
 }
 
+/// Parse l'option `device` du binding Node vers le [`Device`] agnostique du
+/// core. `None` (`"auto"`) laisse la résolution au provisioning/détection
+/// matérielle, à l'image de `basemyai-py`'s `parse_device`.
+#[cfg(feature = "embed")]
+fn parse_device(value: &str) -> Result<Option<Device>> {
+    match value {
+        "auto" => Ok(None),
+        "cpu" => Ok(Some(Device::Cpu)),
+        "metal" => Ok(Some(Device::Metal)),
+        "cuda" => Ok(Some(Device::Cuda(0))),
+        s if s.starts_with("cuda:") => {
+            let index = s
+                .strip_prefix("cuda:")
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .ok_or_else(|| {
+                    Error::new(
+                        Status::InvalidArg,
+                        "device must be one of: auto, cpu, metal, cuda, cuda:<index>",
+                    )
+                })?;
+            Ok(Some(Device::Cuda(index)))
+        }
+        _ => Err(Error::new(
+            Status::InvalidArg,
+            "device must be one of: auto, cpu, metal, cuda, cuda:<index>",
+        )),
+    }
+}
+
 #[cfg(feature = "embed")]
 async fn open_production(options: MemoryOpenOptions) -> Result<Memory> {
     let MemoryOpenOptions {
@@ -300,6 +329,7 @@ async fn open_production(options: MemoryOpenOptions) -> Result<Memory> {
         credential_mode,
         model_path,
         allow_model_download,
+        device,
     } = options;
 
     // `path`/`agentId` omis : retombe sur `~/.basemyai/config.toml` /
@@ -314,15 +344,17 @@ async fn open_production(options: MemoryOpenOptions) -> Result<Memory> {
     let agent_id = defaults.resolve_open_agent(agent_id);
 
     let agent = basemyai::AgentId::new(agent_id).ok_or_else(|| to_napi(basemyai::MemoryError::MissingAgent))?;
-    let (model_dir, device) = if let Some(model_path) = model_path {
-        (PathBuf::from(model_path), Device::Cpu)
+    let parsed_device = parse_device(device.as_deref().unwrap_or("auto"))?;
+    let (model_dir, resolved_device) = if let Some(model_path) = model_path {
+        let resolved = parsed_device.unwrap_or_else(|| basemyai::detect_hardware().device);
+        (PathBuf::from(model_path), resolved)
     } else {
         let provision = basemyai::provision(allow_model_download.unwrap_or(false))
             .await
             .map_err(to_napi)?;
-        (provision.model_path, provision.device)
+        (provision.model_path, parsed_device.unwrap_or(provision.device))
     };
-    let embedder = CandleEmbedder::load(&model_dir, device)
+    let embedder = CandleEmbedder::load(&model_dir, resolved_device)
         .map_err(basemyai::MemoryError::from)
         .map_err(to_napi)?;
     let db_path = PathBuf::from(path);

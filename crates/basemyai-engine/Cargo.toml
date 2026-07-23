@@ -9,6 +9,7 @@ authors.workspace = true
 repository.workspace = true
 publish = false
 autobins = false
+autotests = false
 
 [features]
 # Ouvre des stores persistants en clair (`Engine::open`) — tests et benches
@@ -66,6 +67,86 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# `tests/*` reorganisé par domaine (crash/, compaction/, vector/, graph/,
+# format/, engine/) — voir `tests/common/mod.rs` pour le helper partagé.
+# Noms de binaire inchangés : les invocations `--test <name>` dans
+# `xtask/src/main.rs` et `.github/workflows/*.yml` restent valides.
+[[test]]
+name = "basic"
+path = "tests/engine/basic.rs"
+
+[[test]]
+name = "engine_stats"
+path = "tests/engine/engine_stats.rs"
+
+[[test]]
+name = "model_based"
+path = "tests/engine/model_based.rs"
+
+[[test]]
+name = "vector_recall"
+path = "tests/vector/vector_recall.rs"
+
+[[test]]
+name = "vector_persistence"
+path = "tests/vector/vector_persistence.rs"
+
+[[test]]
+name = "vector_churn"
+path = "tests/vector/vector_churn.rs"
+
+[[test]]
+name = "graph_parity"
+path = "tests/graph/graph_parity.rs"
+
+[[test]]
+name = "format_lock"
+path = "tests/format/format_lock.rs"
+
+[[test]]
+name = "adr042_contract"
+path = "tests/format/adr042_contract.rs"
+
+[[test]]
+name = "malformed_open"
+path = "tests/crash/malformed_open.rs"
+
+[[test]]
+name = "failpoints"
+path = "tests/crash/failpoints.rs"
+
+[[test]]
+name = "corruption_smoke"
+path = "tests/crash/corruption_smoke.rs"
+
+[[test]]
+name = "io_faults"
+path = "tests/crash/io_faults.rs"
+
+[[test]]
+name = "crash_consistency"
+path = "tests/crash/crash_consistency.rs"
+
+[[test]]
+name = "compaction_overlapping_key_race"
+path = "tests/compaction/compaction_overlapping_key_race.rs"
+
+[[test]]
+name = "compaction_remove_retry"
+path = "tests/compaction/compaction_remove_retry.rs"
+
+[[test]]
+name = "snapshot_compaction"
+path = "tests/compaction/snapshot_compaction.rs"
+
+[[test]]
+name = "generation_gc_retry"
+path = "tests/compaction/generation_gc_retry.rs"
+
+[[test]]
+name = "generation_pointer_loss_is_rejected_and_gen1_survives"
+path = "tests/compaction/generation_pointer_loss_is_rejected_and_gen1_survives.rs"
 
 [lints]
 workspace = true

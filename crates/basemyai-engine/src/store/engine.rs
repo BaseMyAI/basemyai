@@ -194,14 +194,21 @@ pub struct Engine {
     /// in place (INV-VS-1/2). [`Self::snapshot`] pins it by cloning the
     /// `Arc`.
     current: Arc<Version>,
-    /// Next SST id to allocate. `AtomicU64`, not a plain field, because
-    /// `Engine::compact_prepare` (ADR-043 §3/J4) reserves an id from `&self`
-    /// — the merge it stages runs off the write lock, so id allocation can
-    /// no longer assume exclusive access. Reservation is a single
+    /// Next SST id to allocate. `Arc<AtomicU64>`, not a plain field, for two
+    /// stacked reasons: `Engine::compact_prepare` (ADR-043 §3/J4) reserves
+    /// an id from `&self` — the merge it stages runs off the write lock, so
+    /// id allocation can no longer assume exclusive access to `Engine` — and
+    /// `Engine::compaction_snapshot` (CONC-P1 fix) hands a clone of this
+    /// `Arc` out of `Engine` entirely, so a caller wrapping `Engine` in its
+    /// own outer lock (`NativeMemoryStore`) can reserve the merged SST's id
+    /// without holding *that* lock either. Reservation is a single
     /// `fetch_add`; nothing else about compaction depends on ordering
     /// relative to other memory, so `Relaxed` — same reasoning as
-    /// `active_snapshots`/`sst_remove_failures` below.
-    next_sst_id: AtomicU64,
+    /// `active_snapshots`/`sst_remove_failures` below. `file.id` doubles as
+    /// `Version`'s canonical visibility-order key (INV-VS-8,
+    /// `store::version`) precisely because reservation always happens here,
+    /// atomically, at content-freeze time — never anywhere else.
+    next_sst_id: Arc<AtomicU64>,
     options: EngineOptions,
     /// `Some` = encrypted at rest (ADR-030): WAL records and SST files are
     /// sealed under the store's DEK; `crypto.meta` holds the DEK wrapped by
@@ -220,6 +227,10 @@ pub struct Engine {
     /// releases, outside any `&mut Engine` context), no longer inline in
     /// `compact()`. See [`EngineStats::compaction_remove_failures`].
     sst_remove_failures: Arc<AtomicU64>,
+    /// Old-generation-directory removals that still failed after retries
+    /// following a full key/passphrase rotation (GC-RETRY-P2). See
+    /// [`EngineStats::generation_remove_failures`].
+    generation_remove_failures: Arc<AtomicU64>,
     /// Live [`Snapshot`]s not yet dropped (ENG-RES-003 / ADR-043 J3 exit
     /// criterion) — incremented by [`Self::snapshot`], decremented by
     /// `Snapshot::drop`. See [`EngineStats::active_snapshots`].
@@ -237,6 +248,66 @@ pub struct Engine {
     /// `&self`; see `store::block_cache` for the "no lock across I/O"
     /// contract.
     block_cache: BlockCache,
+}
+
+/// Everything [`CompactionSnapshot::build`] needs to run a compaction merge
+/// — captured cheaply by [`Engine::compaction_snapshot`]/
+/// [`Engine::capture_compaction_snapshot`] (CONC-P1 fix, ADR-043 §3/J4
+/// amended). Deliberately holds no reference to `Engine`: every field is
+/// either `Arc`-shared or a cheap owned clone, so `build` can run with
+/// nothing else locked — not `Engine`, not whatever outer structure a
+/// caller wraps `Engine` in. Opaque outside this crate: a caller can only
+/// obtain one from `Engine` and hand it to `build`, never construct or
+/// inspect it directly.
+pub struct CompactionSnapshot {
+    input: Arc<Version>,
+    next_sst_id: Arc<AtomicU64>,
+    dir: PathBuf,
+    block_size: u32,
+    crypto: Option<CryptoContext>,
+    sst_remove_failures: Arc<AtomicU64>,
+}
+
+impl CompactionSnapshot {
+    /// The actual merge: folds every SST in `input` (oldest to newest, later
+    /// writes win) into a single new SST, dropping tombstones entirely —
+    /// safe because `input` covers *all* existing data at capture time, so a
+    /// deleted key has no older layer left to resurrect from. Correctness
+    /// first; a tiered/leveled strategy is deferred (ADR-025). Reserves the
+    /// output SST's id from the shared counter at the exact point its
+    /// content is frozen (right before `BlockSstFile::write_new`), matching
+    /// `Engine::flush`'s discipline — the property `Version::build`
+    /// (INV-VS-8) relies on to make id order equivalent to visibility order.
+    ///
+    /// No lock beyond what producing this `CompactionSnapshot` already
+    /// required (CONC-P1 fix): this can run for as long as it needs to
+    /// without blocking a single reader or writer anywhere.
+    ///
+    /// # Errors
+    /// I/O or corruption errors reading the input SSTs or writing the merged
+    /// output.
+    pub fn build(self) -> Result<CompactionJob> {
+        fail_point!("during_compaction");
+        let input_bytes: u64 = self.input.ssts().iter().map(|h| h.file.file_bytes).sum();
+        let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
+        for h in self.input.ssts() {
+            for (k, v) in h.file.entries()? {
+                merged.insert(k, v);
+            }
+        }
+        let entries: Vec<(Key, Option<Value>)> = merged.into_iter().filter(|(_, v)| v.is_some()).collect();
+
+        let id = self.next_sst_id.fetch_add(1, Ordering::Relaxed);
+        let new_sst = BlockSstFile::write_new(&self.dir, id, entries, self.block_size, self.crypto.as_ref())?;
+        let output_bytes = new_sst.file_bytes;
+        let deleted: Vec<u64> = self.input.ssts().iter().map(|h| h.file.id).collect();
+        Ok(CompactionJob {
+            merged: SstHandle::new(new_sst, Arc::clone(&self.sst_remove_failures)),
+            deleted,
+            input_bytes,
+            output_bytes,
+        })
+    }
 }
 
 /// A compaction merge already written to disk, staged for a brief exclusive
@@ -432,13 +503,13 @@ impl Engine {
         };
 
         let sst_remove_failures = Arc::new(AtomicU64::new(0));
-        let current = Arc::new(Version {
+        let generation_remove_failures = Arc::new(AtomicU64::new(0));
+        let current = Arc::new(Version::build(
             manifest_generation,
-            ssts: ssts
-                .into_iter()
+            ssts.into_iter()
                 .map(|file| SstHandle::new(file, Arc::clone(&sst_remove_failures)))
                 .collect(),
-        });
+        ));
 
         let wal_path = dir.join("wal.log");
         let mut wal = Wal::open_for_append(wal_path, crypto.clone())?;
@@ -461,7 +532,7 @@ impl Engine {
         }
 
         let block_cache = BlockCache::new(options.block_cache_capacity_bytes);
-        gc_inactive_generations(&root_dir, generation_id);
+        gc_inactive_generations(&root_dir, generation_id, &generation_remove_failures);
         Ok(Self {
             root_dir,
             dir,
@@ -471,12 +542,13 @@ impl Engine {
             wal,
             memtable,
             current,
-            next_sst_id: AtomicU64::new(next_sst_id),
+            next_sst_id: Arc::new(AtomicU64::new(next_sst_id)),
             options,
             crypto,
             counters,
             orphan_bytes_at_open,
             sst_remove_failures,
+            generation_remove_failures,
             active_snapshots: Arc::new(AtomicU64::new(0)),
             point_lookup_full_sst_read: AtomicU64::new(0),
             block_cache,
@@ -504,9 +576,9 @@ impl Engine {
             wal_bytes: self.wal.size_on_disk()?,
             wal_records: self.counters.wal_records,
             memtable_bytes,
-            sst_count: self.current.ssts.len(),
-            sst_bytes: self.current.ssts.iter().map(|h| h.file.file_bytes).sum(),
-            tombstone_count: memtable_tombstones + self.current.ssts.iter().map(|h| h.file.tombstones).sum::<u64>(),
+            sst_count: self.current.ssts().len(),
+            sst_bytes: self.current.ssts().iter().map(|h| h.file.file_bytes).sum(),
+            tombstone_count: memtable_tombstones + self.current.ssts().iter().map(|h| h.file.tombstones).sum::<u64>(),
             flush_count: self.counters.flush_count,
             compaction_count: self.counters.compaction_count,
             compaction_input_bytes: self.counters.compaction_input_bytes,
@@ -519,6 +591,7 @@ impl Engine {
             fsync_count: self.counters.fsync_count + self.wal.fsync_count(),
             orphan_bytes: self.orphan_bytes_at_open,
             compaction_remove_failures: self.sst_remove_failures.load(Ordering::Relaxed),
+            generation_remove_failures: self.generation_remove_failures.load(Ordering::Relaxed),
             manifest_generation: self.current.manifest_generation,
             active_snapshots: self.active_snapshots.load(Ordering::Relaxed),
         })
@@ -656,7 +729,7 @@ impl Engine {
             // This directly folds the unflushed tail into the output, so no
             // intermediate old-DEK SST and no WAL re-sealing pass is needed.
             let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
-            for h in &self.current.ssts {
+            for h in self.current.ssts() {
                 for (key, value) in h.file.entries()? {
                     merged.insert(key, value);
                 }
@@ -727,22 +800,26 @@ impl Engine {
         // (`gc_old_generation`), never file by file — a `Snapshot` taken
         // before a full rotation does not survive it (typed I/O error on
         // its next read, per ADR-043 §2 amended).
-        let new_version = Arc::new(Version {
-            manifest_generation: 0,
-            ssts: new_sst
+        let new_version = Arc::new(Version::build(
+            0,
+            new_sst
                 .into_iter()
                 .map(|file| SstHandle::new(file, Arc::clone(&self.sst_remove_failures)))
                 .collect(),
-        });
+        ));
         let old_version = std::mem::replace(&mut self.current, new_version);
-        let input_bytes = old_version.ssts.iter().map(|h| h.file.file_bytes).sum::<u64>();
-        let output_bytes = self.current.ssts.iter().map(|h| h.file.file_bytes).sum::<u64>();
-        for old in &old_version.ssts {
+        let input_bytes = old_version.ssts().iter().map(|h| h.file.file_bytes).sum::<u64>();
+        let output_bytes = self.current.ssts().iter().map(|h| h.file.file_bytes).sum::<u64>();
+        for old in old_version.ssts() {
             self.block_cache.invalidate_sst(old.file.id);
         }
         drop(old_version);
         self.memtable.clear();
-        self.next_sst_id = AtomicU64::new(u64::from(!self.current.ssts.is_empty()));
+        // Fresh generation, fresh id space (ids from the retired generation
+        // belong to a directory this instance no longer writes to) — safe to
+        // reset regardless of what `next_sst_id` held before (INV-VS-8 is
+        // scoped per generation, never across one).
+        self.next_sst_id = Arc::new(AtomicU64::new(u64::from(!self.current.ssts().is_empty())));
         self.crypto = Some(new_crypto);
         self.counters.compaction_count += 1;
         self.counters.compaction_input_bytes += input_bytes;
@@ -750,7 +827,12 @@ impl Engine {
         self.counters.bytes_written += output_bytes;
 
         fail_point!("after_full_rotation_publish");
-        gc_old_generation(&self.root_dir, &old_dir, next_generation);
+        gc_old_generation(
+            &self.root_dir,
+            &old_dir,
+            next_generation,
+            &self.generation_remove_failures,
+        );
         Ok(())
     }
 
@@ -820,7 +902,7 @@ impl Engine {
         if let Some(hit) = self.memtable.get(&key) {
             return Ok(hit.cloned());
         }
-        for h in self.current.ssts.iter().rev() {
+        for h in self.current.ssts().iter().rev() {
             let (hit, blocks_read) = h.file.get(&key, &self.block_cache)?;
             if blocks_read > 1 {
                 self.point_lookup_full_sst_read.fetch_add(1, Ordering::Relaxed);
@@ -849,7 +931,7 @@ impl Engine {
     /// ([`BlockSstFile::entries_with_prefix`]) — never a full-file decode.
     pub fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Key, Value)>> {
         let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
-        for h in &self.current.ssts {
+        for h in self.current.ssts() {
             let (matches, _blocks_read) = h.file.entries_with_prefix(prefix)?;
             for (k, v) in matches {
                 merged.insert(k, v);
@@ -878,7 +960,7 @@ impl Engine {
             return Ok(Vec::new());
         }
         let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
-        for h in &self.current.ssts {
+        for h in self.current.ssts() {
             let (matches, _blocks_read) = h.file.entries_with_range(start, end)?;
             for (k, v) in matches {
                 merged.insert(k, v);
@@ -933,7 +1015,7 @@ impl Engine {
             (Some(c), None) => Some(c),
             (None, f) => f,
         };
-        for h in &self.current.ssts {
+        for h in self.current.ssts() {
             let (matches, truncated, _blocks_read) = h.file.entries_with_range_limited(start, end, limit)?;
             if truncated {
                 let last = matches.last().map(|(k, _)| k.as_bytes().to_vec());
@@ -1049,7 +1131,7 @@ impl Engine {
     /// `&self`, one integer comparison — safe to call as often as needed.
     #[must_use]
     pub fn compaction_pending(&self) -> bool {
-        self.current.ssts.len() > self.options.compaction_sst_threshold
+        self.current.ssts().len() > self.options.compaction_sst_threshold
     }
 
     /// Overrides `EngineOptions::auto_compact_on_flush` after open (ADR-043
@@ -1077,7 +1159,7 @@ impl Engine {
     /// nothing to flush.
     pub fn compact_now(&mut self) -> Result<()> {
         self.flush()?;
-        if self.current.ssts.is_empty() {
+        if self.current.ssts().is_empty() {
             return Ok(());
         }
         self.compact()
@@ -1102,50 +1184,42 @@ impl Engine {
         Snapshot::new(Arc::clone(&self.current), Arc::clone(&self.active_snapshots))
     }
 
+    /// Cheap, `&self`-only capture of everything a compaction merge needs
+    /// (CONC-P1 fix, ADR-043 §3/J4 amended): a handful of `Arc` clones plus
+    /// one `PathBuf`/`CryptoContext` clone — no I/O, no allocation
+    /// proportional to store size. The point: this is a *value*, not a
+    /// borrow of `Engine`, so a caller wrapping `Engine` in its own outer
+    /// lock (`NativeMemoryStore`'s `RwLock<NativeInner>`) can take that lock
+    /// just long enough to call this, release it, and only then run
+    /// [`CompactionSnapshot::build`] — the actual RAM-materialize-and-write
+    /// pass, potentially slow — with **no lock of its own held at all**, not
+    /// even a shared read lock. Before this existed, `NativeMemoryStore::
+    /// run_pending_compaction` held its read lock for the merge's entire
+    /// duration (calling `compact_prepare` from inside it), which blocked
+    /// every writer for that whole time even though `Engine`'s own API was
+    /// already lock-free at this level — see `docs/adr/
+    /// ADR-043-native-version-set-snapshots-and-concurrent-compaction.md`'s
+    /// third amendment.
+    fn capture_compaction_snapshot(&self) -> CompactionSnapshot {
+        CompactionSnapshot {
+            input: Arc::clone(&self.current),
+            next_sst_id: Arc::clone(&self.next_sst_id),
+            dir: self.dir.clone(),
+            block_size: self.options.block_size,
+            crypto: self.crypto.clone(),
+            sst_remove_failures: Arc::clone(&self.sst_remove_failures),
+        }
+    }
+
     /// Naive full-merge compaction, run unconditionally regardless of
     /// [`EngineOptions::compaction_sst_threshold`] — the shared core behind
     /// both [`Self::compact_prepare`]'s opportunistic, threshold-gated path
     /// and [`Self::compact`]/[`Self::compact_now`]'s "merge even a single
     /// SST" contract (that method's doc: rewriting drops tombstones even
     /// below threshold — a real behavior `compact_now_merges_below_threshold_and_purges_tombstones`
-    /// and the J3 snapshot tests pin). Folds every existing SST (oldest to
-    /// newest, later writes win) into a single new SST, dropping tombstones
-    /// entirely — safe because this merge covers *all* existing data, so a
-    /// deleted key has no older layer left to resurrect from. Correctness
-    /// first; a tiered/leveled strategy is deferred (ADR-025).
-    ///
-    /// `&self` only (ADR-043 §3/J4): touches `self.current` (via `Arc::clone`,
-    /// a snapshot of the merge's input set) and `self.next_sst_id` (atomic)
-    /// — never `self.counters`, which the caller applies at commit time
-    /// under `&mut self`, so nothing here mutates state outside exclusive
-    /// access. Under J3 flush/compaction ran under `&mut self`, so the input
-    /// set was trivially the version the edit committed against; under J4
-    /// the merge runs off-lock from this pinned snapshot while `self.current`
-    /// may advance (a concurrent flush) — the edit's `deleted` names exactly
-    /// these inputs, so anything published in between survives (INV-VS-5,
-    /// ENG-COR-001).
+    /// and the J3 snapshot tests pin).
     fn build_compaction_job(&self) -> Result<CompactionJob> {
-        fail_point!("during_compaction");
-        let input = Arc::clone(&self.current);
-        let input_bytes: u64 = input.ssts.iter().map(|h| h.file.file_bytes).sum();
-        let mut merged: BTreeMap<Key, Option<Value>> = BTreeMap::new();
-        for h in &input.ssts {
-            for (k, v) in h.file.entries()? {
-                merged.insert(k, v);
-            }
-        }
-        let entries: Vec<(Key, Option<Value>)> = merged.into_iter().filter(|(_, v)| v.is_some()).collect();
-
-        let id = self.next_sst_id.fetch_add(1, Ordering::Relaxed);
-        let new_sst = BlockSstFile::write_new(&self.dir, id, entries, self.options.block_size, self.crypto.as_ref())?;
-        let output_bytes = new_sst.file_bytes;
-        let deleted: Vec<u64> = input.ssts.iter().map(|h| h.file.id).collect();
-        Ok(CompactionJob {
-            merged: SstHandle::new(new_sst, Arc::clone(&self.sst_remove_failures)),
-            deleted,
-            input_bytes,
-            output_bytes,
-        })
+        self.capture_compaction_snapshot().build()
     }
 
     /// Prepares a compaction merge off the write lock (ADR-043 §3/J4):
@@ -1172,6 +1246,19 @@ impl Engine {
             return Ok(None);
         }
         self.build_compaction_job().map(Some)
+    }
+
+    /// Public, decomposed counterpart to [`Self::compact_prepare`] for a
+    /// caller that itself sits behind an outer lock and must not hold that
+    /// lock for the merge's duration (CONC-P1 fix — `NativeMemoryStore::
+    /// run_pending_compaction` is the one production caller): capture
+    /// under a brief lock acquisition via this method, release the lock,
+    /// then call [`CompactionSnapshot::build`] with nothing held. `None`
+    /// under the same threshold gate as `compact_prepare`
+    /// ([`Self::compaction_pending`]).
+    #[must_use]
+    pub fn compaction_snapshot(&self) -> Option<CompactionSnapshot> {
+        self.compaction_pending().then(|| self.capture_compaction_snapshot())
     }
 
     /// Commits a [`CompactionJob`] prepared by [`Self::compact_prepare`]
@@ -1258,25 +1345,34 @@ impl Engine {
     /// makes that safe, refusing typed instead of publishing a manifest that
     /// silently drops a concurrently-flushed SST (ENG-COR-001).
     fn apply_version_edit(&mut self, edit: VersionEdit) -> Result<()> {
-        let current_ids: std::collections::HashSet<u64> = self.current.ssts.iter().map(|h| h.file.id).collect();
+        let current_ids: std::collections::HashSet<u64> = self.current.ssts().iter().map(|h| h.file.id).collect();
         for id in &edit.deleted {
             if !current_ids.contains(id) {
                 return Err(EngineError::VersionEditMissingInput { id: *id });
             }
         }
         let deleted: std::collections::HashSet<u64> = edit.deleted.iter().copied().collect();
+        // Order here is irrelevant — `Version::build` (INV-VS-8) sorts by id
+        // and rejects duplicates in debug builds. This used to be a
+        // hand-assembled `Vec` (`filter` the survivors, then `extend` with
+        // `edit.added`), which was correct for a flush but silently wrong
+        // for an off-lock compaction commit: `edit.added`'s merged SST can
+        // carry a *lower* id than a survivor flushed after the merge's input
+        // snapshot was taken (`compact_prepare` reserves its output id
+        // before that later flush reserves its own), so appending it
+        // unconditionally put stale data after fresher data in the vector —
+        // exactly DUR-LSM-01. Letting `Version::build` canonicalize removes
+        // the possibility structurally rather than relying on every call
+        // site to assemble things in the right order.
         let mut next_ssts: Vec<_> = self
             .current
-            .ssts
+            .ssts()
             .iter()
             .filter(|h| !deleted.contains(&h.file.id))
             .map(Arc::clone)
             .collect();
         next_ssts.extend(edit.added);
-        let next = Version {
-            manifest_generation: self.current.manifest_generation + 1,
-            ssts: next_ssts,
-        };
+        let next = Version::build(self.current.manifest_generation + 1, next_ssts);
         publish_sst_manifest(&self.dir, next.manifest_generation, &next.ids())?;
         self.counters.fsync_count += 1; // publish_sst_manifest's one sync_all
 
@@ -1284,7 +1380,7 @@ impl Engine {
         // handles (their files are removed at last-`Arc` drop) and evict
         // their cached blocks now — the cache belongs to the live view, and
         // a snapshot re-reading a retired SST uses its own private cache.
-        for h in &self.current.ssts {
+        for h in self.current.ssts() {
             if deleted.contains(&h.file.id) {
                 self.block_cache.invalidate_sst(h.file.id);
                 h.retire();
@@ -1527,12 +1623,56 @@ fn confront_manifest_with_disk(dir: &Path, found: Vec<BlockSstFile>) -> Result<(
     Ok((kept, manifest.manifest_generation))
 }
 
-fn gc_old_generation(root_dir: &Path, old_dir: &Path, current_generation: u64) {
+/// Retries a handful of times before giving up (GC-RETRY-P2, BaseMyAI
+/// adversarial audit, 2026-07-22) — the directory/file-removal counterpart
+/// to `store::version::remove_old_sst_with_retries`'s discipline, applied
+/// here to old-generation GC after a full key/passphrase rotation. Absorbs
+/// the same common transient case (a brief antivirus/indexer/backup handle
+/// on Windows) that motivated the per-SST version, without blocking for
+/// long. On final failure, increments `remove_failures` rather than
+/// silently discarding the error — the leftover path is still an inert
+/// orphan, swept at the next `Engine::open` (`gc_inactive_generations`),
+/// but for a full rotation specifically ("no byte left readable under the
+/// old DEK") a silent failure here is worth surfacing.
+fn remove_path_with_retries(remove: impl Fn(&Path) -> std::io::Result<()>, path: &Path, remove_failures: &AtomicU64) {
+    const ATTEMPTS: u32 = 3;
+    for attempt in 0..ATTEMPTS {
+        if attempt_remove_path(&remove, path) {
+            return;
+        }
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    remove_failures.fetch_add(1, Ordering::Relaxed);
+}
+
+/// One removal attempt, with a test-only seam (`during_generation_gc_removal`)
+/// so a test can force every attempt in a call to fail deterministically —
+/// mirrors `store::version::remove_old_sst_attempt`'s failpoint idiom,
+/// applied here to directory/file GC after a full rotation.
+fn attempt_remove_path(remove: &impl Fn(&Path) -> std::io::Result<()>, path: &Path) -> bool {
+    #[cfg(any(test, feature = "test-util"))]
+    if crate::failpoint::hit("during_generation_gc_removal").is_err() {
+        return false;
+    }
+    remove(path).is_ok()
+}
+
+fn gc_old_generation(root_dir: &Path, old_dir: &Path, current_generation: u64, remove_failures: &Arc<AtomicU64>) {
     if old_dir == root_dir {
-        let _ = fs::remove_file(root_dir.join("wal.log"));
+        remove_path_with_retries(|p| fs::remove_file(p), &root_dir.join("wal.log"), remove_failures);
         hit_infallible_failpoint("during_full_rotation_gc");
-        let _ = fs::remove_file(crypto::crypto_meta_path(root_dir));
-        let _ = fs::remove_file(root_dir.join("crypto.meta.tmp"));
+        remove_path_with_retries(
+            |p| fs::remove_file(p),
+            &crypto::crypto_meta_path(root_dir),
+            remove_failures,
+        );
+        remove_path_with_retries(
+            |p| fs::remove_file(p),
+            &root_dir.join("crypto.meta.tmp"),
+            remove_failures,
+        );
         if let Ok(entries) = fs::read_dir(root_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -1540,7 +1680,7 @@ fn gc_old_generation(root_dir: &Path, old_dir: &Path, current_generation: u64) {
                 if path.extension().and_then(|extension| extension.to_str()) == Some("sst")
                     || name.ends_with(".sst.tmp")
                 {
-                    let _ = fs::remove_file(path);
+                    remove_path_with_retries(|p| fs::remove_file(p), &path, remove_failures);
                 }
             }
         }
@@ -1550,13 +1690,13 @@ fn gc_old_generation(root_dir: &Path, old_dir: &Path, current_generation: u64) {
         {
             let path = entry.path();
             if path.is_dir() {
-                let _ = fs::remove_dir_all(path);
+                remove_path_with_retries(|p| fs::remove_dir_all(p), &path, remove_failures);
             } else {
-                let _ = fs::remove_file(path);
+                remove_path_with_retries(|p| fs::remove_file(p), &path, remove_failures);
             }
             hit_infallible_failpoint("during_full_rotation_gc");
         }
-        let _ = fs::remove_dir_all(old_dir);
+        remove_path_with_retries(|p| fs::remove_dir_all(p), old_dir, remove_failures);
     }
 }
 
@@ -1571,7 +1711,7 @@ fn hit_infallible_failpoint(name: &'static str) {
 #[cfg(not(any(test, feature = "test-util")))]
 fn hit_infallible_failpoint(_name: &'static str) {}
 
-fn gc_inactive_generations(root_dir: &Path, current_generation: u64) {
+fn gc_inactive_generations(root_dir: &Path, current_generation: u64, remove_failures: &Arc<AtomicU64>) {
     let Ok(entries) = fs::read_dir(root_dir) else {
         return;
     };
@@ -1584,11 +1724,11 @@ fn gc_inactive_generations(root_dir: &Path, current_generation: u64) {
             continue;
         };
         if id != current_generation {
-            let _ = fs::remove_dir_all(path);
+            remove_path_with_retries(|p| fs::remove_dir_all(p), &path, remove_failures);
         }
     }
     if current_generation != 0 {
-        gc_old_generation(root_dir, root_dir, current_generation);
+        gc_old_generation(root_dir, root_dir, current_generation, remove_failures);
     }
 }
 

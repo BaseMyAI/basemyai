@@ -42,5 +42,20 @@ basemyai-engine = { path = "../basemyai-engine" }
 tokio.workspace = true
 tempfile.workspace = true
 
+# CRYPTO-2 (BaseMyAI adversarial audit, 2026-07-22): the default encryption
+# key file/directory (`~/.basemyai/{key,.}`) is restricted to the current
+# user's SID on write via `SetNamedSecurityInfoW` — the Unix path already
+# does this via `chmod`-equivalent mode bits; Windows had no equivalent
+# (`create_dir_all`/`fs::write` unconditionally, `validate_default_key_permissions`
+# a no-op). Pure Win32 API, no CMake, matching this workspace's existing
+# `windows-sys`-only posture for platform code (`basemyai-engine`'s RSS sampler).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
 [lints]
 workspace = true

@@ -392,7 +392,36 @@ fn validate_default_key_permissions(key_path: &Path) -> Result<(), KeyResolveErr
             });
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // CRYPTO-2 (BaseMyAI adversarial audit, 2026-07-22): this was a
+        // complete no-op — no ACL verification at all on Windows, unlike
+        // the Unix branch above. `write_key_file_restricted`/
+        // `create_restricted_dir` now write a protected, single-grantee
+        // DACL; re-verify it here on every read, the same "actively
+        // re-validate, don't just trust what was written once" posture as
+        // the Unix mode-bit check.
+        let sid = crate::storage::key_acl::current_user_sid().map_err(|source| KeyResolveError::Io {
+            path: key_path.to_path_buf(),
+            source,
+        })?;
+        let restricted = crate::storage::key_acl::is_restricted_to_current_user(key_path, &sid).map_err(|source| {
+            KeyResolveError::Io {
+                path: key_path.to_path_buf(),
+                source,
+            }
+        })?;
+        if !restricted {
+            return Err(KeyResolveError::InsecurePermissions {
+                path: key_path.to_path_buf(),
+                mode: 0,
+                fix_hint: "the key file's ACL is not restricted to the current user only — \
+                           recreate it (delete and let BaseMyAI regenerate it) or repair its \
+                           permissions manually via Windows security settings",
+            });
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = key_path;
     }
@@ -427,7 +456,19 @@ fn create_restricted_dir(dir: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // CRYPTO-2: create, then restrict the DACL to the current user only
+        // (PROTECTED — blocks inherited ACEs from whatever the parent
+        // directory would otherwise contribute). Best-effort in the sense
+        // that a failure here surfaces as this call's own `Err` (never
+        // silently ignored) — `persist_key_file`'s caller sees it exactly
+        // like any other I/O error creating the directory.
+        std::fs::create_dir_all(dir)?;
+        let sid = crate::storage::key_acl::current_user_sid()?;
+        crate::storage::key_acl::restrict_to_current_user(dir, &sid)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         std::fs::create_dir_all(dir)
     }
@@ -447,7 +488,19 @@ fn write_key_file_restricted(path: &Path, contents: &[u8]) -> std::io::Result<()
         file.write_all(contents)?;
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // CRYPTO-2: write, then restrict the DACL — same posture as
+        // `create_restricted_dir` above. The file is written first (so its
+        // content is exactly what the caller intended) and the ACL applied
+        // immediately after, before this function returns — no window
+        // where the caller could plausibly observe the file mid-write with
+        // default permissions and treat it as done.
+        std::fs::write(path, contents)?;
+        let sid = crate::storage::key_acl::current_user_sid()?;
+        crate::storage::key_acl::restrict_to_current_user(path, &sid)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         std::fs::write(path, contents)
     }
@@ -632,6 +685,68 @@ mod tests {
 
         let meta = std::fs::metadata(&key_path).expect("meta");
         assert_ne!(meta.permissions().mode() & 0o077, 0);
+    }
+
+    /// CRYPTO-2 regression (positive case): a key file created through the
+    /// normal `persist_key_file`/`resolve` path must end up with a DACL
+    /// restricted to the current user only — verified by actually reading
+    /// the ACL back via the Win32 APIs, not just asserting the call
+    /// succeeded.
+    #[cfg(windows)]
+    #[test]
+    fn default_key_file_and_dir_are_acl_restricted_to_current_user() {
+        let _lock = env_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let basemyai = dir.path().join(".basemyai");
+        let key_path = basemyai.join("key");
+        persist_key_file(&basemyai, &key_path, &EncryptionKey::raw("acl-test-key"), false).expect("persist");
+
+        let sid = crate::storage::key_acl::current_user_sid().expect("current user sid");
+        assert!(
+            crate::storage::key_acl::is_restricted_to_current_user(&key_path, &sid).expect("read key file ACL"),
+            "the key file's DACL must be restricted to exactly the current user after persist_key_file"
+        );
+        assert!(
+            crate::storage::key_acl::is_restricted_to_current_user(&basemyai, &sid).expect("read key dir ACL"),
+            "the .basemyai directory's DACL must be restricted to exactly the current user after persist_key_file"
+        );
+
+        // And `validate_default_key_permissions` — the read-time
+        // counterpart — must accept what the write path just produced.
+        assert!(validate_default_key_permissions(&key_path).is_ok());
+    }
+
+    /// CRYPTO-2 regression (negative case): a key file whose ACL grants
+    /// access beyond the current user (simulated here by re-sealing it to
+    /// the well-known "Everyone" SID instead) must be rejected by
+    /// `validate_default_key_permissions` with an explicit, typed error —
+    /// never silently accepted, mirroring the Unix `chmod 644` regression
+    /// test above.
+    #[cfg(windows)]
+    #[test]
+    fn resolve_rejects_key_file_with_a_permissive_windows_acl() {
+        let _lock = env_lock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let basemyai = dir.path().join(".basemyai");
+        let key_path = basemyai.join("key");
+        persist_key_file(&basemyai, &key_path, &EncryptionKey::raw("insecure-acl-key"), false).expect("persist");
+
+        // Re-seal the key file's DACL to "Everyone" instead of the current
+        // user — simulates a misconfigured/inherited ACL.
+        let everyone = crate::storage::key_acl::everyone_sid_for_test();
+        crate::storage::key_acl::restrict_to_current_user(&key_path, &everyone).expect("reseal ACL to Everyone");
+
+        let _home = EnvVarGuard::set("HOME", Some(dir.path().to_str().expect("utf8")));
+        let _profile = EnvVarGuard::set("USERPROFILE", Some(dir.path().to_str().expect("utf8")));
+        let _db = EnvVarGuard::set("BASEMYAI_DB_KEY", None);
+        let _enc = EnvVarGuard::set("BASEMYAI_ENCRYPTION_KEY", None);
+        let _file = EnvVarGuard::set("BASEMYAI_DB_KEY_FILE", None);
+
+        let err = EncryptionKey::resolve(None).expect_err("permissive ACL must be rejected");
+        assert!(
+            matches!(err, KeyResolveError::InsecurePermissions { .. }),
+            "expected InsecurePermissions, got {err:?}"
+        );
     }
 
     #[test]

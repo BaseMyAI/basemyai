@@ -112,6 +112,19 @@ pub struct EngineStats {
     /// a best-effort cleanup. This counter turns a previously fully silent
     /// failure into an observable one; it does not by itself close the gap.
     pub compaction_remove_failures: u64,
+    /// Counter: old-generation-directory removals that still failed after
+    /// retries following a full key/passphrase rotation (GC-RETRY-P2,
+    /// BaseMyAI adversarial audit, 2026-07-22) — the directory-level
+    /// counterpart to [`Self::compaction_remove_failures`], same discipline
+    /// (`gc_old_generation`'s removal attempts previously made exactly one
+    /// try and silently discarded the error, unlike the per-SST removal
+    /// path this mirrors). Zero on a healthy filesystem. A persistently
+    /// failed removal here is notable specifically because a full rotation's
+    /// entire purpose is to leave no bytes readable under the old DEK —
+    /// this counter turns a silent failure of that guarantee into an
+    /// observable one; the leftover directory is still swept at the next
+    /// `Engine::open` (`gc_inactive_generations`).
+    pub generation_remove_failures: u64,
     /// Gauge: the durable SST-manifest's current publication counter
     /// (ENG-DUR-001, `manifest.meta` — incremented on every flush that adds
     /// an SST and every compaction that replaces the set).

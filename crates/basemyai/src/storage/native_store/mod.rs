@@ -58,21 +58,29 @@
 //! lui-même un multi-écrivain, hors périmètre N5.5 (voir
 //! `docs/adr/ADR-027-native-memory-store.md` §5).
 //!
-//! **Compaction concurrente (ADR-043 §3/J4, N13)** : une compaction
-//! déclenchée par un flush ne tient plus le verrou d'écriture pour toute sa
-//! durée. [`Self::with_inner`] vérifie, toujours sous le verrou d'écriture
-//! qu'il détient déjà pour `f` (coût quasi nul, pas de tour de verrou
+//! **Compaction concurrente (ADR-043 §3/J4, N13 ; amendement CONC-P1)** :
+//! une compaction déclenchée par un flush ne tient le verrou d'écriture ni
+//! pour toute sa durée, ni même un verrou de lecture pour la partie lente.
+//! [`Self::with_inner`] vérifie, toujours sous le verrou d'écriture qu'il
+//! détient déjà pour `f` (coût quasi nul, pas de tour de verrou
 //! supplémentaire), si le flush qui vient de s'exécuter a fait passer le
 //! nombre de SST vivantes au-dessus du seuil (`Engine::compaction_pending`).
-//! Si oui, une fois ce verrou relâché, la passe de merge elle-même
-//! (potentiellement lente — tout le jeu de données vivant matérialisé en
-//! RAM) tourne sous verrou de **lecture** partagé (`Engine::compact_prepare`,
-//! via [`Self::with_inner_read`]) — donc concurrente aux lecteurs — et seule
-//! la bascule finale (`VersionEdit` + remplacement d'`Arc`, coût O(1), jamais
-//! O(données vivantes)) reprend brièvement le verrou d'écriture
-//! (`Engine::compact_commit`). Une seule passe par déclenchement : le commit
-//! ne redéclenche pas lui-même une vérification, un merge ramène toujours le
-//! compte de SST sous le seuil.
+//! Si oui, une fois ce verrou relâché, [`Self::run_pending_compaction`]
+//! capture les SST d'entrée sous un verrou de **lecture** bref
+//! (`Engine::compaction_snapshot`, un simple clonage d'`Arc`), **relâche ce
+//! verrou**, puis exécute le merge lui-même (potentiellement lent — tout le
+//! jeu de données vivant matérialisé en RAM, `CompactionSnapshot::build`)
+//! sans tenir aucun verrou de `NativeInner` — ni lecture, ni écriture. Seule
+//! la bascule finale (`VersionEdit` + remplacement d'`Arc`, coût O(1),
+//! jamais O(données vivantes)) reprend brièvement le verrou d'écriture
+//! (`Engine::compact_commit`). Avant cet amendement, la préparation entière
+//! du merge tournait sous verrou de lecture tenu pour sa durée complète —
+//! `std::sync::RwLock::write()` ne pouvant pas progresser tant qu'un lecteur
+//! le tient, tout écrivain concurrent restait bloqué pour la durée du merge,
+//! pas seulement pour la bascule finale (voir le troisième amendement
+//! d'ADR-043). Une seule passe par déclenchement : le commit ne redéclenche
+//! pas lui-même une vérification, un merge ramène toujours le compte de SST
+//! sous le seuil.
 
 mod inner;
 mod porting;
@@ -146,11 +154,12 @@ const OVERSAMPLE: usize = 8;
 /// ce `RwLock` ne change rien à ça, il ne fait qu'arrêter de sérialiser les
 /// lecteurs entre eux. Voir `docs/adr/ADR-027-native-memory-store.md` §5
 /// pour le contexte : ce `RwLock` remplace le `Mutex` que ce paragraphe
-/// décrivait comme la barre à lever en N5.5. Depuis ADR-043 §3/J4 (N13), la
-/// passe de merge d'une compaction déclenchée par un flush ne compte plus
-/// dans cette exclusion : elle tourne sous verrou de lecture partagé (donc
-/// concurrente aux lecteurs), seule la bascule finale (coût O(1)) reprend le
-/// verrou d'écriture — voir le doc du module.
+/// décrivait comme la barre à lever en N5.5. Depuis ADR-043 §3/J4 (N13,
+/// amendement CONC-P1), la passe de merge d'une compaction déclenchée par un
+/// flush ne compte plus dans cette exclusion : elle tourne sans tenir aucun
+/// verrou de ce `RwLock` (ni lecture, ni écriture) — seule sa capture
+/// (coût quasi nul) et la bascule finale (coût O(1)) touchent brièvement le
+/// verrou — voir le doc du module.
 pub struct NativeMemoryStore {
     inner: Arc<RwLock<NativeInner>>,
     /// Garde de vie du répertoire temporaire d'[`Self::open_ephemeral`] —
@@ -535,28 +544,49 @@ impl NativeMemoryStore {
     }
 
     /// Lance une passe de compaction hors du verrou d'écriture (ADR-043
-    /// §3/J4) : la préparation du merge (potentiellement lente — tout le
-    /// jeu de données vivant matérialisé en RAM) tourne sous verrou de
-    /// **lecture** partagé via [`Self::with_inner_read`] — donc concurrente
-    /// aux lecteurs — puis le commit (édition du `Version` + rename, coût
-    /// O(1)) reprend brièvement le verrou d'écriture. `None` de
-    /// `compact_prepare` (rien à faire, p. ex. un autre déclenchement a déjà
-    /// tout compacté entre-temps) : no-op — ce cas est bien atteignable,
-    /// puisque `compact_prepare` tourne sous verrou de **lecture** partagé
-    /// (pas exclusif), donc deux déclenchements concurrents peuvent tous les
-    /// deux y lire le même `current` avant que l'un des deux ne commette.
-    /// Le second `compact_commit` échoue alors typé
-    /// (`EngineError::VersionEditMissingInput`, INV-VS-4) plutôt que de
-    /// publier un edit incohérent — [`Self::with_inner`] traite cette erreur
-    /// (comme toute autre ici) comme non fatale pour l'écrit qui a
-    /// initialement déclenché cette passe.
+    /// §3/J4, corrigé par l'amendement CONC-P1) : la capture des SST
+    /// d'entrée (`Engine::compaction_snapshot`) est prise sous le verrou de
+    /// **lecture** partagé, le temps d'un clonage d'`Arc` — puis ce verrou
+    /// est **entièrement relâché** avant que le merge lui-même
+    /// (potentiellement lent — tout le jeu de données vivant matérialisé en
+    /// RAM) ne s'exécute. Avant ce correctif, la préparation ENTIÈRE du
+    /// merge tournait à l'intérieur de [`Self::with_inner_read`], verrou de
+    /// lecture tenu pour toute sa durée — `std::sync::RwLock::write()` ne
+    /// peut pas progresser tant qu'un lecteur (même un seul) tient le
+    /// verrou, donc toute écriture concurrente (`put_memory`/`invalidate`/
+    /// `forget`/…) restait bloquée pour la durée complète du merge, pas
+    /// seulement pour la bascule finale — exactement le défaut que le
+    /// critère de sortie ADR-043 §10 (« aucun lecteur bloqué pendant toute
+    /// une compaction ») ne couvrait pas pour les écrivains. Le merge tourne
+    /// maintenant sans tenir aucun verrou de `NativeInner`, lecture ou
+    /// écriture ; seule la capture (coût quasi nul) et le commit final
+    /// (coût O(1)) touchent encore le verrou. `None` de `compaction_snapshot`
+    /// (rien à faire, p. ex. un autre déclenchement a déjà tout compacté
+    /// entre-temps) : no-op — ce cas reste atteignable puisque la capture
+    /// tourne sous verrou de **lecture** partagé (pas exclusif), donc deux
+    /// déclenchements concurrents peuvent tous les deux capturer le même
+    /// `current` avant que l'un des deux ne commette. Le second
+    /// `compact_commit` échoue alors typé (`EngineError::
+    /// VersionEditMissingInput`, INV-VS-4) plutôt que de publier un edit
+    /// incohérent — [`Self::with_inner`] traite cette erreur (comme toute
+    /// autre ici) comme non fatale pour l'écrit qui a initialement déclenché
+    /// cette passe.
     async fn run_pending_compaction(&self) -> Result<()> {
-        let Some(job) = self
-            .with_inner_read(|inner| inner.engine.compact_prepare().map_err(map_engine_error))
+        let Some(snapshot) = self
+            .with_inner_read(|inner| Ok(inner.engine.compaction_snapshot()))
             .await?
         else {
             return Ok(());
         };
+        // Aucun verrou de `NativeInner` tenu ici, ni lecture ni écriture —
+        // `CompactionSnapshot::build` n'a besoin que des `Arc`/clones qu'elle
+        // a déjà capturés (moteur `basemyai-engine`, synchrone) ; on la fait
+        // tourner dans le pool bloquant de tokio comme tout le reste de ce
+        // module, pour la même raison (jamais de travail synchrone lourd sur
+        // une tâche async).
+        let job = tokio::task::spawn_blocking(move || snapshot.build().map_err(map_engine_error))
+            .await
+            .map_err(|e| storage(format!("tâche bloquante du store natif interrompue : {e}")))??;
         self.with_inner_write_and_pending(move |inner| inner.engine.compact_commit(job).map_err(map_engine_error))
             .await
             .map(|(result, _pending)| result)

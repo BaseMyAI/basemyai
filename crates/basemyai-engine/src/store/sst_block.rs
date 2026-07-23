@@ -277,7 +277,43 @@ fn flush_block(
     Ok(())
 }
 
-fn read_span(file: &mut File, path: &Path, offset: u64, len: u64) -> Result<Vec<u8>> {
+/// Reads exactly `len` bytes starting at `offset` — the single centralized
+/// bound every section read (header, footer, block index, bloom filter,
+/// data block) goes through. Refuses **before allocating** if `offset + len`
+/// overflows or would extend past `file_len` (the file's real, already-known
+/// on-disk length), via `make_err` so each call site reports its own
+/// accurate section-specific error variant.
+///
+/// SST-ALLOC (BaseMyAI adversarial audit, 2026-07-22): before this bound
+/// existed here, the header and footer reads happened to be safe only
+/// because their *callers* separately checked `file_len` immediately above
+/// each call — but the block index, bloom filter, and data block reads
+/// trusted `offset`/`len` fields taken directly from the footer or block
+/// index (on-disk, attacker/corruption-controlled) with no such check
+/// anywhere, letting a tiny forged `.sst` file claim a section length near
+/// `u64::MAX` and force a multi-gigabyte `vec![0u8; len]` allocation before
+/// any I/O error could occur — reachable via `Engine::open`, `basemyai
+/// verify`, and `rebuild_indexes`. Centralizing the check here, unconditional
+/// for every caller, removes the possibility of a future call site
+/// forgetting it the way those three did.
+fn read_span(
+    file: &mut File,
+    path: &Path,
+    offset: u64,
+    len: u64,
+    file_len: u64,
+    make_err: impl Fn(String) -> EngineError,
+) -> Result<Vec<u8>> {
+    let end = offset.checked_add(len).ok_or_else(|| {
+        make_err(format!(
+            "section offset {offset} + length {len} overflows a 64-bit length"
+        ))
+    })?;
+    if end > file_len {
+        return Err(make_err(format!(
+            "section [{offset}, {end}) extends past the file's actual on-disk length ({file_len} bytes)"
+        )));
+    }
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| EngineError::io(path.to_path_buf(), e))?;
     let mut buf = vec![0u8; len as usize];
@@ -446,7 +482,12 @@ impl BlockSstFile {
                 reason: format!("file shorter than the fixed header ({SST_HEADER_TOTAL_LEN} bytes)"),
             });
         }
-        let header_bytes = read_span(&mut file, &path, 0, SST_HEADER_TOTAL_LEN as u64)?;
+        let header_bytes = read_span(&mut file, &path, 0, SST_HEADER_TOTAL_LEN as u64, file_len, |reason| {
+            EngineError::CorruptSstHeader {
+                path: path.clone(),
+                reason,
+            }
+        })?;
         let header = sst_block::decode_sst_header(&header_bytes, &path)?;
         if header.sst_id != id {
             return Err(EngineError::CorruptSstHeader {
@@ -472,17 +513,50 @@ impl BlockSstFile {
                 reason: format!("file shorter than the fixed footer ({footer_on_disk_len} bytes)"),
             });
         }
-        let footer_raw = read_span(&mut file, &path, file_len - footer_on_disk_len, footer_on_disk_len)?;
+        let footer_raw = read_span(
+            &mut file,
+            &path,
+            file_len - footer_on_disk_len,
+            footer_on_disk_len,
+            file_len,
+            |reason| EngineError::CorruptSstFooter {
+                path: path.clone(),
+                reason,
+            },
+        )?;
         let footer_plain = open_section(crypto, &footer_raw, id, SstSectionType::Footer, 0, &path)?;
         let footer = sst_block::decode_sst_footer(&footer_plain, &path)?;
 
-        // 3. Block index.
-        let index_raw = read_span(&mut file, &path, footer.index_offset, u64::from(footer.index_len))?;
+        // 3. Block index — `footer.index_offset`/`index_len` are on-disk,
+        //    attacker/corruption-controlled fields: `read_span` refuses
+        //    before allocating if they don't fit inside the real file
+        //    (SST-ALLOC).
+        let index_raw = read_span(
+            &mut file,
+            &path,
+            footer.index_offset,
+            u64::from(footer.index_len),
+            file_len,
+            |reason| EngineError::CorruptSstBlockIndex {
+                path: path.clone(),
+                reason,
+            },
+        )?;
         let index_plain = open_section(crypto, &index_raw, id, SstSectionType::Index, 0, &path)?;
         let block_index = sst_block::decode_sst_block_index(&index_plain, &path)?;
 
-        // 4. Bloom filter.
-        let bloom_raw = read_span(&mut file, &path, footer.bloom_offset, u64::from(footer.bloom_len))?;
+        // 4. Bloom filter — same SST-ALLOC bound as the block index above.
+        let bloom_raw = read_span(
+            &mut file,
+            &path,
+            footer.bloom_offset,
+            u64::from(footer.bloom_len),
+            file_len,
+            |reason| EngineError::CorruptSstBloomFilter {
+                path: path.clone(),
+                reason,
+            },
+        )?;
         let bloom_plain = open_section(crypto, &bloom_raw, id, SstSectionType::Bloom, 0, &path)?;
         let bloom = Bloom::from_filter(sst_block::decode_sst_bloom_filter(&bloom_plain, &path)?);
 
@@ -507,6 +581,42 @@ impl BlockSstFile {
                     header.entry_count
                 ),
             });
+        }
+
+        // SST-INDEX-ORDER (BaseMyAI adversarial audit, 2026-07-22): `get`'s
+        // and `entries_with_prefix`/`entries_with_range`'s binary searches
+        // over `block_index` (below) assume it is strictly ascending and
+        // non-overlapping by key — nothing previously verified that
+        // assumption against the on-disk bytes. A reordered or overlapping
+        // index (crafted with a recomputed section checksum/AEAD tag) could
+        // silently misroute a point lookup to the wrong block, or past the
+        // "not covered" boundary for a key that is actually present,
+        // returning `None`/an incomplete scan for live data with no error at
+        // all. Checked once here, O(block_count) over already-resident
+        // metadata — every later lookup relies on this invariant already
+        // holding rather than re-verifying it per call.
+        for entry in &block_index {
+            if entry.first_key > entry.last_key {
+                return Err(EngineError::CorruptSstBlockIndex {
+                    path: path.clone(),
+                    reason: format!(
+                        "block index entry has first_key {:?} after its own last_key {:?}",
+                        entry.first_key, entry.last_key
+                    ),
+                });
+            }
+        }
+        for pair in block_index.windows(2) {
+            if pair[0].last_key >= pair[1].first_key {
+                return Err(EngineError::CorruptSstBlockIndex {
+                    path: path.clone(),
+                    reason: format!(
+                        "block index is not strictly ascending/non-overlapping: block last_key {:?} \
+                         is not less than the next block's first_key {:?}",
+                        pair[0].last_key, pair[1].first_key
+                    ),
+                });
+            }
         }
 
         let bytes_read_at_open =
@@ -537,7 +647,21 @@ impl BlockSstFile {
         block_no: usize,
         entry: &SstBlockIndexEntry,
     ) -> Result<Vec<(Key, Option<Value>)>> {
-        let raw = read_span(file, &self.path, entry.offset, u64::from(entry.len))?;
+        // `entry.offset`/`entry.len` come from the block index — on-disk,
+        // attacker/corruption-controlled — same SST-ALLOC bound as the
+        // index/bloom reads in `load`, checked against `self.file_bytes`
+        // (this file's real on-disk length, captured at `load` time).
+        let raw = read_span(
+            file,
+            &self.path,
+            entry.offset,
+            u64::from(entry.len),
+            self.file_bytes,
+            |reason| EngineError::CorruptSstDataBlock {
+                path: self.path.clone(),
+                reason,
+            },
+        )?;
         let plain = open_section(
             self.crypto.as_ref(),
             &raw,
@@ -1233,6 +1357,151 @@ mod tests {
             err,
             EngineError::CorruptSstFooter { .. } | EngineError::Io { .. }
         ));
+    }
+
+    // ── SST-ALLOC (BaseMyAI adversarial audit, 2026-07-22): a forged
+    // section length must be rejected typed, before any allocation
+    // proportional to the forged (not the real file's) length. ──
+
+    /// Rewrites the plaintext footer at the end of `path` with `patch`
+    /// applied, keeping every other byte identical — the minimal forgery a
+    /// filesystem-write-capable actor (or bit-flip-plus-recomputed-CRC) needs
+    /// to make a tiny file claim an oversized section.
+    fn forge_footer(path: &Path, patch: impl FnOnce(&mut SstFooter)) {
+        let mut raw = std::fs::read(path).expect("read raw sst");
+        let footer_start = raw.len() - SST_FOOTER_LEN;
+        let mut footer = sst_block::decode_sst_footer(&raw[footer_start..], path).expect("decode real footer");
+        patch(&mut footer);
+        let forged = sst_block::encode_sst_footer(&footer);
+        assert_eq!(
+            forged.len(),
+            SST_FOOTER_LEN,
+            "forged footer must keep the fixed on-disk length"
+        );
+        raw[footer_start..].copy_from_slice(&forged);
+        std::fs::write(path, &raw).expect("write forged sst");
+    }
+
+    #[test]
+    fn forged_huge_index_len_is_rejected_typed_not_by_attempting_the_allocation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data = entries(5, 20);
+        let written = BlockSstFile::write_new(dir.path(), 0, data, 512, None).expect("write");
+        forge_footer(&written.path, |footer| footer.index_len = u32::MAX);
+
+        let Err(err) = BlockSstFile::load(written.path, 0, None) else {
+            panic!("forged index_len must be rejected");
+        };
+        assert!(
+            matches!(err, EngineError::CorruptSstBlockIndex { .. }),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn forged_huge_bloom_len_is_rejected_typed_not_by_attempting_the_allocation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data = entries(5, 20);
+        let written = BlockSstFile::write_new(dir.path(), 0, data, 512, None).expect("write");
+        forge_footer(&written.path, |footer| footer.bloom_len = u32::MAX);
+
+        let Err(err) = BlockSstFile::load(written.path, 0, None) else {
+            panic!("forged bloom_len must be rejected");
+        };
+        assert!(
+            matches!(err, EngineError::CorruptSstBloomFilter { .. }),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn forged_index_offset_past_eof_is_rejected_typed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data = entries(5, 20);
+        let written = BlockSstFile::write_new(dir.path(), 0, data, 512, None).expect("write");
+        forge_footer(&written.path, |footer| footer.index_offset = u64::MAX - 8);
+
+        let Err(err) = BlockSstFile::load(written.path, 0, None) else {
+            panic!("forged index_offset must be rejected");
+        };
+        assert!(
+            matches!(err, EngineError::CorruptSstBlockIndex { .. }),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn forged_block_index_entry_with_huge_len_is_rejected_lazily_not_by_attempting_the_allocation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data = entries(5, 20);
+        let written = BlockSstFile::write_new(dir.path(), 0, data, 512, None).expect("write");
+
+        // Forge the block index itself (a separate section from the footer):
+        // decode it, inflate the one entry's `len`, recompute its section
+        // wrapper. `load` never touches data blocks (N8.4, O(metadata) open),
+        // so this must only surface — typed, not a huge allocation attempt —
+        // once something actually reads the block.
+        let mut raw = std::fs::read(&written.path).expect("read raw sst");
+        let footer = sst_block::decode_sst_footer(&raw[raw.len() - SST_FOOTER_LEN..], &written.path).expect("footer");
+        let index_start = footer.index_offset as usize;
+        let index_end = index_start + footer.index_len as usize;
+        let mut block_index =
+            sst_block::decode_sst_block_index(&raw[index_start..index_end], &written.path).expect("decode index");
+        assert_eq!(block_index.len(), 1, "test assumes a single data block");
+        block_index[0].len = u32::MAX;
+        let forged_index = sst_block::encode_sst_block_index(&block_index);
+        assert_eq!(
+            forged_index.len(),
+            footer.index_len as usize,
+            "forging entry.len must not change the index section's own on-disk length"
+        );
+
+        raw[index_start..index_end].copy_from_slice(&forged_index);
+        std::fs::write(&written.path, &raw).expect("write forged sst");
+
+        let loaded = BlockSstFile::load(written.path, 0, None).expect("load: metadata cross-checks still pass");
+        let err = loaded.entries().expect_err("reading the forged block must fail");
+        assert!(
+            matches!(err, EngineError::CorruptSstDataBlock { .. }),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn forged_reordered_block_index_is_rejected_typed_at_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Small block_size forces at least two data blocks for a handful of
+        // entries with distinct keys.
+        let data: Vec<(Key, Option<Value>)> = (0..10)
+            .map(|i| (Key::from(format!("k/{i:04}").as_bytes()), Some(vec![b'v'; 20])))
+            .collect();
+        let written = BlockSstFile::write_new(dir.path(), 0, data, 64, None).expect("write");
+
+        let mut raw = std::fs::read(&written.path).expect("read raw sst");
+        let footer = sst_block::decode_sst_footer(&raw[raw.len() - SST_FOOTER_LEN..], &written.path).expect("footer");
+        let index_start = footer.index_offset as usize;
+        let index_end = index_start + footer.index_len as usize;
+        let mut block_index =
+            sst_block::decode_sst_block_index(&raw[index_start..index_end], &written.path).expect("decode index");
+        assert!(block_index.len() >= 2, "test assumes at least two data blocks");
+        block_index.swap(0, 1); // reorder — first/last keys now go backwards
+        let forged_index = sst_block::encode_sst_block_index(&block_index);
+        assert_eq!(
+            forged_index.len(),
+            footer.index_len as usize,
+            "swapping entries must not change the index section's own on-disk length"
+        );
+
+        raw[index_start..index_end].copy_from_slice(&forged_index);
+        std::fs::write(&written.path, &raw).expect("write forged sst");
+
+        let Err(err) = BlockSstFile::load(written.path, 0, None) else {
+            panic!("reordered block index must be rejected at load, before any lookup uses it");
+        };
+        assert!(
+            matches!(err, EngineError::CorruptSstBlockIndex { .. }),
+            "unexpected error: {err}"
+        );
     }
 
     // ── encryption (N8.8) ──

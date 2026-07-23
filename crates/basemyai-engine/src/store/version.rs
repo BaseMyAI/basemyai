@@ -83,15 +83,67 @@ impl Drop for SstHandle {
 /// invariant `Engine::ssts` kept before this type existed). Never mutated
 /// after publication (INV-VS-1); the engine replaces its `Arc<Version>`
 /// wholesale (INV-VS-2).
+///
+/// INV-VS-8 (ADR-043 amendment, DUR-LSM-01 fix): the `ssts` field is
+/// private to this module on purpose — [`Version::build`] is the **only**
+/// way to construct one, anywhere in the crate. Every producer (recovery,
+/// flush, compaction commit, full rotation) must go through it. Before this
+/// invariant existed, `apply_version_edit` assembled `Version.ssts` by hand
+/// (`filter` the survivors, then `Vec::extend` the newly-added handle) —
+/// correct for a flush (whose new SST always has the highest id in play),
+/// silently wrong for an off-lock compaction commit (ADR-043 §3/J4): the
+/// compaction's merged SST can have a *lower* id than an SST flushed
+/// concurrently while the merge ran, because `compact_prepare` reserves its
+/// output id before that later flush reserves its own — appending the
+/// merged SST unconditionally put it *after* a newer SST in the vector,
+/// so `Engine::get`'s `.iter().rev()` preferred the merged SST's stale data
+/// over the concurrently-flushed update, and `scan_prefix`'s forward overlay
+/// let the merged SST's entry silently overwrite the newer one. `Version::build`
+/// removes the possibility structurally: it always sorts by id before
+/// anything can read the result, so a caller cannot get this wrong by
+/// picking the wrong insertion order.
 pub(crate) struct Version {
     /// The durable manifest publication counter this version was published
     /// under — `manifest.meta`'s `manifest_generation` (INV-VS-7).
     pub(crate) manifest_generation: u64,
-    /// Oldest to newest.
-    pub(crate) ssts: Vec<Arc<SstHandle>>,
+    /// Oldest to newest by `SstHandle.file.id` — canonicalized by
+    /// [`Version::build`], never assembled directly (INV-VS-8).
+    ssts: Vec<Arc<SstHandle>>,
 }
 
 impl Version {
+    /// The **only** constructor. Canonicalizes `ssts` into ascending-by-id
+    /// order regardless of the order the caller happened to assemble them
+    /// in (INV-VS-8) — `file.id` is safe as this ordering key only because
+    /// every producer reserves it from the engine's single, shared
+    /// `next_sst_id: Arc<AtomicU64>` at the exact instant its content is
+    /// frozen (immediately before `BlockSstFile::write_new` — see
+    /// `Engine::flush` and `Engine::capture_compaction_snapshot`), and ids
+    /// are never reused within one generation (`Engine::open_inner` derives
+    /// the resume point from the *unfiltered* on-disk scan). Debug-only
+    /// duplicate check: two producers reserving the same id is a bug in
+    /// that shared counter, not a recoverable runtime condition, so this
+    /// stays a `debug_assert!` rather than a typed error — it can never
+    /// fire without a logic bug upstream, and the hot commit path (every
+    /// flush, every compaction) should not pay for checking it in release
+    /// builds.
+    pub(crate) fn build(manifest_generation: u64, mut ssts: Vec<Arc<SstHandle>>) -> Self {
+        ssts.sort_by_key(|h| h.file.id);
+        debug_assert!(
+            ssts.windows(2).all(|pair| pair[0].file.id != pair[1].file.id),
+            "Version::build: duplicate SST id — two producers reserved the same next_sst_id"
+        );
+        Self {
+            manifest_generation,
+            ssts,
+        }
+    }
+
+    /// Oldest to newest — the canonical visibility order (INV-VS-8).
+    pub(crate) fn ssts(&self) -> &[Arc<SstHandle>] {
+        &self.ssts
+    }
+
     /// Live SST ids, oldest to newest — exactly what `manifest.meta` lists.
     pub(crate) fn ids(&self) -> Vec<u64> {
         self.ssts.iter().map(|h| h.file.id).collect()

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 mod engine;
 mod key;
+#[cfg(windows)]
+mod key_acl;
 mod native;
 mod vector;
 
