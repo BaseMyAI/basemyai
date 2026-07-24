@@ -9,7 +9,7 @@ fn corrupt_wal_record_returns_error_not_panic() {
     let dir = tempdir().expect("tempdir");
     Engine::open(dir.path()).expect("create empty store");
 
-    let mut bytes = wal::encode(WalOp::Put, b"key", Some(b"value"));
+    let mut bytes = wal::encode(WalOp::Put, 0, b"key", Some(b"value"));
     let last = bytes.len() - 1;
     bytes[last] ^= 0xFF;
     std::fs::write(dir.path().join("wal.log"), bytes).expect("write corrupt wal");

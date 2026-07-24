@@ -19,5 +19,6 @@ pub mod sst_block;
 pub mod sst_manifest;
 pub mod store_meta;
 pub mod wal;
+pub mod wal_epoch;
 
 pub use lock::FormatSpec;

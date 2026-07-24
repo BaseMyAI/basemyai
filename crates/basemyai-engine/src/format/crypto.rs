@@ -58,7 +58,7 @@
 //! to open under the supplied key (`WrongEncryptionKey`, raised by the
 //! caller in [`crate::crypto`]) — two very different diagnoses for a user.
 //!
-//! ## WAL envelope (`WalEnvelope:1`)
+//! ## WAL envelope (`WalEnvelope:2`, ADR-044 §4, CRYPTO-1 remediation)
 //!
 //! In an encrypted store, each plain WAL record ([`super::wal`]'s bytes,
 //! batches included — a batch is already a single outer record) is sealed
@@ -74,6 +74,18 @@
 //! would, and by envelope-decode time the key is already verified against
 //! crypto.meta, so an AEAD failure is unambiguously corruption.
 //! ```
+//!
+//! The on-disk *framing* above is unchanged from `WalEnvelope:1` — what
+//! changed, and what the version bump 1 -> 2 actually guards, is the AAD
+//! every seal is bound to: [`wal_envelope_aad_v2`] binds `store_id ‖
+//! wal_epoch ‖ record_offset` instead of the old fixed `magic ‖ version`
+//! constant, so a duplicated, permuted, or cross-store/cross-episode
+//! envelope fails Poly1305 authentication even though its bytes are
+//! individually intact (the exact CRYPTO-1 scenario: replaying a stale
+//! `Put` after a legitimate `Delete`). A `WalEnvelope:1` store therefore
+//! never silently reinterprets under the new AAD — its `version` field
+//! reads 1, [`decode_wal_envelope`] rejects it typed
+//! (`UnsupportedFormatVersion`) before any AAD is even reconstructed.
 //!
 //! `decode_envelope` mirrors `wal::decode`'s torn-tail contract exactly:
 //! `Ok(None)` for an incomplete trailing envelope (expected crash shape,
@@ -126,7 +138,11 @@ pub(crate) const CRYPTO_META_V1_VERSION: u16 = 1;
 pub(crate) const CRYPTO_META_V2_VERSION: u16 = 2;
 
 pub(crate) const WAL_ENVELOPE_MAGIC: u32 = 0x4257_4C45; // b"BWLE"
-pub(crate) const WAL_ENVELOPE_VERSION: u16 = 1;
+/// Bumped 1 -> 2 (ADR-044, CRYPTO-1): the AAD every envelope is sealed under
+/// changed from a fixed domain constant to [`wal_envelope_aad_v2`]'s
+/// `store_id ‖ wal_epoch ‖ record_offset` binding. The on-disk envelope
+/// framing itself is unchanged — see this module's doc.
+pub(crate) const WAL_ENVELOPE_VERSION: u16 = 2;
 
 pub(crate) const ENCRYPTED_SST_BLOCK_MAGIC: u32 = 0x4253_4245; // b"BSBE"
 pub(crate) const ENCRYPTED_SST_BLOCK_VERSION: u16 = 1;
@@ -531,12 +547,25 @@ pub(crate) fn encode_wal_envelope(nonce: &Nonce, ciphertext: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// The AAD every WAL-envelope seal is bound to (magic + version).
+/// The AAD every `WalEnvelope:2` seal is bound to (ADR-044 §4, CRYPTO-1):
+/// domain (magic ‖ version) ‖ `store_id` ‖ `wal_epoch` ‖ `record_offset`.
+/// `store_id` (from `store.meta`, ADR-042 §3.3) stops a valid envelope from
+/// another store sharing the same DEK from authenticating here;
+/// `wal_epoch` (from `wal_epoch.meta`, [`super::wal_epoch`]) stops one from
+/// an earlier, already-truncated WAL episode of *this* store from
+/// authenticating; `record_offset` stops two envelopes within the same
+/// episode from being swapped. All three together close CRYPTO-1: a stale
+/// `Put` copied back into the log after a legitimate `Delete` fails
+/// authentication because at least one of these three coordinates no longer
+/// matches the position it is replayed into.
 #[must_use]
-pub(crate) fn wal_envelope_aad() -> [u8; 6] {
-    let mut aad = [0u8; 6];
-    aad[0..4].copy_from_slice(&WAL_ENVELOPE_MAGIC.to_le_bytes());
-    aad[4..6].copy_from_slice(&WAL_ENVELOPE_VERSION.to_le_bytes());
+pub(crate) fn wal_envelope_aad_v2(store_id: uuid::Uuid, wal_epoch: u64, record_offset: u64) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(4 + 2 + 16 + 8 + 8);
+    aad.extend_from_slice(&WAL_ENVELOPE_MAGIC.to_le_bytes());
+    aad.extend_from_slice(&WAL_ENVELOPE_VERSION.to_le_bytes());
+    aad.extend_from_slice(store_id.as_bytes());
+    aad.extend_from_slice(&wal_epoch.to_le_bytes());
+    aad.extend_from_slice(&record_offset.to_le_bytes());
     aad
 }
 
@@ -909,7 +938,7 @@ mod tests {
 
     #[test]
     fn short_plaintext_wal_is_corrupt_envelope_not_torn_tail() {
-        let bytes = crate::format::wal::encode(crate::format::wal::WalOp::Put, b"a", Some(b"1"));
+        let bytes = crate::format::wal::encode(crate::format::wal::WalOp::Put, 0, b"a", Some(b"1"));
         assert!(bytes.len() < WAL_ENVELOPE_HEADER_LEN);
         let err = decode_wal_envelope(&bytes, &path()).expect_err("plaintext WAL is not a torn envelope");
         assert!(matches!(err, EngineError::CorruptWal { .. }));
@@ -1030,9 +1059,24 @@ mod tests {
     fn envelope_aads_are_distinct_per_artifact() {
         // A WAL ciphertext replayed as an SST section (or vice versa) must
         // fail the AEAD open — the two AADs differing is what guarantees it.
+        let store_id = uuid::Uuid::from_u128(0);
         assert_ne!(
-            wal_envelope_aad().to_vec(),
+            wal_envelope_aad_v2(store_id, 0, 0),
             encrypted_sst_block_aad(0, SstSectionType::Data, 0)
         );
+    }
+
+    #[test]
+    fn wal_envelope_aad_v2_binds_store_epoch_and_offset() {
+        // The anti-replay property ADR-044 §4/CRYPTO-1 requires: every one
+        // of these three coordinates changing the AAD is what makes a
+        // duplicated/permuted/cross-store envelope fail its tag even though
+        // the ciphertext bytes are individually intact.
+        let a = uuid::Uuid::from_u128(1);
+        let b = uuid::Uuid::from_u128(2);
+        let base = wal_envelope_aad_v2(a, 0, 0);
+        assert_ne!(base, wal_envelope_aad_v2(b, 0, 0), "store_id must bind");
+        assert_ne!(base, wal_envelope_aad_v2(a, 1, 0), "wal_epoch must bind");
+        assert_ne!(base, wal_envelope_aad_v2(a, 0, 1), "record_offset must bind");
     }
 }

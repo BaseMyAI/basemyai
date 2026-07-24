@@ -41,6 +41,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "wal_epoch_decode"
+path = "fuzz_targets/wal/wal_epoch_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "vector_node_decode"
 path = "fuzz_targets/vector/vector_node_decode.rs"
 test = false

@@ -401,6 +401,28 @@ pub enum EngineError {
     )]
     UnsupportedStoreFormat { path: PathBuf, expected: u16, found: u16 },
 
+    /// The `wal_epoch.meta` WAL-episode counter
+    /// ([`crate::format::wal_epoch`], ADR-044 §2) failed its checksum or is
+    /// structurally malformed. Distinct from an absent file: absence is a
+    /// policy decision made by [`crate::store::wal::Wal::open_for_append`]
+    /// (fresh store: create at epoch 0; pre-ADR-044 store with existing WAL
+    /// bytes: refused typed as [`Self::UnsupportedFormatVersion`]) — this
+    /// variant is only for a `wal_epoch.meta` that exists but is corrupt.
+    #[error("corrupt wal_epoch.meta at {}: {reason}", .path.display())]
+    CorruptWalEpoch { path: PathBuf, reason: String },
+
+    /// A WAL record's plaintext `record_offset` field (ADR-044 §3) does not
+    /// equal the physical byte offset in `wal.log` where the record was
+    /// actually found — a permutation, deletion, or splice of records
+    /// within the same WAL episode. Never tolerated as a torn tail: this is
+    /// only checked once a record is already fully buffered and checksum-
+    /// valid.
+    #[error(
+        "WAL record in {} declares record_offset {declared} but was found at physical offset {actual}",
+        .path.display()
+    )]
+    WalRecordOffsetMismatch { path: PathBuf, declared: u64, actual: u64 },
+
     /// A string handed to the temporal-expiry-index key encoder
     /// (`key::temporal_index`, ADR-041 §7.2) would overflow that field's
     /// `u32` length prefix. Sibling of

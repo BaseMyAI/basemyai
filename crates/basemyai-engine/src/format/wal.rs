@@ -7,16 +7,24 @@
 //! Record layout (all integers little-endian):
 //!
 //! ```text
-//! magic:    u32   = WAL_MAGIC
-//! version:  u16   = WAL_RECORD_VERSION
-//! op:       u8     1 = Put, 2 = Delete, 3 = Batch
-//! key_len:  u32
-//! val_len:  u32    0 for Delete; a Put with an empty value also has val_len
-//!                  == 0 — the two are disambiguated by `op`, never by
-//!                  `val_len`
-//! key:      [u8; key_len]
-//! value:    [u8; val_len]           (omitted entirely when op == Delete)
-//! crc32:    u32    over every byte above (magic..value) in this record
+//! magic:         u32   = WAL_MAGIC
+//! version:       u16   = WAL_RECORD_VERSION
+//! op:            u8     1 = Put, 2 = Delete, 3 = Batch
+//! record_offset: u64    absolute byte offset in the current wal.log where
+//!                        *this* record's own encoding begins (ADR-044 §3,
+//!                        CRYPTO-1) — the intra-episode anti-permutation
+//!                        sequence. Structural only at this layer (a pure
+//!                        codec has no file handle to compare against); the
+//!                        replay loop (`store::wal::Wal::replay`) is what
+//!                        actually validates it against the physical offset
+//!                        the record was found at.
+//! key_len:       u32
+//! val_len:       u32    0 for Delete; a Put with an empty value also has
+//!                        val_len == 0 — the two are disambiguated by `op`,
+//!                        never by `val_len`
+//! key:           [u8; key_len]
+//! value:         [u8; val_len]      (omitted entirely when op == Delete)
+//! crc32:         u32    over every byte above (magic..value) in this record
 //! ```
 //!
 //! ## Batch records (op == 3), added in version 2
@@ -58,9 +66,12 @@ use super::checksum::crc32;
 use crate::error::{EngineError, Result};
 
 pub const WAL_MAGIC: u32 = 0x4241_5345; // b"BASE"
-/// Bumped 1 -> 2 to add the `Batch` op (see the module doc's "Batch records"
-/// section) — a deliberate wire-format extension, not a silent drift.
-pub const WAL_RECORD_VERSION: u16 = 2;
+/// Bumped 2 -> 3 to add `record_offset` (ADR-044, CRYPTO-1 remediation) —
+/// the intra-episode anti-permutation sequence. A store written under
+/// version 2 refuses typed on open rather than being silently reinterpreted
+/// (ADR-044 §7: pre-1.0, natif-only, no migration path is demonstrated as
+/// needed).
+pub const WAL_RECORD_VERSION: u16 = 3;
 
 /// Canonical wire-format spec hashed into `format.lock` (see
 /// [`super::lock`]). Field list and order must mirror the byte layout
@@ -74,6 +85,7 @@ pub fn spec() -> super::FormatSpec {
             ("magic", "u32"),
             ("version", "u16"),
             ("op", "u8"),
+            ("record_offset", "u64"),
             ("key_len", "u32"),
             ("val_len", "u32"),
             ("key", "bytes(key_len)"),
@@ -84,7 +96,7 @@ pub fn spec() -> super::FormatSpec {
 }
 
 /// Fixed-size portion of a record, before the variable-length key/value.
-const HEADER_LEN: usize = 4 + 2 + 1 + 4 + 4;
+const HEADER_LEN: usize = 4 + 2 + 1 + 8 + 4 + 4;
 const CRC_LEN: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +124,10 @@ impl WalOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalRecord {
     pub op: WalOp,
+    /// The offset this record's encoding declared for itself (ADR-044 §3) —
+    /// structural only here; `store::wal` validates it against the physical
+    /// offset the record was actually found at.
+    pub record_offset: u64,
     pub key: Vec<u8>,
     pub value: Option<Vec<u8>>,
 }
@@ -129,7 +145,7 @@ pub struct BatchOp {
 
 /// Encodes a batch's sub-operations into the nested payload described by
 /// this module's "Batch records" doc section. The caller wraps the result as
-/// the `value` of a single outer `encode(WalOp::Batch, &[], Some(payload))`
+/// the `value` of a single outer `encode(WalOp::Batch, record_offset, &[], Some(payload))`
 /// record — that outer framing is what actually provides atomicity (single
 /// fsynced write, single checksum over the whole thing).
 #[must_use]
@@ -225,12 +241,17 @@ pub fn decode_batch(buf: &[u8], path: &Path) -> Result<Vec<BatchOp>> {
 }
 
 /// Encodes one record (header + key + value + trailing crc32).
-pub fn encode(op: WalOp, key: &[u8], value: Option<&[u8]>) -> Vec<u8> {
+/// `record_offset` is the absolute byte offset in the current `wal.log`
+/// where this record's own encoding will begin (ADR-044 §3) — the caller
+/// (`store::wal::Wal::write_record`) knows this before writing, since it is
+/// always the file's current end-of-file position.
+pub fn encode(op: WalOp, record_offset: u64, key: &[u8], value: Option<&[u8]>) -> Vec<u8> {
     let val_bytes: &[u8] = value.unwrap_or(&[]);
     let mut buf = Vec::with_capacity(HEADER_LEN + key.len() + val_bytes.len() + CRC_LEN);
     buf.extend_from_slice(&WAL_MAGIC.to_le_bytes());
     buf.extend_from_slice(&WAL_RECORD_VERSION.to_le_bytes());
     buf.push(op as u8);
+    buf.extend_from_slice(&record_offset.to_le_bytes());
     buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
     buf.extend_from_slice(&(val_bytes.len() as u32).to_le_bytes());
     buf.extend_from_slice(key);
@@ -272,8 +293,9 @@ pub fn decode(buf: &[u8], path: &Path) -> Result<Option<(WalRecord, usize)>> {
     let Some(op) = WalOp::from_tag(buf[6]) else {
         return Err(corrupt(format!("unrecognized op tag {}", buf[6])));
     };
-    let key_len = u32::from_le_bytes(buf[7..11].try_into().expect("slice is exactly 4 bytes")) as usize;
-    let val_len = u32::from_le_bytes(buf[11..15].try_into().expect("slice is exactly 4 bytes")) as usize;
+    let record_offset = u64::from_le_bytes(buf[7..15].try_into().expect("slice is exactly 8 bytes"));
+    let key_len = u32::from_le_bytes(buf[15..19].try_into().expect("slice is exactly 4 bytes")) as usize;
+    let val_len = u32::from_le_bytes(buf[19..23].try_into().expect("slice is exactly 4 bytes")) as usize;
     let total = HEADER_LEN + key_len + val_len + CRC_LEN;
     if buf.len() < total {
         return Ok(None);
@@ -306,7 +328,15 @@ pub fn decode(buf: &[u8], path: &Path) -> Result<Option<(WalRecord, usize)>> {
         // same way a `Put`'s value is, just with different contents.
         WalOp::Put | WalOp::Batch => Some(buf[HEADER_LEN + key_len..body_end].to_vec()),
     };
-    Ok(Some((WalRecord { op, key, value }, total)))
+    Ok(Some((
+        WalRecord {
+            op,
+            record_offset,
+            key,
+            value,
+        },
+        total,
+    )))
 }
 
 #[cfg(test)]
@@ -320,7 +350,7 @@ mod tests {
 
     #[test]
     fn roundtrips_put() {
-        let bytes = encode(WalOp::Put, b"key", Some(b"value"));
+        let bytes = encode(WalOp::Put, 0, b"key", Some(b"value"));
         let (record, consumed) = decode(&bytes, &path()).expect("decode ok").expect("full record");
         assert_eq!(consumed, bytes.len());
         assert_eq!(record.op, WalOp::Put);
@@ -330,7 +360,7 @@ mod tests {
 
     #[test]
     fn roundtrips_delete() {
-        let bytes = encode(WalOp::Delete, b"key", None);
+        let bytes = encode(WalOp::Delete, 0, b"key", None);
         let (record, _) = decode(&bytes, &path()).expect("decode ok").expect("full record");
         assert_eq!(record.op, WalOp::Delete);
         assert_eq!(record.value, None);
@@ -338,7 +368,7 @@ mod tests {
 
     #[test]
     fn truncated_tail_is_none_not_error() {
-        let bytes = encode(WalOp::Put, b"key", Some(b"value"));
+        let bytes = encode(WalOp::Put, 0, b"key", Some(b"value"));
         for cut in 1..bytes.len() {
             let result = decode(&bytes[..cut], &path()).expect("torn tail is not an error");
             assert!(result.is_none(), "expected None at cut={cut}");
@@ -347,7 +377,7 @@ mod tests {
 
     #[test]
     fn bit_flip_in_complete_record_is_corrupt_error() {
-        let mut bytes = encode(WalOp::Put, b"key", Some(b"value"));
+        let mut bytes = encode(WalOp::Put, 0, b"key", Some(b"value"));
         let last = bytes.len() - 1;
         bytes[last] ^= 0xFF; // corrupt the trailing crc32 byte itself
         let err = decode(&bytes, &path()).expect_err("checksum should fail");
@@ -356,7 +386,7 @@ mod tests {
 
     #[test]
     fn complete_bad_magic_is_corrupt_error() {
-        let mut bytes = encode(WalOp::Put, b"key", Some(b"value"));
+        let mut bytes = encode(WalOp::Put, 0, b"key", Some(b"value"));
         bytes[0] ^= 0xFF;
         let err = decode(&bytes, &path()).expect_err("bad magic is corruption");
         assert!(matches!(err, EngineError::CorruptWal { .. }));
@@ -364,7 +394,7 @@ mod tests {
 
     #[test]
     fn complete_unknown_op_is_corrupt_error() {
-        let mut bytes = encode(WalOp::Put, b"key", Some(b"value"));
+        let mut bytes = encode(WalOp::Put, 0, b"key", Some(b"value"));
         bytes[6] = 0xFF;
         let err = decode(&bytes, &path()).expect_err("unknown op is corruption");
         assert!(matches!(err, EngineError::CorruptWal { .. }));
@@ -372,7 +402,7 @@ mod tests {
 
     #[test]
     fn delete_with_value_payload_is_corrupt_error() {
-        let bytes = encode(WalOp::Delete, b"key", Some(b"value"));
+        let bytes = encode(WalOp::Delete, 0, b"key", Some(b"value"));
         let err = decode(&bytes, &path()).expect_err("delete payload is structurally invalid");
         assert!(matches!(err, EngineError::CorruptWal { .. }));
     }
@@ -384,19 +414,31 @@ mod tests {
             key: b"k".to_vec(),
             value: Some(b"v".to_vec()),
         }]);
-        let bytes = encode(WalOp::Batch, b"outer-key", Some(&payload));
+        let bytes = encode(WalOp::Batch, 0, b"outer-key", Some(&payload));
         let err = decode(&bytes, &path()).expect_err("batch outer key is structurally invalid");
         assert!(matches!(err, EngineError::CorruptWal { .. }));
     }
 
     #[test]
     fn concatenated_records_decode_in_sequence() {
-        let mut buf = encode(WalOp::Put, b"a", Some(b"1"));
-        buf.extend(encode(WalOp::Put, b"b", Some(b"2")));
+        let first_bytes = encode(WalOp::Put, 0, b"a", Some(b"1"));
+        let second_offset = first_bytes.len() as u64;
+        let mut buf = first_bytes.clone();
+        buf.extend(encode(WalOp::Put, second_offset, b"b", Some(b"2")));
         let (first, consumed) = decode(&buf, &path()).expect("decode ok").expect("record");
         assert_eq!(first.key, b"a");
+        assert_eq!(first.record_offset, 0);
+        assert_eq!(consumed, first_bytes.len());
         let (second, _) = decode(&buf[consumed..], &path()).expect("decode ok").expect("record");
         assert_eq!(second.key, b"b");
+        assert_eq!(second.record_offset, second_offset);
+    }
+
+    #[test]
+    fn record_offset_roundtrips() {
+        let bytes = encode(WalOp::Put, 12345, b"k", Some(b"v"));
+        let (record, _) = decode(&bytes, &path()).expect("decode ok").expect("full record");
+        assert_eq!(record.record_offset, 12345);
     }
 
     #[test]
@@ -445,7 +487,7 @@ mod tests {
             },
         ];
         let payload = encode_batch(&ops);
-        let record_bytes = encode(WalOp::Batch, &[], Some(&payload));
+        let record_bytes = encode(WalOp::Batch, 0, &[], Some(&payload));
         let (record, consumed) = decode(&record_bytes, &path()).expect("decode ok").expect("full record");
         assert_eq!(consumed, record_bytes.len());
         assert_eq!(record.op, WalOp::Batch);
@@ -461,7 +503,7 @@ mod tests {
             value: Some(b"v".to_vec()),
         }];
         let payload = encode_batch(&ops);
-        let record_bytes = encode(WalOp::Batch, &[], Some(&payload));
+        let record_bytes = encode(WalOp::Batch, 0, &[], Some(&payload));
         for cut in 1..record_bytes.len() {
             let result = decode(&record_bytes[..cut], &path()).expect("torn tail is not an error");
             assert!(result.is_none(), "expected None at cut={cut}");

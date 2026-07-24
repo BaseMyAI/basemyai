@@ -204,7 +204,10 @@ fn verify_store_with_key_mode(
     // 1. Store generation (ADR-039 §7) — same gate as `Engine::open`, but
     //    reported instead of raised. A generation mismatch stops the audit:
     //    a store written by a different generation would only produce
-    //    misleading per-file noise below.
+    //    misleading per-file noise below. `store_id` is captured here for
+    //    the WAL AAD reconstruction below (ADR-044 §4) — `None` only for a
+    //    legacy `StoreMeta:1` record verify has never upgraded (read-only).
+    let mut store_id: Option<uuid::Uuid> = None;
     match &root_inv.store_meta {
         None => {
             if root_inv.wal.is_some()
@@ -242,7 +245,7 @@ fn verify_store_with_key_mode(
                         );
                         return Ok(report.finalize());
                     }
-                    Ok(_) => {}
+                    Ok(meta) => store_id = meta.store_id,
                 },
             }
         }
@@ -347,7 +350,24 @@ fn verify_store_with_key_mode(
     let mut wal_records = Vec::new();
     if let Some(wal_path) = &inv.wal {
         report.files_checked += 1;
-        match wal::scan_readonly(wal_path, crypto.as_ref()) {
+        let scan_result = match store_id {
+            None => Err(EngineError::CorruptStoreMeta {
+                path: dir.join("store.meta"),
+                reason: "store.meta has no store_id — cannot reconstruct the WAL AAD (ADR-044 §4); \
+                         reopen the store for writing once to upgrade it"
+                    .to_string(),
+            }),
+            Some(store_id) => match wal::read_wal_epoch_for_verify(&dir) {
+                Err(e) => Err(e),
+                Ok(None) => Err(EngineError::UnsupportedFormatVersion {
+                    path: wal_path.clone(),
+                    expected: crate::format::wal::WAL_RECORD_VERSION,
+                    found: 0, // sentinel: no wal_epoch.meta at all (pre-ADR-044 WAL)
+                }),
+                Ok(Some(wal_epoch)) => wal::scan_readonly(wal_path, crypto.as_ref(), store_id, wal_epoch),
+            },
+        };
+        match scan_result {
             Err(e) => report.error(IssueKind::WalCorrupt, wal_path, e.to_string()),
             Ok(scan) => {
                 report.records_checked += scan.records.len() as u64;

@@ -214,7 +214,7 @@ impl Engine {
         ));
 
         let wal_path = dir.join("wal.log");
-        let mut wal = Wal::open_for_append(wal_path, crypto.clone())?;
+        let mut wal = Wal::open_for_append(wal_path, crypto.clone(), store_id)?;
         counters.bytes_read += wal.size_on_disk()?;
         let mut memtable = Memtable::new();
         for record in wal.replay()? {
@@ -721,7 +721,7 @@ mod tests {
             Engine::open_encrypted(dir.path(), KEY).expect("create encrypted meta");
         }
         let wal_path = dir.path().join("wal.log");
-        let plaintext = crate::format::wal::encode(crate::format::wal::WalOp::Put, b"a", Some(b"1"));
+        let plaintext = crate::format::wal::encode(crate::format::wal::WalOp::Put, 0, b"a", Some(b"1"));
         std::fs::write(&wal_path, &plaintext).expect("write plaintext wal");
 
         let Err(err) = Engine::open_encrypted(dir.path(), KEY) else {

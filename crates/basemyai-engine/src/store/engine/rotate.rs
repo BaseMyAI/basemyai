@@ -181,7 +181,7 @@ impl Engine {
                 .map_err(|e| EngineError::io(wal_path.clone(), e))?;
             wal_file.sync_all().map_err(|e| EngineError::io(wal_path.clone(), e))?;
             drop(wal_file);
-            let new_wal = Wal::open_for_append(wal_path, Some(new_crypto.clone()))?;
+            let new_wal = Wal::open_for_append(wal_path, Some(new_crypto.clone()), self.store_id)?;
             fail_point!("before_full_rotation_publish");
             Ok((new_crypto, new_sst, new_wal))
         })();
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn old_crypto_meta_copied_beside_a_new_generation_cannot_open_its_wal_or_sst() {
         let root = tempfile::tempdir().expect("tempdir");
-        let old_ctx = {
+        let (old_ctx, store_id) = {
             let mut engine = Engine::open_encrypted_with_options(root.path(), KEY, small_options()).expect("open");
             engine.put(b"kept", b"current").expect("put current");
             engine.flush().expect("seed a real sealed SST under generation 0");
@@ -318,7 +318,7 @@ mod tests {
             engine
                 .put(b"after", b"publish")
                 .expect("write into the new generation's WAL");
-            ctx
+            (ctx, engine.store_id())
         };
 
         let pointer_bytes =
@@ -335,7 +335,10 @@ mod tests {
         let (nonce, ciphertext, _consumed) = crate::format::crypto::decode_wal_envelope(&wal_bytes, &wal_path)
             .expect("structurally decode the first wal envelope")
             .expect("new generation wal must hold at least one complete record");
-        let wal_aad = crate::format::crypto::wal_envelope_aad();
+        // The new generation's WAL is a fresh episode (wal_epoch 0) and this
+        // is its first record (record_offset 0) — same coordinates
+        // `Wal::write_record` used to seal it.
+        let wal_aad = crate::format::crypto::wal_envelope_aad_v2(store_id, 0, 0);
         assert!(
             old_ctx.open(&nonce, ciphertext, &wal_aad).is_none(),
             "the pre-rotation key + crypto.meta must not decrypt the new generation's WAL"

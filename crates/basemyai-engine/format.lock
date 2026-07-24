@@ -16,17 +16,18 @@
 #       constant, update the byte-layout doc comment AND `spec()` together,
 #       then update the hash below in the same commit.
 #   (b) you didn't mean to change it — revert.
-WalRecord:2(b4570df1)
+WalRecord:3(4ea5a2e1)
 CryptoMeta:1(cee13d7b)
 CryptoMetaV2:2(50f7d17c)
 GenerationMeta:1(021b9f3e)
+WalEpoch:1(ab21f9bd)
 SstManifest:1(43c7a073)
-WalEnvelope:1(4911cece)
+WalEnvelope:2(00a71bcd)
 EncryptedSstBlock:1(f7f1e05a)
 VectorNode:2(1ba6b40f)
 VectorIndexMeta:1(e0277ef0)
-GraphEntity:1(ef8b395c)
-GraphEdge:1(462924ad)
+GraphEntity:2(6bc48573)
+GraphEdge:2(6d4ca598)
 MemoryRecord:1(5c1bf048)
 MemoryVecMap:1(2566216c)
 MemoryIndexMeta:1(7407a893)

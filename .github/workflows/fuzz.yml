@@ -23,6 +23,7 @@ jobs:
         target:
           - key_roundtrip
           - wal_decode
+          - wal_epoch_decode
           - wal_envelope_decode
           - vector_node_decode
           - vector_node_decode_structured

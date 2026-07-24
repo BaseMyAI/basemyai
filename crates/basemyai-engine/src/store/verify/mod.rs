@@ -321,6 +321,11 @@ fn inventory(dir: &Path, report: &mut VerifyReport) -> Result<Inventory> {
             // and confrontation against `inv.ssts` happen later, gated on
             // `FullLogical` (step 4.5 below).
             sst_manifest::SST_MANIFEST_FILENAME => {}
+            // ADR-044's WAL-episode counter — recognized here so it is never
+            // reported as an unknown file; `checks.rs` reads it directly
+            // (via `store::wal::read_wal_epoch_for_verify`) when scanning
+            // the WAL, not through this inventory struct.
+            crate::format::wal_epoch::WAL_EPOCH_FILENAME => {}
             _ if name.ends_with(".tmp") => {
                 report.warning(
                     IssueKind::OrphanTmpFile,

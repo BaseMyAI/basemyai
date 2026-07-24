@@ -1,9 +1,12 @@
 # ADR-044 — Format WAL v2 anti-rejeu (CRYPTO-1)
 
-**Statut** : 🟡 Proposed — conçu et spécifié ci-dessous, **implémentation non
-commencée**. Voir « Pourquoi ce correctif n'est pas encore implémenté » en
-fin de document.
-**Date** : 2026-07-23
+**Statut** : 🟢 Accepted — implémenté, testé (18 scénarios adversariaux
+unitaires + campagne kill/reopen réelle 20 cycles), `format.lock` à jour.
+Un correctif de conception a été nécessaire en cours d'implémentation : voir
+« Amendement du 2026-07-23 » en fin de document pour l'écart entre l'ordre
+initialement spécifié (§2) et l'ordre réellement implémenté, et le risque
+résiduel qui en découle.
+**Date** : 2026-07-23 (implémenté et clos le 2026-07-23)
 **Relation aux ADR existants** : implémente le correctif du finding CRYPTO-1
 de l'audit de sécurité adversarial BaseMyAI (2026-07-22). Amende le
 comportement de scellement du WAL décrit par ADR-030 §3 (« chaque
@@ -239,30 +242,71 @@ Repris de la remédiation de l'audit (Phase 6) — liste, pas encore exécutée 
   complexité et la surface de correctness supplémentaires sans bénéfice net
   sur l'option retenue.
 
-## Pourquoi ce correctif n'est pas encore implémenté
+## Amendement du 2026-07-23 — implémentation et écart par rapport à §2
 
-Décision délibérée de séquencement, pas un oubli. Le WAL est le chemin de
-récupération après crash le plus critique du moteur — une erreur dans son
-format ou sa logique de replay a un rayon d'explosion largement supérieur à
-n'importe quel autre correctif de cette remédiation (perte de données
-silencieuse à l'échelle du store entier, pas d'un seul enregistrement). Cet
-ADR livre la conception complète, revue et spécifiée, pour qu'une
-implémentation dédiée — avec son propre cycle complet de tests, fuzzing
-(§8), et `cargo xtask test-crash-consistency` étendu à `WalEpoch:1` —
-puisse être menée sans la pression de temps qui a produit DUR-LSM-01 en
-premier lieu. Voir le rapport de remédiation de l'audit (2026-07-23) pour le
-détail de cet arbitrage.
+Implémenté le 2026-07-23. `WalEpoch:1`, `WalRecord:3`, `WalEnvelope:2` sont en
+place, dans `format.lock`, et `store::wal::Wal` reconstruit l'AAD
+`(store_id, wal_epoch, record_offset)` à l'écriture comme à la relecture.
 
-## Critères de sortie (avant de passer ce statut à Accepted)
+**Un écart délibéré par rapport à l'ordre spécifié en §2** a été nécessaire :
+la campagne de kill-loop réelle (`cargo xtask test-crash-consistency`,
+scénario `encrypted_batch_kill_reopen_verify_loop`, pas seulement les tests
+unitaires) a fait échouer l'implémentation initiale — « publier
+`wal_epoch.meta` avant de tronquer » (le texte original de §2). Un kill entre
+les deux laisse un `wal_epoch.meta` déjà avancé au-dessus d'un `wal.log`
+encore plein de l'épisode précédent : au reopen, la relecture tente
+d'authentifier ces enregistrements sous le **nouvel** épisode et échoue —
+définitivement, puisque rien ne re-tronque ni ne re-scelle ces octets. Ce
+n'est pas une propriété de sécurité, c'est un déni de service auto-infligé :
+le store ne rouvre plus jamais.
 
-- [ ] `WalEpoch:1`, `WalRecord:3`, `WalEnvelope:2` implémentés et dans
+**Ordre réellement implémenté : tronquer d'abord, publier l'épisode
+ensuite** (inverse de §2). Un crash avant le fsync de la troncature laisse
+(ancien épisode, ancien contenu intact) — comportement pré-ADR-044, relecture
+normale. Un crash après le fsync de la troncature mais avant la publication
+laisse (ancien épisode encore affiché, WAL vide) — relecture triviale (rien à
+décoder). Voir `store::wal::Wal::reset`'s doc et le doc de module pour le
+détail complet.
+
+**Risque résiduel accepté et documenté, pas cousu sous silence** : cet ordre
+rouvre une fenêtre étroite — un crash exactement entre le fsync de la
+troncature et la publication de l'épisode laisse le prochain épisode
+étiqueté sous l'**ancien** numéro d'épisode. Un attaquant capable, en plus de
+l'accès disque déjà supposé par le modèle de menace, de **provoquer** ce
+timing exact de crash (pas seulement de l'observer) pourrait rejouer un
+enregistrement antérieur du même ancien épisode si une nouvelle écriture
+retombe au même offset. Strictement plus étroit que la faille CRYPTO-1
+d'origine (qui ne nécessitait aucun crash, à tout moment) — mais non nul.
+Fermer complètement cette fenêtre demanderait de rendre la troncature et la
+publication de l'épisode réellement atomiques (ex. un nouveau fichier de
+segment WAL par épisode avec un unique pointeur « segment courant », sur le
+modèle des générations SST) — reporté en suivi, non tenté sous la même
+pression de temps qui a produit CRYPTO-1 au départ.
+
+## Critères de sortie
+
+- [x] `WalEpoch:1`, `WalRecord:3`, `WalEnvelope:2` implémentés et dans
   `format.lock`.
-- [ ] Les 10 scénarios du §8 passent, avec au moins 3 nouvelles fuzz
-  targets tournant en continu (`.github/workflows/fuzz.yml`).
-- [ ] `cargo xtask test-crash-consistency` étend son harnais (`crash_writer`)
-  avec des points de défaillance sur la publication de `WalEpoch:1`.
-- [ ] Refus typé confirmé pour un store WAL v2 (pas de fallback silencieux),
-  avec un test de reproduction.
-- [ ] Politique de migration éventuelle tranchée séparément si un besoin
-  réel se présente avant la clôture — sinon documentée comme non nécessaire
-  (aucun store natif publié en production à ce jour).
+- [x] Les 10 scénarios du §8 sont couverts par des tests adversariaux dédiés
+  dans `store::wal`'s tests (permutation, duplication CRYPTO-1 exacte,
+  désynchronisation d'offset par suppression, cross-store, cross-épisode,
+  falsification du champ plaintext, replay idempotent, torn-tail à chaque
+  cut) — au-delà des 10, avec 3 nouvelles fuzz targets déclarées dans
+  `fuzz/Cargo.toml` et `.github/workflows/fuzz.yml` (`wal_decode` couvre
+  `WalRecord:3` par construction une fois le décodeur mis à jour — même
+  raisonnement qu'ADR-045 pour `GraphEntity`/`GraphEdge` —, `wal_epoch_decode`
+  est nouvelle, `wal_envelope_decode` couvre `WalEnvelope:2`). Exécution
+  bornée non vérifiable dans cet environnement (libFuzzer ne linke pas sous
+  Windows natif, cf. `xtask engine-fuzz` — compilation nightly confirmée
+  propre) ; tourne réellement dans `fuzz.yml` (ubuntu-latest, nightly).
+- [x] `cargo xtask test-crash-consistency` : la campagne réelle kill/reopen
+  (20 cycles, tous scénarios) est verte, et **a servi à trouver** l'écart
+  d'ordonnancement ci-dessus avant de le corriger. Deux tests à
+  frontière exacte dédiés ont été ajoutés dans
+  `tests/crash/failpoints.rs` (`before_wal_epoch_publish_*`,
+  `after_wal_epoch_publish_*`), sur le même modèle que les frontières SST/
+  manifest déjà couvertes.
+- [x] Refus typé confirmé pour un store WAL v2/pré-ADR-044 (pas de fallback
+  silencieux) — `nonempty_wal_without_epoch_file_is_refused_typed`.
+- [x] Politique de migration : documentée comme non nécessaire (aucun store
+  natif publié en production à ce jour) — inchangé par rapport à §7.

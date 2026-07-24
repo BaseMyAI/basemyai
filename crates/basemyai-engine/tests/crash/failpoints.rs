@@ -174,6 +174,98 @@ fn before_sst_manifest_publish_leaves_the_new_sst_an_orphan_and_wal_recovers() {
     }
 }
 
+/// ADR-044 §2/reset boundary (WAL v2 anti-replay, CRYPTO-1): an armed
+/// failure right after the WAL truncate's fsync but *before* the new
+/// `wal_epoch.meta` is published leaves the WAL empty (nothing to replay,
+/// so no epoch mismatch is even reachable) and `wal_epoch.meta` still at
+/// its old value — the exact narrow window documented as this ordering's
+/// residual risk in `store::wal::Wal::reset`'s doc. The store must still
+/// reopen cleanly and stay fully usable.
+#[test]
+fn before_wal_epoch_publish_leaves_an_empty_wal_and_the_old_epoch_and_still_reopens() {
+    let _serial = lock();
+    let _clear = ClearOnDrop;
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let mut engine = Engine::open_with_options(dir.path(), small_options()).expect("open");
+        for i in 0..3u32 {
+            engine.put(format!("k{i}").as_bytes(), b"v").expect("put");
+        }
+        failpoint::set("before_wal_epoch_publish", Action::Error);
+        // The 4th put crosses the flush threshold → flush → wal.reset().
+        let err = engine.put(b"k3", b"v").expect_err("armed flush must fail");
+        assert_injected_io(&err, "before_wal_epoch_publish");
+    }
+    failpoint::clear_all();
+    let mut engine = Engine::open_with_options(dir.path(), small_options()).expect("reopen after truncate-only crash");
+    for i in 0..4u32 {
+        assert_eq!(
+            engine.get(format!("k{i}").as_bytes()).expect("get").as_deref(),
+            Some(&b"v"[..]),
+            "k{i}: k0..k2 via the SST the flush completed before the armed truncate, \
+             k3 via WAL replay of the retried put after reopen"
+        );
+    }
+    // The store must stay fully usable — a subsequent flush (which bumps
+    // the still-old epoch for the first time) must work normally.
+    for i in 4..8u32 {
+        engine
+            .put(format!("k{i}").as_bytes(), b"v")
+            .expect("put after recovery");
+    }
+    drop(engine);
+    let reopened = Engine::open_with_options(dir.path(), small_options()).expect("second reopen");
+    for i in 0..8u32 {
+        assert_eq!(
+            reopened.get(format!("k{i}").as_bytes()).expect("get").as_deref(),
+            Some(&b"v"[..])
+        );
+    }
+}
+
+/// Sibling of the above: an armed failure right *after* `wal_epoch.meta`'s
+/// rename commits (the new epoch is now durable) but before the in-memory
+/// handle observes it. The store must reopen, correctly pick up the bumped
+/// epoch from disk, and stay fully usable — proving the crash-safety half
+/// of the truncate-then-publish ordering independently of the security
+/// trade-off it accepts.
+#[test]
+fn after_wal_epoch_publish_commits_the_new_epoch_durably_and_reopens_cleanly() {
+    let _serial = lock();
+    let _clear = ClearOnDrop;
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let mut engine = Engine::open_with_options(dir.path(), small_options()).expect("open");
+        for i in 0..3u32 {
+            engine.put(format!("k{i}").as_bytes(), b"v").expect("put");
+        }
+        failpoint::set("after_wal_epoch_publish", Action::Error);
+        let err = engine.put(b"k3", b"v").expect_err("armed flush must fail");
+        assert_injected_io(&err, "after_wal_epoch_publish");
+    }
+    failpoint::clear_all();
+    let mut engine = Engine::open_with_options(dir.path(), small_options()).expect("reopen after publish-only crash");
+    for i in 0..4u32 {
+        assert_eq!(
+            engine.get(format!("k{i}").as_bytes()).expect("get").as_deref(),
+            Some(&b"v"[..])
+        );
+    }
+    for i in 4..8u32 {
+        engine
+            .put(format!("k{i}").as_bytes(), b"v")
+            .expect("put after recovery");
+    }
+    drop(engine);
+    let reopened = Engine::open_with_options(dir.path(), small_options()).expect("second reopen");
+    for i in 0..8u32 {
+        assert_eq!(
+            reopened.get(format!("k{i}").as_bytes()).expect("get").as_deref(),
+            Some(&b"v"[..])
+        );
+    }
+}
+
 #[test]
 fn during_compaction_failure_keeps_every_pre_compaction_sst_readable() {
     let _serial = lock();
