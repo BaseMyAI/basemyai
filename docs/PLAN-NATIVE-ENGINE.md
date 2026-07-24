@@ -837,9 +837,54 @@ N10   Importance + temporal index + oubli borné + forget_many
       §7.3 Oubli adaptatif borné en mémoire              ✅ 2026-07-13 — même discipline « primitive moteur d'abord » : `BlockSstFile::entries_with_range_limited` (arrêt à `limit` matches, flag `truncated`) + `Engine::scan_range_page` (fusion LSM par frontière = min des dernières clés des sources tronquées ; protocole `next_start`, une page vide peut être une progression) + `key::memory_index::record_agent_upper_bound` + `PersistentMemoryIndex::scan_agent_page` (contrat curseur-id simple, page courte ⇔ épuisé). Contrat `MemoryStore::scan_for_forgetting` paginé (breaking 0.2.0 : `after_id`/`limit`, pages de candidats actifs). `adaptive_forgetting` en deux passes : sélection par `SurvivorSelector` (tas borné à `capacity`, O(capacity + page) mémoire, résultat indépendant de l'ordre des pages) puis éviction paginée de tout non-survivant au même `now` (prédicat gelé), victime par victime (le lot = §7.4). dry-run sans mutation après la passe 1. Fenêtre inter-passes documentée (ADR-041). Tests : SST/engine (pages chaînées ≡ scan complet, frontière memtable vs clé masquante, plage tombstonée = progression), stub scripté deux passes à page minuscule, contrat store paginé sur population mixte actifs/invalidés/expirés, 19 scénarios maintenance_worker verts.
       §7.4 forget_many                                   ✅ 2026-07-13 — suppression par lots atomiques bornés. Primitives par index d'abord : `PersistentFts::stage_delete_many` (une seule écriture de stats agrégée pour le groupe — le read-modify-write de `stage_delete` perdrait des décréments dans un batch partagé, testé) + `delete_footprint` (sonde d'octets), `PersistentVectorIndex::delete_many_with` (toutes les tombstones + UN méta, même asymétrie extra-sur-no-op que `delete_with`), `Batch::approx_wire_bytes`. Puis `PersistentMemoryIndex::forget_many(…, ForgetBatchOptions{max_items: 256, max_wal_bytes: ~4 Mio})` : chunks atomiques (record+vecmap+expiry+FTS+tombstones = un WAL record), comptabilité d'octets estimative (cible de dimensionnement, un souvenir n'est jamais scindé), reprise idempotente entre chunks (ids absents sautés). Surface : `MemoryStore::forget_many` (breaking 0.2.0), câblé dans les 4 chemins d'éviction — GC + oubli adaptatif, CLI (`run`) et façade `Memory` (`forget_batch_with_events` : couches capturées avant, événements `Forgotten` après commit, contrat de `Memory::forget` préservé). Tests à chaque couche (FTS stats agrégées, groupe vectoriel atomique + reopen sans rebuild, résultat indépendant des bornes de chunk, idempotence, isolation inter-agent au niveau store).
       §7.5 Registre d'agents                             ✅ 2026-07-13 — `meta/agents/<agent_len><agent>` (`key::agent_registry`, valeur vide — rien au format.lock). Marqueur empilé dans le même batch que chaque `put_many` (écrasement idempotent) ; retiré par `purge_agent` EN DERNIER (crash mid-purge ⇒ relancer retire l'entrée — jamais d'agent non purgé invisible) ; volontairement PAS retiré au forget du dernier souvenir (le registre = « qui visiter », jamais un compteur). `PersistentMemoryIndex::list_agents` + `NativeMemoryStore::list_agents` (méthode inhérente conteneur, pas sur le trait — même statut que `total_memory_count`). Identifiants seuls, zéro fuite inter-agent. Limite documentée (ADR-041) : non rétroactif sur les stores pré-N10 (acceptable, format non publié).
-N10 (ADR-041) entièrement clos 2026-07-13 — §7.1 à §7.5 livrés ; reste de suivi : benchmark 1M archivé (avec le banc N7).
+N10 (ADR-041) entièrement clos 2026-07-13 — §7.1 à §7.5 livrés ; benchmark 1M archivé le 2026-07-15 avec la campagne N11 (voir plus bas), plus de suivi ouvert.
 
 N11   Campagne complète de durcissement
+
+N11.4 Campagne soak 1M réellement exécutée et archivée ✅ 2026-07-15 — le
+      "reste de suivi" laissé par N10/§8.3 (`soak-campaign.yml` posé mais
+      jamais réellement déclenché à `n=1000000`) est maintenant fait pour de
+      vrai, pas seulement câblé. **4 cycles** à `n=1 000 000`, clair **et**
+      chiffré à chaque cycle (8 invocations `engine_bench`, dépasse le
+      minimum de 3-5 cycles du plan), plus `cargo xtask
+      test-crash-consistency` (7 variantes × 20 cycles kill réel) dans la
+      même session. Nouveau flag `--verify` ajouté à `engine_bench`
+      (`crates/basemyai-engine/src/bin/engine_bench.rs::verify_dir_if_requested`)
+      qui rouvre chaque store juste après sa fermeture propre (avant
+      suppression du répertoire temporaire) et appelle
+      `basemyai_engine::verify_store(dir, key, VerifyMode::FullLogical)` —
+      `FullLogical` est le mode le plus profond réellement nommé ainsi dans
+      le code/CLI (`--logical`) ; le "`--deep`" de ce plan (§8, critères de
+      sortie R1) est ce même mode, pas un flag distinct qui n'existe pas.
+      **Résultat : 14/14 audits `healthy=true`, 0 erreur, 0 warning** ; RSS
+      peak stable 553,5-561,7 Mo sur les 8 runs sans tendance monotone
+      cycle-à-cycle ; `sst_bytes`/`wal_bytes`/`tombstone_count`/
+      `compaction_count`/`block_cache_hits`/`misses` identiques bit-pour-bit
+      entre les 4 cycles clairs entre eux et les 4 cycles chiffrés entre eux
+      (workload déterministe — reproductibilité parfaite, donc toute
+      divergence future serait un signal fort) ; `test-crash-consistency`
+      7/7 vert (140 cycles kill réel cumulés, single-key/batch/graph/
+      memory/vector, clair+chiffré). **Aucun bug trouvé.** Latences
+      (`open-large-store`, `kv-fill`) plus bruitées que N7.5/N8 — la
+      campagne a tourné en tâche de fond pendant d'autres commandes cargo
+      sur la même machine — documenté honnêtement dans le rapport, sans
+      impact sur les métriques structurelles (déterministes, indépendantes
+      du CPU disponible). Seul critère de sortie R1 non vérifié
+      positivement : comptage de handles fichier (aucune instrumentation
+      moteur/xtask existante, comme déjà documenté par §8.3 — pas de fausse
+      promesse ici non plus). Rapport complet :
+      `docs/benchmarks/n11-soak-1m-2026-07-15.md` ; données brutes
+      `docs/benchmarks/data/n11-soak-1m/` (8 rapports JSON + `campaign.log`).
+
+N11 entièrement clos 2026-07-15 — N11.1 (fuzz, 2026-07-12), N11.2
+(model-based, 2026-07-13), N11.3 (pannes I/O, 2026-07-13), §8.3 (matrice
+CI, 2026-07-13) et N11.4 (campagne 1M, 2026-07-15) tous livrés avec preuve
+mesurée. Les critères de sortie R1 (§8, ci-dessus) sont couverts à
+l'exception du comptage de handles fichier (non instrumenté, documenté).
+Documentation opérateur (`docs/cli.md`) revue dans cette session : déjà
+complète (verify/repair/rebuild-indexes/compact/reembed, codes de sortie,
+ce qui est read-only vs ce qui écrit), aucune lacune trouvée qui aurait
+justifié une réécriture.
 ```
 
 Le projet ne passe à N12 que lorsque N8 à N11 sont fermés avec preuves

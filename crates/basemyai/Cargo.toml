@@ -11,6 +11,7 @@ repository.workspace = true
 documentation = "https://docs.rs/basemyai"
 keywords = ["memory", "agent", "ai", "rag", "vector-search"]
 categories = ["database-implementations", "algorithms"]
+autotests = false
 
 [features]
 # `embed` : active l'inférence Candle (lourd, exige les fichiers modèle).
@@ -54,6 +55,8 @@ serde_json = { workspace = true }
 # Client HTTP async — détection des serveurs LLM locaux (Ollama, llama.cpp).
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+# Parsing de ~/.basemyai/config.toml (défauts db_path/agent partagés CLI+bindings).
+toml = { workspace = true }
 # Détection GPU NVIDIA (NVML) — optionnelle, feature `cuda-detect`.
 nvml-wrapper = { workspace = true, optional = true }
 
@@ -68,7 +71,123 @@ basemyai-core = { path = "../basemyai-core" }
 # invisible puisque ce crate n'est ni en `cfg(test)` ni construit avec sa
 # propre feature `test-util`.
 basemyai-engine = { path = "../basemyai-engine", features = ["test-util"] }
+# Dev-dependency sur soi-même avec `test-util` : les tests d'intégration
+# (`tests/`) appellent `NativeMemoryStore::open`/`open_ephemeral` (gardés
+# `cfg(any(test, feature = "test-util"))`) mais ne sont PAS en `cfg(test)` du
+# crate — sans ceci, seul un `--features test-util` explicite (matrice
+# xtask/CI) les fait compiler, et `cargo check --workspace --all-targets` nu
+# casse (E0599). Path-only, donc strippée à la publication.
+basemyai = { path = ".", features = ["test-util"] }
 tempfile.workspace = true
+
+# `tests/*` reorganisé par domaine (memory/, isolation/, consolidation/,
+# context/, storage/, provision/, maintenance/, meta/) — voir
+# `tests/support/mod.rs` pour le helper partagé. Noms de binaire inchangés :
+# les invocations `--test <name>` dans `xtask/src/main.rs` et
+# `.github/workflows/*.yml` restent valides.
+[[test]]
+name = "contracts"
+path = "tests/memory/contracts.rs"
+
+[[test]]
+name = "events"
+path = "tests/memory/events.rs"
+
+[[test]]
+name = "memory"
+path = "tests/memory/memory.rs"
+
+[[test]]
+name = "memory_tests"
+path = "tests/memory/memory_tests.rs"
+
+[[test]]
+name = "native_memory_store_bench"
+path = "tests/memory/native_memory_store_bench.rs"
+
+[[test]]
+name = "porting"
+path = "tests/memory/porting.rs"
+
+[[test]]
+name = "provenance_trust"
+path = "tests/memory/provenance_trust.rs"
+
+[[test]]
+name = "graph_provenance"
+path = "tests/memory/graph_provenance.rs"
+
+[[test]]
+name = "retrieval"
+path = "tests/memory/retrieval.rs"
+
+[[test]]
+name = "testutil_facade"
+path = "tests/memory/testutil_facade.rs"
+
+[[test]]
+name = "export_isolation_adversarial"
+path = "tests/isolation/export_isolation_adversarial.rs"
+
+[[test]]
+name = "isolation_recall_graph_adversarial"
+path = "tests/isolation/isolation_recall_graph_adversarial.rs"
+
+[[test]]
+name = "p1_isolation_adversarial"
+path = "tests/isolation/p1_isolation_adversarial.rs"
+
+[[test]]
+name = "poisoning_procedural_recall"
+path = "tests/isolation/poisoning_procedural_recall.rs"
+
+[[test]]
+name = "zero_network_recall"
+path = "tests/isolation/zero_network_recall.rs"
+
+[[test]]
+name = "consolidation"
+path = "tests/consolidation/consolidation.rs"
+
+[[test]]
+name = "consolidation_e2e"
+path = "tests/consolidation/consolidation_e2e.rs"
+
+[[test]]
+name = "temporal_dedup_consolidation"
+path = "tests/consolidation/temporal_dedup_consolidation.rs"
+
+[[test]]
+name = "temporal_replacement_ci"
+path = "tests/consolidation/temporal_replacement_ci.rs"
+
+[[test]]
+name = "context"
+path = "tests/context/context.rs"
+
+[[test]]
+name = "format"
+path = "tests/storage/format.rs"
+
+[[test]]
+name = "plaintext_open_forbidden"
+path = "tests/storage/plaintext_open_forbidden.rs"
+
+[[test]]
+name = "llm_provision"
+path = "tests/provision/llm_provision.rs"
+
+[[test]]
+name = "provisioning"
+path = "tests/provision/provisioning.rs"
+
+[[test]]
+name = "maintenance_worker"
+path = "tests/maintenance/maintenance_worker.rs"
+
+[[test]]
+name = "docs_no_stale_claims"
+path = "tests/meta/docs_no_stale_claims.rs"
 
 [lints]
 workspace = true

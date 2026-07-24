@@ -47,8 +47,10 @@ file resolves the user passphrase via **ADR-034** (see
 4. `/run/secrets/basemyai_db_key`
 5. `~/.basemyai/key` (from `basemyai config key generate`)
 
-There is no CLI flag for the key and no way to open a file in plaintext. The
-passphrase is **never** stored in `config.toml`.
+`BASEMYAI_DB_KEY_MODE=passphrase` interprets the resolved secret through
+Argon2id. If unset, the mode remains `raw-key` for compatibility with stores
+created before ADR-042. There is no CLI flag for the current key and no way
+to open a file in plaintext. The secret is **never** stored in `config.toml`.
 
 In `text` mode, `basemyai` now uses a terminal-aware presentation layer:
 tables for scanability, semantic color tokens, and progress feedback for long
@@ -76,12 +78,15 @@ free-text messages. Defined in `crates/basemyai-cli/src/exit.rs` /
 | 9 | No local LLM backend detected — run `basemyai llm detect`. |
 | 10 | `verify`: container opens but doesn't match the expected `.bmai` format/version, or the engine integrity audit (`--physical`/`--logical`) found an error. |
 | 11 | `repair` (without `--dry-run`): primary data is at risk — refusing to auto-repair (ADR-040 §3). |
+| 12 | `eval run\|compare` (feature `eval-lab` only): dataset/report error propagated from `basemyai-eval` (invalid JSON, malformed case, IO). |
+| 13 | `eval run\|compare` (feature `eval-lab` only): the report/comparison was produced correctly, but a case failed a blocking assertion or `--fail-on-regression` detected a regression. |
 
 In `--format json`, every error is also printed on stderr as a single object
 with a stable `code` string (the same categories as the table above, e.g.
 `KEY_REQUIRED`, `KEY_INSECURE`, `NOT_CONFIGURED`, `INVALID_AGENT`, `ALREADY_EXISTS`,
 `CONFIRMATION_REQUIRED`, `MODEL_NOT_PROVISIONED`, `LLM_NOT_AVAILABLE`,
-`VERIFICATION_FAILED`, `REPAIR_REFUSED`) and a human `message` that **is not**
+`VERIFICATION_FAILED`, `REPAIR_REFUSED`, `EVAL_ERROR`, `EVAL_CASES_FAILED`,
+`EVAL_REGRESSION_DETECTED`) and a human `message` that **is not**
 part of the contract and may reword across releases:
 
 ```json
@@ -141,6 +146,7 @@ explicit consent in the SDKs). See
 
 ```bash
 basemyai init ./agent.bmai      # create an encrypted native .bmai container (metadata)
+basemyai init ./agent.bmai --low-memory # Argon2id 19 MiB/t2/p1 for constrained hardware
 basemyai inspect                # container metadata + memory count
 basemyai verify                 # container metadata + engine integrity audit, mode Quick (default)
 basemyai verify --physical      # + decode every data block (VerifyMode::FullPhysical)
@@ -149,12 +155,22 @@ basemyai repair --dry-run       # audit (FullLogical) + print the derived-index 
 basemyai repair                 # apply the plan if no primary data is at risk (else exit 11, REPAIR_REFUSED)
 basemyai rebuild-indexes        # unconditionally rebuild derived indexes (vecmap/allocator, FTS, vector graph)
 basemyai compact                # full compaction: merge into one SST, purge tombstones (Engine::compact_now)
+basemyai rotate-key --new-key "$NEW_KEY"                     # O(1) raw-key rewrap
+basemyai rotate-key --new-key "$NEW_PASSPHRASE" --passphrase # O(1) rewrap to Argon2id
+basemyai rotate-key --new-key "$NEW_PASSPHRASE" --passphrase --low-memory # explicit 19 MiB/t2/p1
+basemyai rotate-key --new-key "$NEW_PASSPHRASE" --passphrase --full # fresh DEK + full re-encryption
 basemyai reembed                 # fix every memory store-wide currently missing its vector (loads the embedder)
 basemyai reembed --agent X --ids a,b   # re-embed specific memories of X unconditionally
 basemyai reembed --agent X --all       # re-embed every memory of X unconditionally (e.g. embedding model change)
 basemyai migrate                # idempotent open (native format applied at open time)
 basemyai stats                  # per-layer valid-memory counts for the resolved agent
 ```
+
+`--low-memory` selects the explicit ADR-042 constrained-hardware Argon2id
+profile (19 MiB, two iterations, one lane). The normal profile remains
+64 MiB/t3/p4. Parameters are persisted in the container and replayed on open;
+repeat `--low-memory` on each key rotation that should keep the constrained
+profile, otherwise the new wrap uses the normal profile.
 
 `verify`'s engine-level audit (ADR-040) runs strictly read-only, before the
 normal container open that follows to read `format`/`format_version`/
@@ -201,6 +217,30 @@ basemyai import --file -              # stdin
 the Candle embedder (they go through `basemyai::storage::MemoryStore`
 directly) — they don't pay the model-load cost for operations that do no
 embedding.
+
+## Context Engine
+
+`context` compiles a hybrid recall into a bounded, traceable context —
+deterministic, no LLM in the loop (`basemyai::Memory::compile_context`).
+
+```bash
+basemyai context "how does basemyai store memory" --token-budget 256
+basemyai context "deploy checklist" --token-budget 256 --profile coding --render text
+basemyai context "deploy checklist" --token-budget 256 --render json    # machine-readable content
+basemyai context "billing plan" --token-budget 256 --explain             # bounded, detailed trace
+basemyai context "billing plan" --token-budget 256 --source-policy allow-all --include-procedural
+```
+
+`--profile` (`balanced` default, `conversation`, `coding`, `execution`,
+`safety-critical`) tunes selection weights and per-role quotas only — never
+permissions. `--render` (`markdown` default, `text`, `json`) controls the
+*content* format returned inside the bundle — independent from the global
+`--format` flag, which controls the CLI's own output framing (human text vs.
+`{"error": ...}`-shaped JSON). `--explain` keeps a detailed, size-bounded
+trace of inclusion/exclusion reasons, retrieval contributions, dedup
+clusters, and warnings; `--format json` surfaces the full structured bundle
+(sections, citations, trace, …), plain `context` prints just the rendered
+content.
 
 ## Graph
 
@@ -266,6 +306,29 @@ keep a worker running continuously (the CLI itself is one-shot, no
 background worker) — see `crates/basemyai/tests/maintenance_worker.rs`.
 Design details: `docs/adr/ADR-037-native-adaptive-forgetting.md`,
 `docs/adr/ADR-038-native-expired-memory-gc.md`.
+
+## Recall Quality Lab (feature `eval-lab`, off by default)
+
+```bash
+cargo build -p basemyai-cli --features eval-lab   # not part of the default/distributed build
+
+basemyai eval run eval/datasets/recall-core.jsonl --output report.json --human report.md
+basemyai eval compare eval/reports/baseline.json report.json --fail-on-regression
+```
+
+Thin CLI wrapper around `crates/basemyai-eval` (Recall Quality Lab) —
+deterministic, offline, model-free recall/Context Engine evaluation. `run`
+exits 13 (`EVAL_CASES_FAILED`) if any case fails a blocking assertion;
+`compare --fail-on-regression` exits 13 (`EVAL_REGRESSION_DETECTED`) if a
+quality metric regresses or the failed-case count increases. Dataset/report
+errors (invalid JSON, malformed case) surface as exit 12 (`EVAL_ERROR`).
+
+Off by default because `basemyai-eval` activates `basemyai/test-util`
+(`HashEmbedder`, ephemeral store) — not something a distributed release
+binary should ship. The standalone binary (`cargo run -p basemyai-eval --
+run|compare`, used by `cargo xtask eval-run` and CI) needs no feature flag
+and stays the canonical entry point for automation; this subcommand is an
+ergonomic addition on top of the same runner (`docs/recall-quality-lab.md`).
 
 ## Shell completions
 

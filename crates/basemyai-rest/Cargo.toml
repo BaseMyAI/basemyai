@@ -39,8 +39,15 @@ futures-util = { workspace = true }
 
 serde.workspace      = true
 serde_json.workspace = true
-tokio.workspace      = true
+# `signal` : arrêt gracieux (`server::shutdown`, Ctrl+C/SIGTERM) — pas dans le
+# jeu de features `[workspace.dependencies]` (partagé par des crates qui n'en
+# ont pas besoin), ajouté seulement ici.
+tokio = { workspace = true, features = ["signal"] }
 tracing.workspace    = true
+# Même version que basemyai-cli/basemyai-mcp (pas encore promue au niveau
+# workspace) — sans elle, tous les tracing::info!/error! du crate sont des
+# no-op silencieux : aucun subscriber n'était jamais installé avant ce refactor.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 async-trait.workspace = true
 thiserror.workspace  = true
 

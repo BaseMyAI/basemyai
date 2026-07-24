@@ -57,6 +57,30 @@
 //! (verrou d'écriture exclusif) : lever *ça* exigerait de faire du moteur
 //! lui-même un multi-écrivain, hors périmètre N5.5 (voir
 //! `docs/adr/ADR-027-native-memory-store.md` §5).
+//!
+//! **Compaction concurrente (ADR-043 §3/J4, N13 ; amendement CONC-P1)** :
+//! une compaction déclenchée par un flush ne tient le verrou d'écriture ni
+//! pour toute sa durée, ni même un verrou de lecture pour la partie lente.
+//! [`Self::with_inner`] vérifie, toujours sous le verrou d'écriture qu'il
+//! détient déjà pour `f` (coût quasi nul, pas de tour de verrou
+//! supplémentaire), si le flush qui vient de s'exécuter a fait passer le
+//! nombre de SST vivantes au-dessus du seuil (`Engine::compaction_pending`).
+//! Si oui, une fois ce verrou relâché, [`Self::run_pending_compaction`]
+//! capture les SST d'entrée sous un verrou de **lecture** bref
+//! (`Engine::compaction_snapshot`, un simple clonage d'`Arc`), **relâche ce
+//! verrou**, puis exécute le merge lui-même (potentiellement lent — tout le
+//! jeu de données vivant matérialisé en RAM, `CompactionSnapshot::build`)
+//! sans tenir aucun verrou de `NativeInner` — ni lecture, ni écriture. Seule
+//! la bascule finale (`VersionEdit` + remplacement d'`Arc`, coût O(1),
+//! jamais O(données vivantes)) reprend brièvement le verrou d'écriture
+//! (`Engine::compact_commit`). Avant cet amendement, la préparation entière
+//! du merge tournait sous verrou de lecture tenu pour sa durée complète —
+//! `std::sync::RwLock::write()` ne pouvant pas progresser tant qu'un lecteur
+//! le tient, tout écrivain concurrent restait bloqué pour la durée du merge,
+//! pas seulement pour la bascule finale (voir le troisième amendement
+//! d'ADR-043). Une seule passe par déclenchement : le commit ne redéclenche
+//! pas lui-même une vérification, un merge ramène toujours le compte de SST
+//! sous le seuil.
 
 mod inner;
 mod porting;
@@ -130,7 +154,12 @@ const OVERSAMPLE: usize = 8;
 /// ce `RwLock` ne change rien à ça, il ne fait qu'arrêter de sérialiser les
 /// lecteurs entre eux. Voir `docs/adr/ADR-027-native-memory-store.md` §5
 /// pour le contexte : ce `RwLock` remplace le `Mutex` que ce paragraphe
-/// décrivait comme la barre à lever en N5.5.
+/// décrivait comme la barre à lever en N5.5. Depuis ADR-043 §3/J4 (N13,
+/// amendement CONC-P1), la passe de merge d'une compaction déclenchée par un
+/// flush ne compte plus dans cette exclusion : elle tourne sans tenir aucun
+/// verrou de ce `RwLock` (ni lecture, ni écriture) — seule sa capture
+/// (coût quasi nul) et la bascule finale (coût O(1)) touchent brièvement le
+/// verrou — voir le doc du module.
 pub struct NativeMemoryStore {
     inner: Arc<RwLock<NativeInner>>,
     /// Garde de vie du répertoire temporaire d'[`Self::open_ephemeral`] —
@@ -166,6 +195,8 @@ pub(crate) fn map_engine_error(e: basemyai_engine::EngineError) -> crate::Memory
         EngineError::MissingEncryptionKey { .. } => CoreError::EncryptionKeyRequired.into(),
         EngineError::WrongEncryptionKey { .. } => CoreError::WrongEncryptionKey.into(),
         EngineError::CorruptCryptoMeta { .. } => CoreError::CorruptEncryptionMetadata.into(),
+        EngineError::StoreLocked { .. } => CoreError::StoreLocked.into(),
+        EngineError::CorruptGenerationMeta { .. } => CoreError::CorruptStoreGenerationMetadata.into(),
         EngineError::PlaintextStoreKeySupplied { .. } => CoreError::PlaintextStoreEncryptedKeySupplied.into(),
         EngineError::NotEncrypted { .. } => CoreError::Encryption.into(),
         EngineError::CryptoFailure { .. } => CoreError::Encryption.into(),
@@ -193,10 +224,23 @@ impl NativeMemoryStore {
         Self::from_engine(Engine::open(path).map_err(map_engine_error)?)
     }
 
+    /// Comme [`Self::open`], avec des `EngineOptions` explicites — **réservé
+    /// aux tests** (`test-util`) qui doivent forcer flush/compaction à se
+    /// déclencher sur un jeu de données borné plutôt que d'attendre les
+    /// seuils par défaut (nécessaire pour exercer la compaction concurrente
+    /// d'ADR-043 §3/J4 sans construire un jeu de données massif).
+    ///
+    /// # Errors
+    /// Erreur de stockage si le moteur ou l'un de ses index ne s'ouvre pas.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn open_with_engine_options(path: impl AsRef<Path>, options: basemyai_engine::EngineOptions) -> Result<Self> {
+        Self::from_engine(Engine::open_with_options(path, options).map_err(map_engine_error)?)
+    }
+
     /// Ouvre (en le créant au besoin) un store natif **chiffré au repos**
-    /// (ADR-030) : WAL et SST scellés sous la DEK du store, `key` vérifiée
-    /// contre `crypto.meta` à l'ouverture — une mauvaise clé échoue ici,
-    /// typée, jamais en corruption inexplicable plus loin.
+    /// par une clé brute (ADR-030) : WAL et SST scellés sous la DEK du store,
+    /// `key` vérifiée contre `crypto.meta` à l'ouverture — une mauvaise clé
+    /// échoue ici, typée, jamais en corruption inexplicable plus loin.
     ///
     /// # Errors
     /// Erreur de stockage si la clé est fausse, si `path` contient déjà un
@@ -206,7 +250,56 @@ impl NativeMemoryStore {
         Self::from_engine(Engine::open_encrypted(path, key.as_bytes()).map_err(map_engine_error)?)
     }
 
+    /// Ouvre un store chiffré selon le mode explicitement porté par
+    /// [`basemyai_core::EncryptionKey`].
+    ///
+    /// C'est le point d'entrée recommandé aux SDKs : il évite qu'une
+    /// passphrase soit accidentellement ouverte comme une clé brute.
+    pub fn open_with_key(path: impl AsRef<Path>, key: &basemyai_core::EncryptionKey) -> Result<Self> {
+        match key.mode() {
+            basemyai_core::EncryptionKeyMode::RawKey => Self::open_encrypted(path, key.expose()),
+            basemyai_core::EncryptionKeyMode::Passphrase => Self::open_with_passphrase(path, key.expose()),
+            _ => Err(storage("unsupported encryption key mode")),
+        }
+    }
+
+    /// Ouvre (en le créant au besoin) un store natif chiffré avec une
+    /// passphrase humaine, étirée avec Argon2id et persistée comme telle dans
+    /// `CryptoMeta:2` (ADR-042).
+    ///
+    /// Une passphrase et une clé brute de mêmes octets ne se substituent
+    /// jamais : un store de l'autre mode échoue à l'ouverture avec l'erreur
+    /// de clé typée du moteur.
+    ///
+    /// # Errors
+    /// Erreur de stockage si la passphrase est fausse, si le store est déjà
+    /// chiffré dans l'autre mode, ou sur toute erreur I/O/corruption
+    /// d'ouverture.
+    pub fn open_with_passphrase(path: impl AsRef<Path>, passphrase: &str) -> Result<Self> {
+        Self::from_engine(Engine::open_with_passphrase(path, passphrase.as_bytes()).map_err(map_engine_error)?)
+    }
+
+    /// Creates a passphrase store with an explicit Argon2id cost profile.
+    /// On reopen, the persisted parameters are replayed regardless of the
+    /// caller's current defaults.
+    pub fn open_with_passphrase_and_profile(
+        path: impl AsRef<Path>,
+        passphrase: &str,
+        profile: basemyai_engine::Argon2idProfile,
+    ) -> Result<Self> {
+        Self::from_engine(
+            Engine::open_with_passphrase_and_profile(path, passphrase.as_bytes(), profile).map_err(map_engine_error)?,
+        )
+    }
+
     fn from_engine(mut engine: Engine) -> Result<Self> {
+        // ADR-043 §3/J4: this is the one production caller with somewhere
+        // better to run a compaction merge than inline under `flush()`'s
+        // exclusive access — `with_inner`'s post-write step, off the write
+        // lock (see its doc comment). Every direct `Engine` caller without
+        // that (standalone binaries, test harnesses) keeps the engine's own
+        // safe default instead.
+        engine.set_auto_compact_on_flush(false);
         let params = basemyai_engine::VectorIndexParams::with_dim(crate::EMBEDDING_DIM);
         let vectors = PersistentVectorIndex::open(&mut engine, params).map_err(storage)?;
         let memory = PersistentMemoryIndex::open(&engine).map_err(storage)?;
@@ -235,9 +328,79 @@ impl NativeMemoryStore {
     /// rotater — parité de posture avec `CoreError::Encryption`, ADR-007) ou
     /// si le remplacement atomique échoue.
     pub async fn rotate_key(&self, new_key: &str) -> Result<()> {
-        let new_key = new_key.to_string();
-        self.with_inner(move |inner| inner.engine.rotate_key(new_key.as_bytes()).map_err(map_engine_error))
-            .await
+        self.rotate_with_key(basemyai_core::EncryptionKey::raw(new_key)).await
+    }
+
+    /// Re-scelle la DEK selon le mode explicite porté par `new_key`.
+    /// Cette variante évite toute réinterprétation d'une passphrase en clé
+    /// brute et conserve le secret dans un buffer zeroizable jusqu'à la fin
+    /// de la closure bloquante.
+    pub async fn rotate_with_key(&self, new_key: basemyai_core::EncryptionKey) -> Result<()> {
+        self.with_inner(move |inner| {
+            let result = match new_key.mode() {
+                basemyai_core::EncryptionKeyMode::RawKey => inner.engine.rotate_key(new_key.expose().as_bytes()),
+                basemyai_core::EncryptionKeyMode::Passphrase => {
+                    inner.engine.rotate_passphrase(new_key.expose().as_bytes())
+                }
+                _ => return Err(storage("unsupported encryption key mode")),
+            };
+            result.map_err(map_engine_error)
+        })
+        .await
+    }
+
+    /// Re-scelle la DEK avec une passphrase et un profil Argon2id explicite.
+    /// Le profil low-memory doit être redemandé à chaque rotation qui doit le
+    /// conserver ; sinon la rotation revient au profil par défaut ADR-042.
+    pub async fn rotate_passphrase_with_profile(
+        &self,
+        new_passphrase: basemyai_core::EncryptionKey,
+        profile: basemyai_engine::Argon2idProfile,
+    ) -> Result<()> {
+        if new_passphrase.mode() != basemyai_core::EncryptionKeyMode::Passphrase {
+            return Err(storage("Argon2id profiles require a passphrase encryption key"));
+        }
+        self.with_inner(move |inner| {
+            inner
+                .engine
+                .rotate_passphrase_with_profile(new_passphrase.expose().as_bytes(), profile)
+                .map_err(map_engine_error)
+        })
+        .await
+    }
+
+    /// Ré-encrypte tous les enregistrements vivants sous une nouvelle DEK,
+    /// publie atomiquement la génération résultante puis collecte l'ancienne.
+    pub async fn rotate_key_full(&self, new_key: basemyai_core::EncryptionKey) -> Result<()> {
+        self.with_inner(move |inner| {
+            let result = match new_key.mode() {
+                basemyai_core::EncryptionKeyMode::RawKey => inner.engine.rotate_key_full(new_key.expose().as_bytes()),
+                basemyai_core::EncryptionKeyMode::Passphrase => {
+                    inner.engine.rotate_passphrase_full(new_key.expose().as_bytes())
+                }
+                _ => return Err(storage("unsupported encryption key mode")),
+            };
+            result.map_err(map_engine_error)
+        })
+        .await
+    }
+
+    /// Rotation complète de DEK avec un profil Argon2id explicite.
+    pub async fn rotate_passphrase_full_with_profile(
+        &self,
+        new_passphrase: basemyai_core::EncryptionKey,
+        profile: basemyai_engine::Argon2idProfile,
+    ) -> Result<()> {
+        if new_passphrase.mode() != basemyai_core::EncryptionKeyMode::Passphrase {
+            return Err(storage("Argon2id profiles require a passphrase encryption key"));
+        }
+        self.with_inner(move |inner| {
+            inner
+                .engine
+                .rotate_passphrase_full_with_profile(new_passphrase.expose().as_bytes(), profile)
+                .map_err(map_engine_error)
+        })
+        .await
     }
 
     /// Store natif jetable dans un répertoire temporaire, supprimé au drop
@@ -310,20 +473,123 @@ impl NativeMemoryStore {
     /// (jamais à travers un `.await`) — les mutations (`put_memory*`,
     /// `invalidate`, `forget`, `purge_agent`, `graph_upsert_*`,
     /// `rotate_key`, et le `touch` des chemins hybrides) passent par ici.
+    ///
+    /// Point de câblage unique de la compaction concurrente (ADR-043 §3/J4) :
+    /// une fois `f` exécuté et son résultat obtenu, encore sous le même
+    /// verrou d'écriture (donc à coût quasi nul), on interroge
+    /// `Engine::compaction_pending` — le flush que `f` vient éventuellement
+    /// de déclencher a-t-il fait passer le nombre de SST vivantes au-dessus
+    /// du seuil ? Le verrou relâché, si oui, [`Self::run_pending_compaction`]
+    /// lance la passe de merge hors de tout verrou d'écriture tenu ici.
+    /// Câblé une seule fois, ici : tous les appelants actuels de
+    /// `with_inner` en bénéficient automatiquement, sans dupliquer cette
+    /// logique à chaque site d'appel dispersé dans `inner.rs`/`trait_impl.rs`.
+    ///
+    /// Un échec de `run_pending_compaction` (typiquement
+    /// `EngineError::VersionEditMissingInput` — deux déclenchements
+    /// concurrents dont un a déjà tout compacté sous le verrou de lecture
+    /// partagé de `compact_prepare`, ADR-043 §3/J4 — ou une vraie erreur
+    /// d'I/O) est **délibérément non fatal** ici : `f` a déjà réussi et sa
+    /// donnée est déjà durable, le déclenchement de compaction n'était
+    /// qu'opportuniste. Le faire échouer via `?` renverrait à l'appelant de
+    /// `put_memory`/`invalidate`/`forget`/… un `Err` pour un écrit qui a en
+    /// réalité réussi — un caller raisonnable réessaierait ou lèverait une
+    /// alarme sur la mauvaise opération. La compaction manquée n'est pas
+    /// perdue : le prochain flush qui repasse par ici revérifiera
+    /// `compaction_pending` et retentera.
     async fn with_inner<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&mut NativeInner) -> Result<T> + Send + 'static,
     {
+        let (result, compaction_pending) = self.with_inner_write_and_pending(f).await?;
+        if compaction_pending && let Err(err) = self.run_pending_compaction().await {
+            tracing::warn!(
+                error = %err,
+                "compaction opportuniste (ADR-043 §3/J4) échouée après un écrit déjà réussi — \
+                 ignorée, retentée au prochain flush qui dépasse le seuil"
+            );
+        }
+        Ok(result)
+    }
+
+    /// Primitive partagée derrière [`Self::with_inner`] : exécute `f` sous le
+    /// verrou d'écriture et rapporte, dans la même acquisition, si une
+    /// compaction est désormais due (`Engine::compaction_pending` — une
+    /// simple comparaison d'entiers déjà résidents, gratuite ici).
+    ///
+    /// Utilisée aussi par [`Self::run_pending_compaction`] pour son étape de
+    /// commit (`Engine::compact_commit`) **sans** passer par `with_inner` —
+    /// volontaire : un merge ramène toujours le nombre de SST sous le seuil,
+    /// donc rebrancher `with_inner` (et son propre déclenchement) sur ce
+    /// commit ne ferait qu'une vérification supplémentaire sans effet, mais
+    /// le protocole voulu (ADR-043 §3/J4) est explicitement « une seule passe
+    /// par déclenchement » — pas de rebouclage, même inoffensif.
+    async fn with_inner_write_and_pending<T, F>(&self, f: F) -> Result<(T, bool)>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut NativeInner) -> Result<T> + Send + 'static,
+    {
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || -> Result<(T, bool)> {
             let mut guard = inner
                 .write()
                 .map_err(|_| storage("verrou d'écriture du store natif empoisonné"))?;
-            f(&mut guard)
+            let result = f(&mut guard)?;
+            let compaction_pending = guard.engine.compaction_pending();
+            Ok((result, compaction_pending))
         })
         .await
         .map_err(|e| storage(format!("tâche bloquante du store natif interrompue : {e}")))?
+    }
+
+    /// Lance une passe de compaction hors du verrou d'écriture (ADR-043
+    /// §3/J4, corrigé par l'amendement CONC-P1) : la capture des SST
+    /// d'entrée (`Engine::compaction_snapshot`) est prise sous le verrou de
+    /// **lecture** partagé, le temps d'un clonage d'`Arc` — puis ce verrou
+    /// est **entièrement relâché** avant que le merge lui-même
+    /// (potentiellement lent — tout le jeu de données vivant matérialisé en
+    /// RAM) ne s'exécute. Avant ce correctif, la préparation ENTIÈRE du
+    /// merge tournait à l'intérieur de [`Self::with_inner_read`], verrou de
+    /// lecture tenu pour toute sa durée — `std::sync::RwLock::write()` ne
+    /// peut pas progresser tant qu'un lecteur (même un seul) tient le
+    /// verrou, donc toute écriture concurrente (`put_memory`/`invalidate`/
+    /// `forget`/…) restait bloquée pour la durée complète du merge, pas
+    /// seulement pour la bascule finale — exactement le défaut que le
+    /// critère de sortie ADR-043 §10 (« aucun lecteur bloqué pendant toute
+    /// une compaction ») ne couvrait pas pour les écrivains. Le merge tourne
+    /// maintenant sans tenir aucun verrou de `NativeInner`, lecture ou
+    /// écriture ; seule la capture (coût quasi nul) et le commit final
+    /// (coût O(1)) touchent encore le verrou. `None` de `compaction_snapshot`
+    /// (rien à faire, p. ex. un autre déclenchement a déjà tout compacté
+    /// entre-temps) : no-op — ce cas reste atteignable puisque la capture
+    /// tourne sous verrou de **lecture** partagé (pas exclusif), donc deux
+    /// déclenchements concurrents peuvent tous les deux capturer le même
+    /// `current` avant que l'un des deux ne commette. Le second
+    /// `compact_commit` échoue alors typé (`EngineError::
+    /// VersionEditMissingInput`, INV-VS-4) plutôt que de publier un edit
+    /// incohérent — [`Self::with_inner`] traite cette erreur (comme toute
+    /// autre ici) comme non fatale pour l'écrit qui a initialement déclenché
+    /// cette passe.
+    async fn run_pending_compaction(&self) -> Result<()> {
+        let Some(snapshot) = self
+            .with_inner_read(|inner| Ok(inner.engine.compaction_snapshot()))
+            .await?
+        else {
+            return Ok(());
+        };
+        // Aucun verrou de `NativeInner` tenu ici, ni lecture ni écriture —
+        // `CompactionSnapshot::build` n'a besoin que des `Arc`/clones qu'elle
+        // a déjà capturés (moteur `basemyai-engine`, synchrone) ; on la fait
+        // tourner dans le pool bloquant de tokio comme tout le reste de ce
+        // module, pour la même raison (jamais de travail synchrone lourd sur
+        // une tâche async).
+        let job = tokio::task::spawn_blocking(move || snapshot.build().map_err(map_engine_error))
+            .await
+            .map_err(|e| storage(format!("tâche bloquante du store natif interrompue : {e}")))??;
+        self.with_inner_write_and_pending(move |inner| inner.engine.compact_commit(job).map_err(map_engine_error))
+            .await
+            .map(|(result, _pending)| result)
     }
 
     /// [`Self::with_inner`], sous verrou de **lecture** partagé (N5.5) : `f`

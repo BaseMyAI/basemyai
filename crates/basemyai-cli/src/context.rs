@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use basemyai_core::{EncryptionKey, KeyResolveError};
 
-use crate::cli::Layer;
+use crate::cli::{ContextProfileArg, ContextRenderFormatArg, ContextSourcePolicyArg, Layer};
 use crate::error::CliError;
 
 pub(crate) fn memory_layer(layer: Layer) -> basemyai::MemoryLayer {
@@ -18,6 +18,35 @@ pub(crate) fn memory_layer(layer: Layer) -> basemyai::MemoryLayer {
         Layer::Episodic => MemoryLayer::Episodic,
         Layer::Procedural => MemoryLayer::Procedural,
         Layer::Semantic => MemoryLayer::Semantic,
+    }
+}
+
+pub(crate) fn context_source_policy(policy: ContextSourcePolicyArg) -> basemyai::ContextSourcePolicy {
+    use basemyai::ContextSourcePolicy;
+    match policy {
+        ContextSourcePolicyArg::AllowAll => ContextSourcePolicy::AllowAll,
+        ContextSourcePolicyArg::ExcludeImported => ContextSourcePolicy::ExcludeImported,
+        ContextSourcePolicyArg::UserAndConsolidationOnly => ContextSourcePolicy::UserAndConsolidationOnly,
+    }
+}
+
+pub(crate) fn context_profile(profile: ContextProfileArg) -> basemyai::ContextProfile {
+    use basemyai::ContextProfile;
+    match profile {
+        ContextProfileArg::Balanced => ContextProfile::Balanced,
+        ContextProfileArg::Conversation => ContextProfile::Conversation,
+        ContextProfileArg::Coding => ContextProfile::Coding,
+        ContextProfileArg::Execution => ContextProfile::Execution,
+        ContextProfileArg::SafetyCritical => ContextProfile::SafetyCritical,
+    }
+}
+
+pub(crate) fn context_render_format(format: ContextRenderFormatArg) -> basemyai::ContextRenderFormat {
+    use basemyai::ContextRenderFormat;
+    match format {
+        ContextRenderFormatArg::Text => ContextRenderFormat::Text,
+        ContextRenderFormatArg::Markdown => ContextRenderFormat::Markdown,
+        ContextRenderFormatArg::Json => ContextRenderFormat::Json,
     }
 }
 
@@ -48,12 +77,22 @@ pub(crate) async fn load_embedder() -> Result<Box<dyn basemyai_core::Embedder>, 
 /// # Errors
 /// Erreur de stockage si la clé est fausse ou si l'ouverture échoue.
 pub(crate) async fn open_store(path: &Path) -> Result<basemyai::storage::NativeMemoryStore, CliError> {
+    let key = require_key()?;
+    open_store_with_key(path, key).await
+}
+
+/// Ouvre un store avec une credential déjà résolue. Les opérations qui
+/// doivent connaître le mode authentifié évitent ainsi une seconde résolution
+/// de l'environnement entre la détection et l'ouverture.
+pub(crate) async fn open_store_with_key(
+    path: &Path,
+    key: basemyai_core::EncryptionKey,
+) -> Result<basemyai::storage::NativeMemoryStore, CliError> {
     if path.extension().and_then(|e| e.to_str()) != Some("bmai") {
         crate::ui::render::warning(&format!("'{}' does not use the .bmai extension", path.display()));
     }
-    let key = require_key()?;
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || basemyai::storage::NativeMemoryStore::open_encrypted(&path, key.expose()))
+    tokio::task::spawn_blocking(move || basemyai::storage::NativeMemoryStore::open_with_key(&path, &key))
         .await
         .map_err(|e| {
             CliError::Core(basemyai_core::CoreError::Storage(format!(

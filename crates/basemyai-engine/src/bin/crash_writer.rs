@@ -24,7 +24,8 @@
 //! interrupt writes sealed SSTs, proving the crash guarantees survive the
 //! encryption layer unchanged.
 //!
-//! `mode` is `single` (default, omit it), `batch`, `vector`, or `graph`:
+//! `mode` is `single` (default, omit it), `batch`, `vector`, `graph`,
+//! `memory`, or `rotate-full`:
 //! - `single`: one `Engine::put` per counter, confirmed one counter per log
 //!   line — proves single-key durability (pre-existing).
 //! - `batch`: counters are grouped into fixed-size batches (see
@@ -63,15 +64,34 @@
 //!   idempotent: a put whose write landed but whose confirmation was lost
 //!   replays as `DuplicateMemoryId` (already durable, treated as success);
 //!   a forget whose write landed replays as a no-op `false` (already gone).
+//! - `rotate-full`: one full DEK rotation from [`CRYPTO_KEY`] to
+//!   [`ROTATED_CRYPTO_KEY`]. The driver arms one exact abort failpoint and
+//!   verifies the published generation after the child terminates.
+//! - `compact-race`: DUR-LSM-01 regression (BaseMyAI adversarial audit,
+//!   2026-07-22) under a real forced kill, not just an in-process
+//!   interleaving (see `tests/compaction_overlapping_key_race.rs` for that
+//!   half of the coverage). [`RACE_SLOTS`] fixed keys are repeatedly
+//!   rewritten by a write landing between `Engine::compact_prepare` and
+//!   `Engine::compact_commit` — the exact window ENG-COR-001/DUR-LSM-01 live
+//!   in — while disposable "filler" writes push the live SST count past
+//!   `compaction_sst_threshold` so there is always a job to race against.
+//!   One `race <slot> <epoch>` confirm-log line per completed
+//!   prepare/race-write/commit cycle, written only after `compact_commit`
+//!   returns `Ok`. Resume needs no log parsing at all: each slot's *current*
+//!   epoch is decoded directly from `Engine::get` at startup (the value
+//!   itself is a big-endian epoch counter), so a kill mid-cycle just leaves
+//!   that slot at whatever epoch last durably committed — exactly what the
+//!   driver then independently re-verifies against the confirm log.
 
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 
 use basemyai_engine::harness::{
-    BATCH_SIZE, CRYPTO_KEY, ChurnOp, GRAPH_AGENT, GraphOp, MEMORY_AGENT, MEMORY_VECTOR_DIM, MemoryOp, churn_op,
-    encode_key, expected_memory_content, expected_value, expected_vector, graph_entity_kind, graph_entity_label,
-    graph_op, memory_op, memory_record_id, vector_index_params,
+    BATCH_SIZE, CRYPTO_KEY, ChurnOp, GRAPH_AGENT, GraphOp, MEMORY_AGENT, MEMORY_VECTOR_DIM, MemoryOp, RACE_SLOTS,
+    ROTATED_CRYPTO_KEY, churn_op, encode_key, expected_memory_content, expected_value, expected_vector,
+    graph_entity_kind, graph_entity_label, graph_op, memory_op, memory_record_id, race_epoch_value, race_filler_key,
+    race_key, vector_index_params,
 };
 use basemyai_engine::{
     Batch, Engine, EngineError, EngineOptions, NewMemoryRecord, PersistentFts, PersistentGraph, PersistentMemoryIndex,
@@ -132,9 +152,21 @@ fn main() {
         "vector" => run_vector_mode(&mut engine, &mut log, &confirm_log_path),
         "graph" => run_graph_mode(&mut engine, &mut log, &confirm_log_path),
         "memory" => run_memory_mode(&mut engine, &mut log, &confirm_log_path),
+        "compact-race" => run_compact_race_mode(&mut engine, &mut log),
+        "rotate-full" if encrypted => match engine.rotate_key_full(ROTATED_CRYPTO_KEY) {
+            Ok(()) => {
+                eprintln!("crash_writer: rotate-full unexpectedly reached completion without an abort failpoint");
+                std::process::exit(2);
+            }
+            Err(error) => {
+                eprintln!("crash_writer: rotate-full failed before the configured abort: {error}");
+                std::process::exit(1);
+            }
+        },
         other => {
             eprintln!(
-                "crash_writer: unknown mode {other:?} (expected \"single\", \"batch\", \"vector\", \"graph\" or \"memory\")"
+                "crash_writer: unknown mode {other:?} (expected \"single\", \"batch\", \"vector\", \"graph\", \
+                 \"memory\", \"compact-race\" or encrypted \"rotate-full\")"
             );
             std::process::exit(1);
         }
@@ -233,6 +265,7 @@ fn graph_entity(id: u64) -> basemyai_engine::GraphEntity {
         label: graph_entity_label(id),
         valid_from: 0,
         valid_until: None,
+        source: basemyai_engine::GraphSource::User,
     }
 }
 
@@ -265,6 +298,7 @@ fn run_graph_mode(engine: &mut Engine, log: &mut File, confirm_log_path: &str) -
                     weight: 1.0,
                     valid_from: 0,
                     valid_until: None,
+                    source: basemyai_engine::GraphSource::User,
                 };
                 if let Err(e) = graph.upsert_edge(engine, GRAPH_AGENT, &src.to_string(), "next", &dst.to_string(), meta)
                 {
@@ -341,6 +375,93 @@ fn run_memory_mode(engine: &mut Engine, log: &mut File, confirm_log_path: &str) 
         }
         confirm_line(log, &format!("step {step}"));
         step += 1;
+    }
+}
+
+/// DUR-LSM-01 regression under a real forced kill (see the module doc's
+/// `compact-race` entry): repeatedly stages a compaction, rewrites one of
+/// [`RACE_SLOTS`] fixed keys *between* `compact_prepare` and `compact_commit`
+/// — always a key already durable before `compact_prepare` was called, so it
+/// is necessarily part of the job's input set, the exact overlapping-key
+/// condition the bug needed — then commits and confirms only once that
+/// commit is `Ok`.
+fn run_compact_race_mode(engine: &mut Engine, log: &mut File) -> ! {
+    // This mode drives compaction by hand, on its own schedule — the
+    // `auto_compact_on_flush` safety net (default `true`) would collapse
+    // SSTs on an ordinary `flush()` before `compact_prepare` ever gets a
+    // chance to stage the exact interleaving this mode exists to exercise.
+    engine.set_auto_compact_on_flush(false);
+
+    // Resume needs no log parsing: each slot's current epoch is whatever the
+    // store durably holds for it right now — `0` (and a bootstrap write) the
+    // very first time a slot is ever seen.
+    let mut epochs = [0u64; RACE_SLOTS as usize];
+    for (slot, epoch) in epochs.iter_mut().enumerate() {
+        let key = race_key(slot as u64);
+        match engine.get(&key) {
+            Ok(Some(bytes)) => {
+                *epoch = u64::from_be_bytes(bytes.as_slice().try_into().unwrap_or_else(|_| {
+                    eprintln!("crash_writer: race slot {slot} holds a malformed epoch value");
+                    std::process::exit(1);
+                }));
+            }
+            Ok(None) => {
+                if let Err(e) = engine.put(&key, &race_epoch_value(0)) {
+                    eprintln!("crash_writer: failed to seed race slot {slot}: {e}");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("crash_writer: failed to read race slot {slot} at startup: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let mut filler = 0u64;
+    let mut next_slot = 0u64;
+    loop {
+        // Build SST pressure with disposable writes until there is a job to
+        // stage — `compaction_pending`'s threshold is the same one every
+        // other mode's `EngineOptions` already sets in `main`.
+        while !engine.compaction_pending() {
+            if let Err(e) = engine.put(&race_filler_key(filler), &expected_value(filler)) {
+                eprintln!("crash_writer: filler put({filler}) failed: {e}");
+                std::process::exit(1);
+            }
+            filler += 1;
+        }
+
+        let Some(job) = engine.compact_prepare().unwrap_or_else(|e| {
+            eprintln!("crash_writer: compact_prepare failed: {e}");
+            std::process::exit(1);
+        }) else {
+            // Lost an opportunistic race against nothing (single-threaded
+            // here, so only reachable if a future refactor changes that) —
+            // loop back to the pressure-building step.
+            continue;
+        };
+
+        // The race: `next_slot`'s key was durably written before
+        // `compact_prepare` above (either by the seed step or a previous
+        // cycle's commit), so it is necessarily part of `job`'s input set —
+        // rewriting it now is the overlapping-key interleaving DUR-LSM-01
+        // needed. Round-robins across `RACE_SLOTS` so every slot gets
+        // exercised, not just one.
+        let slot = next_slot;
+        next_slot = (next_slot + 1) % RACE_SLOTS;
+        let new_epoch = epochs[slot as usize] + 1;
+        if let Err(e) = engine.put(&race_key(slot), &race_epoch_value(new_epoch)) {
+            eprintln!("crash_writer: race write(slot {slot}, epoch {new_epoch}) failed: {e}");
+            std::process::exit(1);
+        }
+
+        if let Err(e) = engine.compact_commit(job) {
+            eprintln!("crash_writer: compact_commit(slot {slot}, epoch {new_epoch}) failed: {e}");
+            std::process::exit(1);
+        }
+        epochs[slot as usize] = new_epoch;
+        confirm_line(log, &format!("race {slot} {new_epoch}"));
     }
 }
 

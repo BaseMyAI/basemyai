@@ -42,6 +42,56 @@ test('recallHybrid surfaces exact term via BM25', async () => {
   expect(hits.some((h) => h.text.includes('ACME-42'))).toBe(true);
 });
 
+test('compileContext returns a bounded typed bundle', async () => {
+  const mem = await Memory.openInMemory('agent-context');
+  const id = await mem.remember('BaseMyAI stores local agent memory.', 'semantic');
+
+  const bundle = await mem.compileContext({
+    query: 'local agent memory',
+    tokenBudget: 128,
+    explain: true,
+  });
+
+  expect(bundle.estimatedTokens).toBeLessThanOrEqual(128);
+  expect(bundle.rendered).toContain('BaseMyAI stores local agent memory.');
+  expect(bundle.citations.some((citation) => citation.memoryId === id)).toBe(true);
+  expect(bundle.sections[0].kind).toBe('current_facts');
+  expect(bundle.sections[0].items[0].validFrom).toBeGreaterThan(0);
+  expect(bundle.sections[0].items[0].role).toBe('fact');
+  expect(bundle.sections[0].items[0].inclusionReason).not.toBe('unknown');
+  expect(bundle.sections[0].items[0].retrievalContributions.length).toBeGreaterThan(0);
+  // Defaults when profile/renderFormat are omitted (R1.6/R1.7).
+  expect(bundle.profile).toBe('balanced');
+  expect(bundle.renderFormat).toBe('markdown');
+  // `explain: true` requests a detailed trace, bounded but non-empty here.
+  expect(bundle.trace.level).toBe('detailed');
+  expect(bundle.trace.summary.includedItems).toBeGreaterThan(0);
+  expect(bundle.trace.events.length).toBeGreaterThan(0);
+});
+
+test('compileContext honors profile and renderFormat (R1.6/R1.7)', async () => {
+  const mem = await Memory.openInMemory('agent-context-profile');
+  await mem.remember('call the deploy script before merging', 'semantic');
+
+  const text = await mem.compileContext({
+    query: 'deploy script',
+    tokenBudget: 256,
+    profile: 'coding',
+    renderFormat: 'text',
+  });
+  expect(text.profile).toBe('coding');
+  expect(text.renderFormat).toBe('text');
+  expect(text.rendered).not.toContain('#');
+
+  const json = await mem.compileContext({
+    query: 'deploy script',
+    tokenBudget: 256,
+    renderFormat: 'json',
+  });
+  expect(json.renderFormat).toBe('json');
+  expect(() => JSON.parse(json.rendered)).not.toThrow();
+});
+
 test('isolation between agents', async () => {
   const a = await Memory.openInMemory('a');
   const b = await Memory.openInMemory('b');

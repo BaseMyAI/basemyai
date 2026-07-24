@@ -14,6 +14,8 @@
 #![allow(dead_code)]
 
 mod cognition;
+pub mod config;
+mod context;
 mod error;
 pub mod maintenance;
 mod memory;
@@ -28,6 +30,14 @@ pub use cognition::{
     MAX_CONSOLIDATION_ENTITIES, MAX_CONSOLIDATION_FACTS, MAX_CONSOLIDATION_RELATIONS, Reached, apply_extraction,
     consolidate, consolidation_prompt, parse_extraction, validate_extraction_bounds,
 };
+pub use config::ConfigDefaults;
+pub use context::{
+    ApproximateTokenEstimator, ContextBundle, ContextCitation, ContextItem, ContextProfile, ContextRenderFormat,
+    ContextRequest, ContextRole, ContextSection, ContextSectionKind, ContextSourcePolicy, ContextTemporalStatus,
+    ContextTrace, ContextTraceEvent, ContextTraceLevel, ContextTraceSummary, ContextWarning, DedupCluster,
+    ExcludedMemory, ExclusionReason, InclusionReason, MAX_CONTEXT_CANDIDATES, MAX_CONTEXT_TRACE_EVENTS, MergedMemory,
+    RetrievalContribution, TokenEstimator,
+};
 pub use error::{MemoryError, Result};
 pub use maintenance::{
     AdaptiveForgettingPolicy, AdaptiveForgettingTask, ConsolidationTask, ExpiredGcReport, ExpiredMemoryGcTask,
@@ -36,8 +46,9 @@ pub use maintenance::{
 #[cfg(feature = "test-util")]
 pub use memory::HashEmbedder;
 pub use memory::{
-    AgentId, AgentStats, ImportReport, MAX_TEXT_LEN, Memory, MemoryEvent, MemoryEventKind, MemoryLayer,
-    MemorySubscription, RecallOptions, Record, SOURCE_CONSOLIDATION, SOURCE_IMPORT, SOURCE_USER, TrustLevel,
+    AgentId, AgentStats, ConversationTurn, ImportReport, MAX_TEXT_LEN, Memory, MemoryEvent, MemoryEventKind,
+    MemoryLayer, MemorySubscription, RecallOptions, Record, SOURCE_CONSOLIDATION, SOURCE_IMPORT, SOURCE_USER,
+    TrustLevel,
 };
 pub use storage::BMAI_FORMAT_VERSION;
 

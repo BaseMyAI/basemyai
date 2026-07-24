@@ -27,10 +27,12 @@ pub mod edge;
 pub mod entity;
 pub mod persistent;
 pub mod ram;
+pub mod source;
 pub mod traverse;
 
 pub use edge::GraphEdgeMeta;
 pub use entity::GraphEntity;
 pub use persistent::PersistentGraph;
 pub use ram::RamGraph;
+pub use source::GraphSource;
 pub use traverse::Reached;

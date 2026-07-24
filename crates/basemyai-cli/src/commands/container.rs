@@ -16,11 +16,27 @@ use crate::output::Format;
 use crate::ui::color::Stream;
 use crate::ui::theme;
 
-pub(crate) async fn init(path: &Path, format: Format) -> Result<(), CliError> {
+pub(crate) async fn init(path: &Path, low_memory: bool, format: Format) -> Result<(), CliError> {
     if path.exists() {
         return Err(CliError::AlreadyExists(path.to_path_buf()));
     }
-    let store = open_store(path).await?;
+    let store = if low_memory {
+        use basemyai::storage::{Argon2idProfile, NativeMemoryStore};
+
+        let key = require_key()?.into_passphrase();
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            NativeMemoryStore::open_with_passphrase_and_profile(&path, key.expose(), Argon2idProfile::LowMemory)
+        })
+        .await
+        .map_err(|error| {
+            CliError::Core(basemyai_core::CoreError::Storage(format!(
+                "ouverture du store natif interrompue : {error}"
+            )))
+        })??
+    } else {
+        open_store(path).await?
+    };
     let meta = store.container_metadata().await?;
     let get = |key: &str| meta.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
     let format_version = get("format_version").unwrap_or_default();
@@ -181,7 +197,7 @@ pub(crate) async fn verify(path: &Path, mode: VerifyMode, format: Format) -> Res
     } else {
         crate::ui::progress::Spinner::Disabled
     };
-    let report: VerifyReport = integrity::verify_container(path, key.expose().as_bytes(), mode).await?;
+    let report: VerifyReport = integrity::verify_container(path, key, mode).await?;
     spinner.finish_and_clear();
 
     let store = open_store(path).await?;
@@ -287,14 +303,14 @@ pub(crate) async fn repair(path: &Path, dry_run: bool, format: Format) -> Result
     } else {
         crate::ui::progress::Spinner::Disabled
     };
-    let report = integrity::verify_container(path, key.expose().as_bytes(), VerifyMode::FullLogical).await?;
+    let report = integrity::verify_container(path, key.clone(), VerifyMode::FullLogical).await?;
     let plan = integrity::plan_repair(&report);
     let can_apply = plan.can_apply_derived_only();
 
     let applied = if dry_run || !can_apply {
         None
     } else {
-        Some(integrity::rebuild_indexes_container(path, key.expose().as_bytes()).await?)
+        Some(integrity::rebuild_indexes_container(path, key).await?)
     };
     spinner.finish_and_clear();
 
@@ -356,7 +372,7 @@ pub(crate) async fn rebuild_indexes(path: &Path, format: Format) -> Result<(), C
     } else {
         crate::ui::progress::Spinner::Disabled
     };
-    let report = integrity::rebuild_indexes_container(path, key.expose().as_bytes()).await?;
+    let report = integrity::rebuild_indexes_container(path, key).await?;
     spinner.finish_and_clear();
 
     format.print(
@@ -378,7 +394,7 @@ pub(crate) async fn compact(path: &Path, format: Format) -> Result<(), CliError>
     } else {
         crate::ui::progress::Spinner::Disabled
     };
-    let (before, after) = integrity::compact_container(path, key.expose().as_bytes()).await?;
+    let (before, after) = integrity::compact_container(path, key).await?;
     spinner.finish_and_clear();
 
     format.print(
@@ -456,7 +472,7 @@ pub(crate) async fn reembed_missing(
     } else {
         crate::ui::progress::Spinner::Disabled
     };
-    let report = integrity::reembed_missing_container(path, key.expose().as_bytes(), embedder).await?;
+    let report = integrity::reembed_missing_container(path, key, embedder).await?;
     spinner.finish_and_clear();
 
     format.print(
@@ -488,9 +504,9 @@ pub(crate) async fn reembed_scoped(
         crate::ui::progress::Spinner::Disabled
     };
     let report = if all {
-        integrity::reembed_all_container(path, key.expose().as_bytes(), agent, embedder).await?
+        integrity::reembed_all_container(path, key, agent, embedder).await?
     } else {
-        integrity::reembed_ids_container(path, key.expose().as_bytes(), agent, ids, embedder).await?
+        integrity::reembed_ids_container(path, key, agent, ids, embedder).await?
     };
     spinner.finish_and_clear();
 
@@ -506,21 +522,94 @@ pub(crate) async fn reembed_scoped(
 }
 
 /// Re-scelle la DEK du conteneur sous une nouvelle passphrase (ADR-030).
-pub(crate) async fn rotate_key(path: &Path, new_key: Option<String>, format: Format) -> Result<(), CliError> {
+pub(crate) async fn rotate_key(
+    path: &Path,
+    new_key: Option<String>,
+    passphrase: bool,
+    low_memory: bool,
+    full: bool,
+    format: Format,
+) -> Result<(), CliError> {
     use basemyai_core::{EncryptionKey, KeyResolveError};
 
-    let new_key = match new_key {
+    let current_key = crate::context::require_key()?;
+    let current_mode = current_key.mode();
+    let mut new_key = match new_key {
         Some(k) => EncryptionKey::new(k),
         None => EncryptionKey::resolve(None).map_err(|e| match e {
             KeyResolveError::Missing(msg) => CliError::MissingKey(msg),
             other => CliError::KeyResolution(other.to_string()),
         })?,
     };
-    let store = open_store(path).await?;
-    store.rotate_key(new_key.expose()).await?;
+    if passphrase {
+        new_key = new_key.into_passphrase();
+    }
+    let target_mode = new_key.mode();
+    let store = crate::context::open_store_with_key(path, current_key).await?;
+    if let Some(warning) = rotation_mode_warning(current_mode, target_mode, full) {
+        crate::ui::render::warning(warning);
+    }
+    if low_memory && full {
+        store
+            .rotate_passphrase_full_with_profile(new_key, basemyai::storage::Argon2idProfile::LowMemory)
+            .await?;
+    } else if low_memory {
+        store
+            .rotate_passphrase_with_profile(new_key, basemyai::storage::Argon2idProfile::LowMemory)
+            .await?;
+    } else if full {
+        store.rotate_key_full(new_key).await?;
+    } else {
+        store.rotate_with_key(new_key).await?;
+    }
     format.print(
-        || crate::ui::render::success(&format!("encryption key rotated for {}", path.display())),
-        || serde_json::json!({ "path": path.display().to_string(), "rotated": true }),
+        || {
+            let kind = if full {
+                "full encryption key rotation"
+            } else {
+                "encryption key rotation"
+            };
+            crate::ui::render::success(&format!("{kind} complete for {}", path.display()));
+        },
+        || {
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "rotated": true,
+                "full": full,
+                "low_memory": low_memory,
+            })
+        },
     );
     Ok(())
+}
+
+fn rotation_mode_warning(
+    current: basemyai_core::EncryptionKeyMode,
+    target: basemyai_core::EncryptionKeyMode,
+    full: bool,
+) -> Option<&'static str> {
+    (!full && current != target).then_some(
+        "changing credential mode without --full only re-wraps the existing DEK; use --full to rotate the DEK and re-encrypt all current data",
+    )
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use basemyai_core::EncryptionKeyMode;
+
+    use super::rotation_mode_warning;
+
+    #[test]
+    fn warns_when_rewrap_changes_credential_mode() {
+        let warning = rotation_mode_warning(EncryptionKeyMode::RawKey, EncryptionKeyMode::Passphrase, false)
+            .expect("mode-changing rewrap must warn");
+        assert!(warning.contains("--full"));
+        assert!(warning.contains("existing DEK"));
+    }
+
+    #[test]
+    fn does_not_warn_for_same_mode_or_full_rotation() {
+        assert!(rotation_mode_warning(EncryptionKeyMode::RawKey, EncryptionKeyMode::RawKey, false).is_none());
+        assert!(rotation_mode_warning(EncryptionKeyMode::Passphrase, EncryptionKeyMode::RawKey, true).is_none());
+    }
 }

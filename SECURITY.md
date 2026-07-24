@@ -108,9 +108,14 @@ Defense: default bind is 127.0.0.1; Bearer auth required in production
 
 Since ADR-033, BaseMyAI uses **only** the native `basemyai-engine` backend. A `.bmai` store is a directory containing:
 
-- `crypto.meta` — DEK wrapped under a KEK derived from the user key (SHA-256 + salt)
-- `wal.log` — WAL records sealed individually (WalEnvelope)
-- `*.sst` — SST files sealed as a whole (SstEnvelope)
+- `crypto.meta` — DEK wrapped under a KEK derived from the user key (SHA-256 + salt, or Argon2id for a human passphrase, ADR-042)
+- `wal.log` — WAL records sealed individually (`WalEnvelope`)
+- `*.sst` — block-based SST files (ADR-039): header/footer/block-index/bloom-filter
+  and every data block sealed **individually** (`EncryptedSstBlock`), AAD bound to
+  `sst_id`‖section type‖section number — a sealed block moved to another file or
+  position fails authentication (tested:
+  `encrypted_block_moved_between_two_ssts_fails_authentication`,
+  `encrypted_blocks_swapped_within_the_same_sst_fail_authentication`)
 
 **Production rule:** all product surfaces (CLI, REST, MCP, Python/Node bindings) call `open_encrypted`. Plaintext persistent stores exist only behind the `test-util` feature for tests.
 

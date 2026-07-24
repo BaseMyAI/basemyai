@@ -617,6 +617,46 @@ fn gc_does_not_require_a_provisioned_embedder() {
 const ROTATED_KEY: &str = "rotated-test-key-do-not-use-in-prod";
 
 #[test]
+fn low_memory_passphrase_profile_works_for_init_and_rotation() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = db_path(home.path());
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .arg("init")
+        .arg(&db)
+        .arg("--low-memory")
+        .assert()
+        .success();
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", KEY)
+        .env("BASEMYAI_DB_KEY_MODE", "passphrase")
+        .args(["--db", db.to_str().expect("utf-8 path"), "rotate-key"])
+        .args(["--new-key", ROTATED_KEY, "--passphrase", "--low-memory"])
+        .assert()
+        .success();
+
+    isolated(home.path())
+        .env("BASEMYAI_DB_KEY", ROTATED_KEY)
+        .env("BASEMYAI_DB_KEY_MODE", "passphrase")
+        .args(["--format", "json", "--db", db.to_str().expect("utf-8 path"), "verify"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"valid\":true"));
+}
+
+#[test]
+fn rotate_low_memory_requires_explicit_passphrase_mode() {
+    let home = tempfile::tempdir().expect("tempdir");
+    isolated(home.path())
+        .args(["rotate-key", "--new-key", ROTATED_KEY, "--low-memory"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--passphrase"));
+}
+
+#[test]
 fn rotate_key_rewraps_dek_and_old_key_stops_working() {
     let home = tempfile::tempdir().expect("tempdir");
     let db = db_path(home.path());

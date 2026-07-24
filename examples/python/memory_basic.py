@@ -1,46 +1,46 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
-import os
 
 import basemyai
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Basic BaseMyAI memory example.")
-    parser.add_argument("--db", default="basemyai-example.bmai", help="Path to the local libSQL database.")
-    parser.add_argument("--agent", default="agent-1", help="Agent id stored in this database.")
-    parser.add_argument("--model-dir", required=True, help="Path to a local embedding model directory.")
-    parser.add_argument("--device", default="auto", help="Device: auto, cpu, metal, cuda, or cuda:<index>.")
-    parser.add_argument(
-        "--encryption-key",
-        default=os.environ.get("BASEMYAI_ENCRYPTION_KEY"),
-        help="Encryption key, or set BASEMYAI_ENCRYPTION_KEY.",
-    )
-    return parser.parse_args()
+# No setup required. `path` defaults to "./basemyai.bmai", `agent_id` to
+# "default", and the encryption key is generated at ~/.basemyai/key on first
+# use if none exists (a one-line notice goes to stderr — back that file up,
+# it's the only copy). Override any of these — or run
+# `basemyai config set db-path|agent` once — for a multi-agent or scripted
+# setup. `consent_to_fetch` is the one real network op (fetching the local
+# embedding model, ~90MB): pass True once to consent, then it's cached.
 
 
 async def main() -> None:
-    args = parse_args()
-    if not args.encryption_key:
-        raise SystemExit("Provide --encryption-key or BASEMYAI_ENCRYPTION_KEY.")
+    mem = await basemyai.Memory.open(consent_to_fetch=True)
 
-    mem = await basemyai.Memory.open(
-        args.db,
-        args.agent,
-        args.encryption_key,
-        model_dir=args.model_dir,
-        device=args.device,
-        consent_to_fetch=False,
+    # Layer defaults to "semantic" — pass one explicitly only when it matters.
+    memory_id = await mem.remember("Alice works with the platform team.")
+
+    # Hand over raw conversation turns; they land in the "episodic" layer
+    # as-is. Background consolidation later promotes durable facts to
+    # "semantic".
+    await mem.observe(
+        [
+            ("user", "Who works with the platform team?"),
+            ("assistant", "Alice works with the platform team."),
+        ]
     )
 
-    memory_id = await mem.remember("Alice works with the platform team.", layer="semantic")
     hits = await mem.recall("Who works with the platform team?", k=3)
 
     print(f"stored: {memory_id}")
     for hit in hits:
         print(f"{hit.score:.3f} [{hit.layer}] {hit.text}")
+
+    context = await mem.compile_context(
+        "Who works with the platform team?",
+        token_budget=256,
+        explain=True,
+    )
+    print(context.rendered)
 
 
 if __name__ == "__main__":

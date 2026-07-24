@@ -16,12 +16,31 @@
 //! after_sst_rename        after the tmp → final rename
 //! before_wal_truncate     in flush, after the SST is durable, before WAL reset
 //! during_compaction       at the start of a compaction merge
+//! during_compaction_sst_removal  in compact's cleanup loop, one simulated
+//!                                 failed removal attempt per hit (retried;
+//!                                 see tests/compaction_remove_retry.rs,
+//!                                 ENG-DUR-002)
 //! after_crypto_meta_write after crypto.meta's atomic replace (rotation)
+//! after_full_rotation_new_dek after the next generation's fresh DEK wrap
+//! after_full_rotation_sst_write after the merged SST is durable
+//! before_full_rotation_publish after all content fsyncs, before pointer rename
+//! after_full_rotation_publish after pointer rename, before old-generation GC
+//! during_full_rotation_gc immediately before best-effort old-generation GC
+//! during_generation_gc_removal one simulated failed removal attempt per hit
+//!                                (retried up to 3x, then counted via
+//!                                `EngineStats::generation_remove_failures`;
+//!                                GC-RETRY-P2) — checked on every attempt
+//!                                inside `remove_path_with_retries`, so
+//!                                `Action::Error` set for the whole call
+//!                                exhausts all retries deterministically
+//! before_manifest_publish before store.meta's tmp → final rename (N8.9,
+//!                          ADR-039 §7 — the site the original plan
+//!                          reserved this name for, before block-based SSTs
+//!                          existed to name it after)
+//! before_sst_manifest_publish before manifest.meta's tmp → final rename
+//!                              (ENG-DUR-001, J2) — distinct file, distinct
+//!                              site from before_manifest_publish above
 //! ```
-//!
-//! `before_manifest_publish` from the plan has **no site yet** — the engine
-//! has no manifest until the block-based SST format (N8, ADR-039); it will
-//! be added with that milestone.
 //!
 //! Two configuration channels, same registry:
 //! - programmatic, for in-process tests: [`set`] / [`remove`] / [`clear_all`];

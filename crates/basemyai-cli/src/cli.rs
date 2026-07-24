@@ -57,6 +57,10 @@ pub(crate) enum Command {
     Init {
         /// Chemin du fichier `.bmai` à créer.
         path: PathBuf,
+        /// Crée le wrap passphrase Argon2id avec le profil contraint
+        /// 19 MiB/t2/p1. Ce choix est explicite et n'affecte pas les défauts.
+        #[arg(long)]
+        low_memory: bool,
     },
     /// Inspecte un `.bmai` : métadonnées du conteneur + nombre de souvenirs.
     Inspect,
@@ -90,6 +94,36 @@ pub(crate) enum Command {
         /// Limite aux souvenirs mentionnant une entité du graphe.
         #[arg(long)]
         graph: bool,
+    },
+    /// Compile un recall hybride en contexte borné et traçable, prêt pour un
+    /// agent (Context Engine — déterministe, sans LLM).
+    Context {
+        /// Texte de la requête.
+        query: String,
+        /// Budget de tokens estimé, dur (jamais dépassé).
+        #[arg(long)]
+        token_budget: usize,
+        /// Taille du pool de candidats du recall hybride sous-jacent.
+        #[arg(long, default_value_t = 64)]
+        candidate_limit: usize,
+        /// Inclut explicitement la couche procédurale dans le recall.
+        #[arg(long)]
+        include_procedural: bool,
+        /// Politique de filtrage de provenance appliquée après le recall.
+        #[arg(long, value_enum, default_value_t = ContextSourcePolicyArg::ExcludeImported)]
+        source_policy: ContextSourcePolicyArg,
+        /// Profil de compilation : poids et quotas par rôle, jamais des permissions.
+        #[arg(long, value_enum, default_value_t = ContextProfileArg::Balanced)]
+        profile: ContextProfileArg,
+        /// Format du contenu compilé (indépendant de `--format`, qui contrôle
+        /// la sortie de la CLI elle-même).
+        #[arg(long = "render", value_enum, default_value_t = ContextRenderFormatArg::Markdown)]
+        render_format: ContextRenderFormatArg,
+        /// Conserve une trace détaillée et bornée (raisons d'inclusion/
+        /// exclusion, contributions de retrieval, clusters de déduplication,
+        /// avertissements).
+        #[arg(long)]
+        explain: bool,
     },
     /// Liste les souvenirs bruts d'un agent (sans recherche sémantique).
     List {
@@ -136,9 +170,19 @@ pub(crate) enum Command {
     },
     /// Change la clé de chiffrement du conteneur `.bmai` en place (ADR-030).
     RotateKey {
-        /// Nouvelle passphrase (sinon `BASEMYAI_DB_KEY` / résolution ADR-034).
+        /// Nouveau secret (sinon `BASEMYAI_DB_KEY` / résolution ADR-034).
         #[arg(long)]
         new_key: Option<String>,
+        /// Interprète le nouveau secret comme une passphrase Argon2id.
+        #[arg(long)]
+        passphrase: bool,
+        /// Utilise le profil Argon2id contraint 19 MiB/t2/p1. À répéter à
+        /// chaque rotation qui doit conserver ce profil.
+        #[arg(long, requires = "passphrase")]
+        low_memory: bool,
+        /// Ré-encrypte toutes les données sous une nouvelle DEK (O(taille)).
+        #[arg(long)]
+        full: bool,
     },
     /// Graphe entités/relations d'un agent.
     Graph {
@@ -230,10 +274,56 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: LlmAction,
     },
+    /// Recall Quality Lab (`basemyai-eval`) : exécute ou compare un dataset
+    /// déterministe hors ligne (recall + Context Engine, sans LLM ni réseau).
+    /// Nécessite la feature de build `eval-lab` (off par défaut dans les
+    /// binaires distribués — active `basemyai/test-util`).
+    #[cfg(feature = "eval-lab")]
+    Eval {
+        #[command(subcommand)]
+        action: EvalAction,
+    },
     /// Génère les complétions shell (à sourcer dans le profil du shell).
     Completions {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+}
+
+#[cfg(feature = "eval-lab")]
+#[derive(Subcommand)]
+pub(crate) enum EvalAction {
+    /// Exécute un dataset JSONL versionné contre recall et Context Engine.
+    Run {
+        /// Dataset JSONL (schéma documenté dans `docs/recall-quality-lab.md`).
+        dataset: PathBuf,
+        /// Rapport JSON agrégé + par cas.
+        #[arg(long)]
+        output: PathBuf,
+        /// Rapport Markdown lisible, en plus du JSON.
+        #[arg(long)]
+        human: Option<PathBuf>,
+        /// Enregistre la latence murale (`latency_micros`) ; absent, le
+        /// rapport reste byte-stable d'un run à l'autre.
+        #[arg(long)]
+        timings: bool,
+    },
+    /// Compare les métriques agrégées de deux rapports JSON (`eval run --output`).
+    Compare {
+        /// Rapport de référence.
+        baseline: PathBuf,
+        /// Rapport courant.
+        current: PathBuf,
+        /// Écrit la comparaison en JSON.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Écrit la comparaison en Markdown.
+        #[arg(long)]
+        human: Option<PathBuf>,
+        /// Sort en échec si une métrique de qualité régresse ou si le nombre
+        /// de cas échoués augmente.
+        #[arg(long)]
+        fail_on_regression: bool,
     },
 }
 
@@ -301,4 +391,30 @@ pub(crate) enum Layer {
     Episodic,
     Procedural,
     Semantic,
+}
+
+/// Politique de provenance exposée en CLI (miroir de `basemyai::ContextSourcePolicy`).
+#[derive(Copy, Clone, ValueEnum)]
+pub(crate) enum ContextSourcePolicyArg {
+    AllowAll,
+    ExcludeImported,
+    UserAndConsolidationOnly,
+}
+
+/// Profil de compilation exposé en CLI (miroir de `basemyai::ContextProfile`).
+#[derive(Copy, Clone, ValueEnum)]
+pub(crate) enum ContextProfileArg {
+    Balanced,
+    Conversation,
+    Coding,
+    Execution,
+    SafetyCritical,
+}
+
+/// Format de rendu exposé en CLI (miroir de `basemyai::ContextRenderFormat`).
+#[derive(Copy, Clone, ValueEnum)]
+pub(crate) enum ContextRenderFormatArg {
+    Text,
+    Markdown,
+    Json,
 }

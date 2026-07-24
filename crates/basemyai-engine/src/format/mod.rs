@@ -13,9 +13,12 @@ pub(crate) mod checksum;
 // from the external `fuzz/` crate — same reasoning that already made every
 // other decoder in this module (`sst_block`, `store_meta`, `wal`) `pub`.
 pub mod crypto;
+pub mod generation_meta;
 pub mod lock;
 pub mod sst_block;
+pub mod sst_manifest;
 pub mod store_meta;
 pub mod wal;
+pub mod wal_epoch;
 
 pub use lock::FormatSpec;

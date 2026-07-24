@@ -35,6 +35,6 @@ pub use maintenance::{MaintenanceTask, MaintenanceWorker};
 /// `basemyai::storage::NativeMemoryStore` pour l'implémentation sémantique.
 pub use storage::NativeEngine;
 pub use storage::{
-    DOCKER_SECRET_PATH, EncryptionKey, EngineCapabilities, EngineKind, KeyResolveError, KeySource, Metric, ResolvedKey,
-    StorageEngine, key_source_label,
+    DOCKER_SECRET_PATH, EncryptionKey, EncryptionKeyMode, EngineCapabilities, EngineKind, KeyResolveError, KeySource,
+    Metric, ResolvedKey, StorageEngine, key_source_label,
 };

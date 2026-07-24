@@ -2,13 +2,14 @@
 //! Les 4 couches mémoire (ADR-004) et les types de données associés.
 
 use super::trust::TrustLevel;
+use crate::temporal::Validity;
 use crate::{MemoryError, Result};
 
 /// Les 4 couches mémoire (ADR-004). Chacune a son mode d'accès et sa durée de vie.
 ///
 /// `#[non_exhaustive]` : une couche supplémentaire peut être ajoutée en minor.
 /// Les `match` externes doivent inclure un bras `_ =>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum MemoryLayer {
     /// Contexte de travail de la session (TTL court).
@@ -61,6 +62,8 @@ pub struct Record {
     pub score: f32,
     /// Provenance wire du souvenir (`user`, `consolidation`, `import`, …).
     pub source: String,
+    /// Fenetre temporelle persistante du souvenir.
+    pub validity: Validity,
 }
 
 impl Record {

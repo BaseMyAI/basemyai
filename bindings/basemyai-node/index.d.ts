@@ -11,6 +11,14 @@ export declare class Memory {
   agent(): string
   /** Mémorise `text` dans une couche (défaut `semantic`). Résout vers l'UUID. */
   remember(text: string, layer?: string | undefined | null): Promise<string>
+  /**
+   * Ingère une conversation brute : chaque tour devient un souvenir
+   * épisodique (`"{role}: {content}"`), en un seul batch. Aucune extraction
+   * de faits ici — c'est la consolidation (tâche de fond) qui promeut plus
+   * tard des faits durables en couche `semantic` à partir de ces épisodes.
+   * Résout vers les UUID créés, dans l'ordre des tours.
+   */
+  observe(turns: Array<ConversationTurn>): Promise<Array<string>>
   /** Recall temporel sémantique : résout vers un tableau de `Record`. */
   recall(query: string, k?: number | undefined | null, includeProcedural?: boolean | undefined | null, excludeImported?: boolean | undefined | null): Promise<Array<Record>>
   /** Recall limité à une couche mémoire (`short_term`, `episodic`, `procedural`, `semantic`). */
@@ -20,6 +28,8 @@ export declare class Memory {
    * un tableau de `Record` (le `score` porte le score RRF fusionné).
    */
   recallHybrid(query: string, k?: number | undefined | null, includeProcedural?: boolean | undefined | null, excludeImported?: boolean | undefined | null): Promise<Array<Record>>
+  /** Compile a bounded, traceable Markdown context from hybrid recall. */
+  compileContext(options: ContextOptions): Promise<ContextBundle>
   /** Invalide (soft-delete) un souvenir par son id. */
   invalidate(id: string): Promise<void>
   /** Supprime physiquement un souvenir (droit à l'effacement). */
@@ -102,13 +112,34 @@ export interface MemoryEventPayload {
   id: string
 }
 
-/** Options de production pour ouvrir une mémoire persistée. */
+/**
+ * Options de production pour ouvrir une mémoire persistée. Tout est
+ * optionnel : `path`/`agentId` retombent sur `~/.basemyai/config.toml` /
+ * `BASEMYAI_DB_PATH` / `BASEMYAI_AGENT` (même résolution que la CLI) puis sur
+ * un défaut intégré (`./basemyai.bmai`, agent `"default"`) ; sans
+ * `encryptionKey` ni source configurée, une clé est générée et persistée
+ * dans `~/.basemyai/key`. Seul le téléchargement du modèle
+ * (`allowModelDownload`) reste soumis à consentement explicite — jamais
+ * silencieux (ADR-010).
+ */
 export interface MemoryOpenOptions {
-  path: string
-  agentId: string
+  path?: string
+  agentId?: string
   encryptionKey?: string
+  /** `raw` (default for an explicit key) or `passphrase` (Argon2id). */
+  credentialMode?: 'raw' | 'passphrase'
   modelPath?: string
   allowModelDownload?: boolean
+}
+
+/**
+ * Un tour de conversation brut (rôle + contenu) à ingérer via
+ * `Memory.observe()`. `role` n'est pas validé : libellé libre (`"user"`,
+ * `"assistant"`, `"system"`, ...), simplement reporté dans le texte mémorisé.
+ */
+export interface ConversationTurn {
+  role: string
+  content: string
 }
 
 /** Un souvenir retourné par `recall`. */
@@ -123,4 +154,150 @@ export interface Record {
   source: string
   /** Provenance typée (ADR-036). */
   trust: string
+  /** Inclusive validity start as a Unix UTC timestamp. */
+  validFrom: number
+  /** Exclusive validity end, when bounded. */
+  validUntil?: number
+}
+
+export type ContextSourcePolicy = 'allow_all' | 'exclude_imported' | 'user_and_consolidation_only'
+export type ContextSectionKind = 'working_context' | 'current_facts' | 'procedures' | 'recent_events' | 'unknown'
+export type ContextTemporalStatus = 'current' | 'scheduled' | 'expired' | 'unknown'
+export type ExclusionReason = 'source_filtered' | 'not_currently_valid' | 'token_budget' | 'profile_quota' | 'unknown'
+/** Compilation profile: weights and per-role quotas only, never permissions. */
+export type ContextProfile = 'balanced' | 'conversation' | 'coding' | 'execution' | 'safety_critical' | 'unknown'
+export type ContextRenderFormat = 'text' | 'markdown' | 'json' | 'unknown'
+/** Derived only from layer + typed provenance, never from free text. */
+export type ContextRole = 'fact' | 'constraint' | 'procedure' | 'event' | 'reference' | 'uncertain_data' | 'unknown'
+export type InclusionReason = 'section_reservation' | 'value_per_token' | 'local_replacement' | 'unknown'
+export type ContextTraceLevel = 'compact' | 'detailed'
+export type ContextTraceEventKind = 'included' | 'excluded' | 'deduplicated' | 'warning' | 'unknown'
+export type ContextWarningKind = 'incompatible_metadata' | 'unknown'
+
+export interface ContextOptions {
+  query: string
+  tokenBudget: number
+  candidateLimit?: number
+  includeProcedural?: boolean
+  sourcePolicy?: ContextSourcePolicy
+  /** Defaults to `'balanced'` when omitted. */
+  profile?: ContextProfile
+  /** Defaults to `'markdown'` when omitted. */
+  renderFormat?: ContextRenderFormat
+  /** When `true`, populates `ContextBundle.trace` with individual events (bounded, see `ContextTrace.truncated`). */
+  explain?: boolean
+}
+
+/** A memory recalled alongside the item's representative before dedup/filtering. */
+export interface RetrievalContribution {
+  memoryId: string
+  retrievalRank: number
+  retrievalScore: number
+}
+
+export interface ContextItem {
+  text: string
+  sourceMemoryIds: Array<string>
+  layer: string
+  trust: string
+  role: ContextRole
+  validFrom: number
+  validUntil?: number
+  temporalStatus: ContextTemporalStatus
+  retrievalScore: number
+  retrievalRank: number
+  retrievalContributions: Array<RetrievalContribution>
+  estimatedTokens: number
+  utilityScore: number
+  valuePerToken: number
+  freshnessScore: number
+  inclusionReason: InclusionReason
+}
+
+export interface ContextSection {
+  kind: ContextSectionKind
+  items: Array<ContextItem>
+}
+
+export interface ContextCitation {
+  memoryId: string
+  section: ContextSectionKind
+}
+
+export interface ExcludedMemory {
+  memoryId: string
+  reason: ExclusionReason
+  temporalStatus: ContextTemporalStatus
+  role: ContextRole
+  retrievalContribution: RetrievalContribution
+}
+
+/** One absorbed-memory -> representative pair. See `dedupClusters` for the full groups. */
+export interface MergedMemory {
+  memoryId: string
+  representativeMemoryId: string
+}
+
+/** A complete group produced by exact-text deduplication. */
+export interface DedupCluster {
+  representativeMemoryId: string
+  memoryIds: Array<string>
+}
+
+/** Conservative warning derived only from explicit metadata — never an inferred semantic contradiction. */
+export interface ContextWarning {
+  kind: ContextWarningKind
+  memoryIds: Array<string>
+}
+
+/**
+ * One event of a detailed trace. `kind` discriminates which of the other
+ * fields are populated — napi-rs has no tagged-union support, so this is a
+ * flattened struct rather than a discriminated union.
+ */
+export interface ContextTraceEvent {
+  kind: ContextTraceEventKind
+  memoryId?: string
+  role?: ContextRole
+  inclusionReason?: InclusionReason
+  contributions?: Array<RetrievalContribution>
+  excluded?: ExcludedMemory
+  dedupCluster?: DedupCluster
+  warning?: ContextWarning
+}
+
+/** Always-present counters, computed before any detailed-trace truncation. */
+export interface ContextTraceSummary {
+  includedItems: number
+  includedMemories: number
+  excludedMemories: number
+  dedupClusters: number
+  warnings: number
+}
+
+/** Compact by default (summary only); detailed and size-bounded with `explain: true`. */
+export interface ContextTrace {
+  level: ContextTraceLevel
+  summary: ContextTraceSummary
+  events: Array<ContextTraceEvent>
+  totalEvents: number
+  truncated: boolean
+}
+
+export interface ContextBundle {
+  sections: Array<ContextSection>
+  rendered: string
+  estimatedTokens: number
+  /** The profile actually applied (mirrors the request, or `'balanced'` if omitted). */
+  profile: ContextProfile
+  /** The format actually rendered (mirrors the request, or `'markdown'` if omitted). */
+  renderFormat: ContextRenderFormat
+  compiledAt: number
+  totalUtility: number
+  citations: Array<ContextCitation>
+  merged: Array<MergedMemory>
+  excluded: Array<ExcludedMemory>
+  dedupClusters: Array<DedupCluster>
+  warnings: Array<ContextWarning>
+  trace: ContextTrace
 }

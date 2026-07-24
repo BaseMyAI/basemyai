@@ -2,7 +2,7 @@ openapi: "3.1.0"
 
 info:
   title: BaseMyAI Sidecar REST API
-  version: "1.0.0"
+  version: "0.2.0"
   description: >
     Sidecar HTTP/JSON pour BaseMyAI. Expose le moteur de mémoire local aux
     langages sans binding Rust natif (Python, Go, Ruby, PHP, …).
@@ -147,17 +147,31 @@ components:
           default: false
           description: Présent et true si la charge utile dépasse 256 KiB.
 
-    HealthResponse:
+    LiveResponse:
       type: object
       required: [status, version]
       properties:
         status:
           type: string
-          enum: [ok, degraded]
+          enum: [ok]
           example: "ok"
         version:
           type: string
-          example: "0.1.0"
+          example: "0.2.0"
+
+    ReadyResponse:
+      type: object
+      required: [status, provider_ready]
+      properties:
+        status:
+          type: string
+          enum: [ok, not_ready]
+          example: "ok"
+        provider_ready:
+          type: boolean
+          description: >
+            Toujours établi avant que le serveur ne commence à écouter — pas
+            une sonde active par appel (aucune I/O ici).
 
     RememberRequest:
       type: object
@@ -213,6 +227,172 @@ components:
           default: false
           description: Exclure les souvenirs importés (ADR-036). Défaut false.
 
+    CompileContextRequest:
+      type: object
+      required: [agent_id, query, token_budget]
+      properties:
+        agent_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: "agent-42"
+        query:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          example: "current billing plan"
+        token_budget:
+          type: integer
+          minimum: 1
+          description: Budget de tokens estimé, dur (jamais dépassé).
+          example: 512
+        candidate_limit:
+          type: integer
+          minimum: 1
+          maximum: 256
+          default: 64
+          description: Taille du pool de candidats du recall hybride sous-jacent.
+        include_procedural:
+          type: boolean
+          default: false
+        source_policy:
+          type: string
+          enum: [allow_all, exclude_imported, user_and_consolidation_only]
+          default: exclude_imported
+        profile:
+          type: string
+          enum: [balanced, conversation, coding, execution, safety_critical]
+          default: balanced
+          description: Poids et quotas par rôle, jamais des permissions.
+        render_format:
+          type: string
+          enum: [text, markdown, json]
+          default: markdown
+        explain:
+          type: boolean
+          default: false
+          description: >
+            Conserve une trace détaillée et bornée (raisons d'inclusion/
+            exclusion, contributions de retrieval, clusters de déduplication,
+            avertissements) dans la réponse.
+
+    ContextItem:
+      type: object
+      properties:
+        text: { type: string }
+        source_memory_ids: { type: array, items: { type: string } }
+        layer: { $ref: "#/components/schemas/MemoryLayer" }
+        trust: { type: string }
+        role:
+          type: string
+          enum: [fact, constraint, procedure, event, reference, uncertain_data]
+        valid_from: { type: integer, format: int64 }
+        valid_until: { type: integer, format: int64, nullable: true }
+        temporal_status:
+          type: string
+          enum: [current, scheduled, expired]
+        retrieval_score: { type: number }
+        retrieval_rank: { type: integer }
+        retrieval_contributions:
+          type: array
+          items:
+            type: object
+            properties:
+              memory_id: { type: string }
+              retrieval_rank: { type: integer }
+              retrieval_score: { type: number }
+        estimated_tokens: { type: integer }
+        utility_score: { type: number }
+        value_per_token: { type: number }
+        freshness_score: { type: number }
+        inclusion_reason:
+          type: string
+          enum: [section_reservation, value_per_token, local_replacement]
+
+    CompileContextResponse:
+      type: object
+      required: [rendered, estimated_tokens, profile, render_format, sections, trace]
+      properties:
+        rendered:
+          type: string
+          description: Contenu compilé dans le format demandé (render_format).
+        estimated_tokens: { type: integer }
+        profile:
+          type: string
+          enum: [balanced, conversation, coding, execution, safety_critical]
+        render_format:
+          type: string
+          enum: [text, markdown, json]
+        compiled_at: { type: integer, format: int64 }
+        total_utility: { type: number }
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+                enum: [working_context, current_facts, procedures, recent_events]
+              items:
+                type: array
+                items: { $ref: "#/components/schemas/ContextItem" }
+        citations:
+          type: array
+          items:
+            type: object
+            properties:
+              memory_id: { type: string }
+              section: { type: string }
+        merged:
+          type: array
+          items:
+            type: object
+            properties:
+              memory_id: { type: string }
+              representative_memory_id: { type: string }
+        excluded:
+          type: array
+          description: "Non vide seulement si explain=true a été demandé."
+          items:
+            type: object
+            additionalProperties: true
+        dedup_clusters:
+          type: array
+          items:
+            type: object
+            properties:
+              representative_memory_id: { type: string }
+              memory_ids: { type: array, items: { type: string } }
+        warnings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        trace:
+          type: object
+          description: >
+            Résumé toujours présent (summary) ; events détaillés et bornés
+            seulement avec explain: true (voir truncated).
+          properties:
+            level:
+              type: string
+              enum: [compact, detailed]
+            summary:
+              type: object
+              properties:
+                included_items: { type: integer }
+                included_memories: { type: integer }
+                excluded_memories: { type: integer }
+                dedup_clusters: { type: integer }
+                warnings: { type: integer }
+            events:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            total_events: { type: integer }
+            truncated: { type: boolean }
+
     RecallGraphRequest:
       type: object
       required: [agent_id, start]
@@ -232,6 +412,157 @@ components:
           maximum: 10
           default: 3
 
+    RememberBatchRequest:
+      type: object
+      required: [agent_id, texts]
+      properties:
+        agent_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: "agent-42"
+        texts:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+            minLength: 1
+            maxLength: 65536
+        layer:
+          $ref: "#/components/schemas/MemoryLayer"
+          description: Défaut `semantic` si omis.
+        valid_until:
+          type: integer
+          format: int64
+          nullable: true
+
+    IdsResponse:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: >
+            Un id par entrée de `texts`, dans le même ordre. Le lot est
+            atomique : soit tous les ids sont retournés (201), soit aucune
+            écriture n'a eu lieu (une entrée invalide échoue tout le lot).
+
+    AddEntityRequest:
+      type: object
+      required: [agent_id, id, kind, label]
+      properties:
+        agent_id: { type: string, minLength: 1, maxLength: 128, example: "agent-42" }
+        id: { type: string, minLength: 1, example: "entity:alice" }
+        kind: { type: string, minLength: 1, example: "Person" }
+        label: { type: string, example: "Alice" }
+
+    AddRelationRequest:
+      type: object
+      required: [agent_id, src, relation, dst]
+      properties:
+        agent_id: { type: string, minLength: 1, maxLength: 128, example: "agent-42" }
+        src: { type: string, minLength: 1, example: "entity:alice" }
+        relation: { type: string, minLength: 1, example: "works_at" }
+        dst: { type: string, minLength: 1, example: "entity:acme" }
+        weight:
+          type: number
+          format: double
+          default: 1.0
+          description: Doit être fini (NaN/infini rejetés).
+
+    GraphSearchRequest:
+      type: object
+      required: [agent_id, query]
+      properties:
+        agent_id: { type: string, minLength: 1, maxLength: 128, example: "agent-42" }
+        query: { type: string, minLength: 1, maxLength: 4096, example: "Alice" }
+        k:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+
+    CollectExpiredRequest:
+      type: object
+      required: [agent_id]
+      properties:
+        agent_id: { type: string, minLength: 1, maxLength: 128, example: "agent-42" }
+        page_size:
+          type: integer
+          minimum: 1
+          description: Défaut basemyai::maintenance::DEFAULT_GC_PAGE_SIZE.
+
+    CollectExpiredResponse:
+      type: object
+      required: [examined, deleted, pages]
+      properties:
+        examined: { type: integer, minimum: 0 }
+        deleted: { type: integer, minimum: 0 }
+        pages: { type: integer, minimum: 0 }
+
+    ForgetAdaptiveRequest:
+      type: object
+      required: [agent_id, capacity]
+      properties:
+        agent_id: { type: string, minLength: 1, maxLength: 128, example: "agent-42" }
+        capacity:
+          type: integer
+          minimum: 0
+          description: Nombre de souvenirs actifs à conserver par agent.
+        recency_half_life_secs:
+          type: integer
+          format: int64
+          default: 86400
+
+    ForgetAdaptiveResponse:
+      type: object
+      required: [scanned, evicted]
+      properties:
+        scanned: { type: integer, minimum: 0 }
+        evicted: { type: integer, minimum: 0 }
+
+    ImportRequest:
+      type: object
+      required: [jsonl]
+      properties:
+        jsonl:
+          type: string
+          maxLength: 16777216
+          description: Export JSONL produit par GET /agent/{agent_id}/export.
+        trusted:
+          type: boolean
+          default: false
+          description: >
+            Autorise l'import de souvenirs de couche procedural (ADR-035) —
+            refusés par défaut pour limiter le memory poisoning via import.
+
+    ImportResponse:
+      type: object
+      required: [memories, memories_skipped, entities, entities_skipped, edges, edges_skipped]
+      properties:
+        memories: { type: integer, minimum: 0 }
+        memories_skipped: { type: integer, minimum: 0 }
+        entities: { type: integer, minimum: 0 }
+        entities_skipped: { type: integer, minimum: 0 }
+        edges: { type: integer, minimum: 0 }
+        edges_skipped: { type: integer, minimum: 0 }
+
+    MemoryEvent:
+      type: object
+      required: [agent_id, kind, layer, id]
+      properties:
+        agent_id: { type: string }
+        kind:
+          type: string
+          enum: [remembered, invalidated, forgotten, consolidated, unknown]
+        layer:
+          $ref: "#/components/schemas/MemoryLayer"
+        id:
+          type: string
+          format: uuid
+
     ErrorDetail:
       type: object
       required: [code, message]
@@ -239,14 +570,26 @@ components:
         code:
           type: string
           description: >
-            UNAUTHORIZED, VALIDATION_ERROR, NOT_FOUND,
-            PAYLOAD_TOO_LARGE, INTERNAL_ERROR, TIMEOUT,
-            UNKNOWN_LAYER, ENCRYPTION_REQUIRED, MISSING_AGENT,
-            RATE_LIMITED.
-          example: "NOT_FOUND"
+            Code stable, snake_case, indépendant du message `Display` interne
+            (qui peut changer de formulation sans casser un client) :
+            unauthorized, invalid_request, invalid_agent_id, invalid_store_id,
+            invalid_layer, invalid_importance, memory_not_found,
+            store_unavailable, store_locked, wrong_encryption_key, conflict,
+            payload_too_large, request_timeout, rate_limited, internal_error.
+          example: "invalid_agent_id"
         message:
           type: string
-          example: "Memory record not found for this agent."
+          example: "A valid agent_id is required."
+        request_id:
+          type: string
+          format: uuid
+          description: Identique au header X-Request-Id de la réponse.
+        details:
+          type: object
+          additionalProperties: true
+          description: >-
+            Contexte structuré optionnel (ex. field/importance pour
+            invalid_importance).
 
     ErrorResponse:
       type: object
@@ -280,7 +623,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
-            error: { code: "UNAUTHORIZED", message: "Missing or invalid Bearer token." }
+            error: { code: "unauthorized", message: "Missing or invalid Bearer token." }
 
     BadRequest:
       description: Corps JSON invalide ou contrainte métier non respectée.
@@ -354,7 +697,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
-            error: { code: "RATE_LIMITED", message: "Rate limit exceeded for this agent." }
+            error: { code: "rate_limited", message: "Rate limit exceeded for this agent." }
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -394,6 +737,40 @@ paths:
                     type: string
                     format: uuid
                     example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /remember_batch:
+    post:
+      operationId: rememberBatch
+      summary: Ingère un lot de textes en une seule passe d'embedding, atomique.
+      description: >
+        Une entrée invalide (texte vide ou trop long) échoue tout le lot —
+        aucune écriture partielle. Les ids retournés sont dans le même ordre
+        que `texts`.
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RememberBatchRequest"
+      responses:
+        "201":
+          description: Lot inséré en entier.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdsResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
@@ -502,6 +879,185 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
 
+  /graph/entities:
+    post:
+      operationId: addEntity
+      summary: Insère ou met à jour une entité du graphe pour un agent.
+      tags: [Graph]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddEntityRequest"
+      responses:
+        "201":
+          description: Entité insérée ou mise à jour.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /graph/relations:
+    post:
+      operationId: addRelation
+      summary: Crée ou met à jour une relation orientée entre deux entités.
+      description: >
+        weight doit être un nombre fini (NaN/infini rejetés avec
+        invalid_request).
+      tags: [Graph]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddRelationRequest"
+      responses:
+        "201":
+          description: Relation créée ou mise à jour.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /graph/search:
+    post:
+      operationId: graphSearch
+      summary: Recall vectoriel limité aux souvenirs mentionnant une entité du graphe.
+      tags: [Graph]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GraphSearchRequest"
+      responses:
+        "200":
+          description: Souvenirs mentionnant l'entité, triés par score.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecallResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /maintenance/collect_expired:
+    post:
+      operationId: collectExpired
+      summary: GC temporel manuel (ADR-038) — supprime les souvenirs expirés par pages bornées.
+      description: >
+        Déclenchement manuel de la même politique que
+        basemyai::maintenance::ExpiredMemoryGcTask, qui tourne aussi en tâche
+        de fond côté bindings — cette route n'en est pas une seconde
+        implémentation.
+      tags: [Maintenance]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectExpiredRequest"
+      responses:
+        "200":
+          description: Passe de GC exécutée (peut être un no-op à 0 examined).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectExpiredResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /maintenance/forget_adaptive:
+    post:
+      operationId: forgetAdaptive
+      summary: Oubli adaptatif manuel (ADR-037) — évince les souvenirs les moins bien notés au-delà d'une capacité.
+      tags: [Maintenance]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgetAdaptiveRequest"
+      responses:
+        "200":
+          description: Passe d'oubli exécutée (peut être un no-op à 0 evicted).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgetAdaptiveResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /compile_context:
+    post:
+      operationId: compileContext
+      summary: Compile un recall hybride en contexte borné et traçable (Context Engine).
+      description: >
+        Pipeline déterministe sans LLM : recall hybride borné → filtres
+        layer/provenance/validité → normalisation + estimation tokens →
+        dédup → sélection sous budget dur (pondérée par profile) → rendu
+        (render_format) + citations + trace observable.
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompileContextRequest"
+      responses:
+        "200":
+          description: Contexte compilé.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompileContextResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
   /memories/{id}:
     delete:
       operationId: forgetMemory
@@ -530,6 +1086,44 @@ paths:
       responses:
         "204":
           description: Souvenir supprimé (ou n'existait pas).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /memories/{id}/invalidate:
+    post:
+      operationId: invalidateMemory
+      summary: Invalide un souvenir (soft-delete, valid_until = now) sans le supprimer physiquement.
+      description: >
+        Le souvenir cesse d'apparaître dans les recalls futurs mais reste
+        physiquement présent — contrairement à DELETE /memories/{id}, qui
+        supprime la ligne. Idempotent : appeler deux fois sur le même id
+        retourne 204 les deux fois.
+      tags: [Memory]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        - name: agent_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+          example: "agent-42"
+      responses:
+        "204":
+          description: Souvenir invalidé (ou déjà invalidé/introuvable — idempotent).
           headers:
             X-Request-Id:
               $ref: "#/components/headers/X-Request-Id"
@@ -607,15 +1201,131 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /health:
+  /agent/{agent_id}/export:
     get:
-      operationId: health
-      summary: Liveness/readiness check.
+      operationId: exportAgent
+      summary: Export JSONL versionné de la mémoire d'un agent (backup/migration).
+      tags: [Agent]
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+          example: "agent-42"
+      responses:
+        "200":
+          description: Export JSONL, une ligne par souvenir/entité/relation.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /agent/{agent_id}/import:
+    post:
+      operationId: importAgent
+      summary: Réimporte un export JSONL (idempotent par id, ré-embedding).
       description: >
-        Vérifie que le store natif chiffré est accessible.
-        Pas d'auth requise — utilisable par les probes sans clé.
+        Les souvenirs de couche procedural sont refusés par défaut (audit
+        memory poisoning, ADR-035) sauf trusted: true.
+      tags: [Agent]
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+          example: "agent-42"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportRequest"
+      responses:
+        "200":
+          description: Import terminé (compteurs importés/ignorés).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "422":
+          description: Ligne JSONL malformée ou non portable.
+          $ref: "#/components/responses/BadRequest"
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /health/live:
+    get:
+      operationId: healthLive
+      summary: Liveness — le processus tourne et répond.
+      description: Ne vérifie aucune dépendance. Pas d'auth requise.
       tags: [System]
       security: []
+      responses:
+        "200":
+          description: Processus vivant.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveResponse"
+
+  /health/ready:
+    get:
+      operationId: healthReady
+      summary: Readiness — les dépendances nécessaires (store, embedder) sont prêtes.
+      description: >
+        Rapporte un fait déjà établi au démarrage (aucune I/O par appel) —
+        si le provider n'avait pas pu s'initialiser, le processus ne serait
+        jamais arrivé jusqu'à écouter. Pas d'auth requise.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: Prêt.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/X-Request-Id"
+            X-Basemyai-Version:
+              $ref: "#/components/headers/X-Basemyai-Version"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyResponse"
+        "503":
+          description: Pas prêt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyResponse"
+
+  /health:
+    get:
+      operationId: healthLegacyAlias
+      summary: "Alias de compatibilité : identique à GET /health/live."
+      description: >
+        Existait avant cette restructuration (montée sous /v1) ; conservée
+        pour ne pas casser les clients existants. Les nouveaux clients
+        devraient utiliser /health/live et /health/ready directement.
+      tags: [System]
+      security: []
+      deprecated: true
       responses:
         "200":
           description: Sidecar opérationnel.
@@ -627,17 +1337,76 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HealthResponse"
-        "500":
-          description: Store inaccessible.
-          $ref: "#/components/responses/InternalError"
+                $ref: "#/components/schemas/LiveResponse"
+
+  /events:
+    get:
+      operationId: subscribeEvents
+      summary: "Flux SSE des événements mémoire d'un agent (alias de /watch)."
+      description: >
+        Un événement MemoryEvent JSON par ligne `data:`. Jamais le contenu du
+        souvenir (l'abonné rappelle par id s'il le veut). Canal lossy : un
+        client lent perd des événements plutôt que de ralentir remember/forget
+        pour tous les autres clients.
+      tags: [Events]
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+          example: "agent-42"
+        - name: layer
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/MemoryLayer"
+          description: Sans ce paramètre, tous les événements de l'agent sont relayés.
+      responses:
+        "200":
+          description: Flux SSE ouvert (text/event-stream).
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/MemoryEvent"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /watch:
+    get:
+      operationId: watchEvents
+      summary: "Flux SSE des événements mémoire d'un agent (nom historique de /events)."
+      tags: [Events]
+      parameters:
+        - name: agent_id
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+          example: "agent-42"
+        - name: layer
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/MemoryLayer"
+      responses:
+        "200":
+          description: Flux SSE ouvert (text/event-stream).
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/MemoryEvent"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
 tags:
   - name: Memory
     description: Opérations sur les souvenirs individuels.
   - name: Graph
-    description: Traversée du graphe d'entités.
+    description: Entités/relations et leur traversée.
+  - name: Maintenance
+    description: Déclenchement manuel du GC temporel et de l'oubli adaptatif.
   - name: Agent
-    description: Gestion de l'espace mémoire d'un agent (stats, purge).
+    description: Gestion de l'espace mémoire d'un agent (stats, export/import, purge).
+  - name: Events
+    description: Abonnement SSE aux événements mémoire.
   - name: System
-    description: Opérabilité (health, version).
+    description: Opérabilité (liveness, readiness).

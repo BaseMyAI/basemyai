@@ -4,21 +4,24 @@
 //! Sidecar **HTTP/JSON** exposant le moteur de mémoire [`basemyai`] aux langages
 //! sans binding Rust natif (Python, Go, Ruby, PHP, …). 100 % local, auth Bearer.
 //!
-//! Conforme à `crates/basemyai-rest/openapi.yaml`. Routes sous `/v1` ; `/health`
-//! sans auth. Voir [`build_app`] pour monter le routeur autour d'un [`AppState`].
+//! Architecture en tranches verticales : `endpoints/<domaine>/<action>.rs` —
+//! voir `README.md` pour l'arborescence complète. Conforme à
+//! `crates/basemyai-rest/openapi.yaml`. Routes sous `/v1` ; `/health/*` sans
+//! auth. Voir [`server::build_router`] pour monter le routeur autour d'un
+//! [`context::AppState`], ou [`server::bootstrap::build_state`] pour la
+//! construction de production complète.
 
-mod config;
-mod error;
-mod provider;
-mod routes;
-mod state;
+pub mod config;
+pub mod context;
+pub mod endpoints;
+pub mod http;
+pub mod provider;
+pub mod server;
 
-pub use config::{AgentPolicy, Config};
-pub use error::RestError;
-pub use provider::MemoryProvider;
-pub use routes::build_app;
-pub use state::AppState;
-
-pub use provider::FileProvider;
+pub use config::{AgentPolicy, ApiKey, RuntimeConfig, StartupConfig};
+pub use context::AppState;
+pub use http::RestError;
 #[cfg(feature = "test-util")]
 pub use provider::InMemoryProvider;
+pub use provider::{FileProvider, MemoryProvider};
+pub use server::build_router as build_app;

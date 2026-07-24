@@ -28,3 +28,13 @@ pub(crate) const VERIFICATION_FAILED: u8 = 10;
 /// `repair` (sans `--dry-run`) : des données primaires sont à risque — le
 /// CLI refuse toute réparation automatique (ADR-040 §3).
 pub(crate) const REPAIR_REFUSED: u8 = 11;
+/// `eval run|compare` (feature `eval-lab`) : erreur dataset/rapport
+/// propagée depuis `basemyai-eval` (JSON invalide, IO, cas malformé).
+/// Distinct de `USAGE` : ce n'est pas un mésusage des flags de `basemyai`.
+#[cfg(feature = "eval-lab")]
+pub(crate) const EVAL_ERROR: u8 = 12;
+/// `eval run|compare` (feature `eval-lab`) : le rapport/la comparaison s'est
+/// produit correctement mais au moins un cas a échoué ou une métrique a
+/// régressé — pas une erreur système.
+#[cfg(feature = "eval-lab")]
+pub(crate) const EVAL_FAILED: u8 = 13;

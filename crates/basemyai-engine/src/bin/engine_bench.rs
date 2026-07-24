@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use basemyai_engine::{
     Engine, EngineOptions, EngineStats, NewMemoryRecord, PersistentFts, PersistentMemoryIndex, PersistentVectorIndex,
-    VectorIndexParams,
+    VectorIndexParams, VerifyMode, verify_store,
 };
 
 const VECTOR_DIM: usize = 384;
@@ -212,6 +212,7 @@ fn run_kv_group(args: &Args, report: &mut Report) {
         ],
     ));
     drop(engine);
+    verify_dir_if_requested(args, &dir, "kv");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -270,7 +271,42 @@ fn run_memory_group(args: &Args, report: &mut Report) {
         ],
     ));
     drop(engine);
+    verify_dir_if_requested(args, &dir, "memory");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--verify` (N11): re-open the just-closed store read-only and run the
+/// engine's own `verify_store` in `FullLogical` mode (the deepest audit,
+/// ADR-040 §2) before the temp dir is wiped — the exit-gate criterion of
+/// `docs/PLAN-NATIVE-ENGINE.md` §8 ("`verify --deep` vert après chaque
+/// scénario non destructif") exercised against the actual bench-produced
+/// store, not a synthetic stand-in. Fatal on an unhealthy report: a soak
+/// run that silently produced a corrupt store must not report success.
+fn verify_dir_if_requested(args: &Args, dir: &Path, label: &str) {
+    if !args.verify {
+        return;
+    }
+    let key = args.encrypted.then_some(BENCH_KEY);
+    let report = verify_store(dir, key, VerifyMode::FullLogical)
+        .unwrap_or_else(|e| fatal(&format!("verify_store({label}) failed: {e}")));
+    eprintln!(
+        "[engine_bench] verify({label}, FullLogical): healthy={} files={} blocks={} records={} errors={} warnings={}",
+        report.healthy,
+        report.files_checked,
+        report.blocks_checked,
+        report.records_checked,
+        report.errors.len(),
+        report.warnings.len(),
+    );
+    for w in &report.warnings {
+        eprintln!("[engine_bench]   warning: {w}");
+    }
+    if !report.healthy {
+        for e in &report.errors {
+            eprintln!("[engine_bench]   ERROR: {e}");
+        }
+        fatal(&format!("verify_store({label}) reported unhealthy store"));
+    }
 }
 
 // ── plumbing ─────────────────────────────────────────────────────────────────
@@ -289,6 +325,7 @@ struct Args {
     encrypted: bool,
     out: Option<PathBuf>,
     keep_dir: Option<PathBuf>,
+    verify: bool,
 }
 
 impl Args {
@@ -299,6 +336,7 @@ impl Args {
         let mut encrypted = false;
         let mut out = None;
         let mut keep_dir = None;
+        let mut verify = false;
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -310,8 +348,9 @@ impl Args {
                 "--encrypted" => encrypted = true,
                 "--out" => out = Some(PathBuf::from(it.next().unwrap_or_else(|| fatal("--out needs a path")))),
                 "--dir" => keep_dir = Some(PathBuf::from(it.next().unwrap_or_else(|| fatal("--dir needs a path")))),
+                "--verify" => verify = true,
                 other => fatal(&format!(
-                    "unknown arg {other:?}\nusage: engine_bench [all|kv|memory] [--n N] [--memory-n N] [--encrypted] [--out report.json] [--dir workdir]"
+                    "unknown arg {other:?}\nusage: engine_bench [all|kv|memory] [--n N] [--memory-n N] [--encrypted] [--out report.json] [--dir workdir] [--verify]"
                 )),
             }
         }
@@ -328,6 +367,7 @@ impl Args {
             encrypted,
             out,
             keep_dir,
+            verify,
         }
     }
 }

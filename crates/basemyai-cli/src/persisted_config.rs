@@ -30,43 +30,26 @@ pub(crate) struct CliConfig {
 
 impl CliConfig {
     /// Charge la config depuis le fichier puis l'environnement (l'environnement
-    /// gagne). Ne lève jamais d'erreur fatale : un fichier absent ou un TOML
-    /// invalide retombe sur les défauts (affiché en warning, pas en échec dur —
-    /// la résolution finale du `path`/`agent` est ce qui doit échouer, pas le
-    /// chargement de la config elle-même).
+    /// gagne). Délègue la résolution à [`basemyai::ConfigDefaults`] — même
+    /// source de vérité que celle utilisée par `Memory.open()` côté bindings
+    /// (Node/Python) quand `path`/`agent_id` sont omis, pour que la CLI et les
+    /// bindings retombent sur la même config sur une même machine. Ne lève
+    /// jamais d'erreur fatale : un fichier absent ou un TOML invalide retombe
+    /// sur les défauts — la résolution finale du `path`/`agent` est ce qui
+    /// doit échouer, pas le chargement de la config elle-même.
     #[must_use]
     pub(crate) fn load() -> Self {
-        let mut cfg = match load_file_config() {
-            Ok(Some(file)) => Self {
-                db_path: file.cli.db_path,
-                agent: file.cli.agent,
-            },
-            Ok(None) => Self::default(),
-            Err(e) => {
-                eprintln!("warning: {e}");
-                Self::default()
-            }
-        };
-
-        if let Ok(p) = std::env::var("BASEMYAI_DB_PATH") {
-            cfg.db_path = Some(PathBuf::from(p));
+        let defaults = basemyai::ConfigDefaults::load();
+        Self {
+            db_path: defaults.db_path,
+            agent: defaults.agent,
         }
-        if let Ok(a) = std::env::var("BASEMYAI_AGENT") {
-            cfg.agent = Some(a);
-        }
-        cfg
     }
 
     /// Chemin standard du fichier de config (`~/.basemyai/config.toml`).
-    ///
-    /// Résout via `HOME`/`USERPROFILE` plutôt que le crate `dirs` (qui, sur
-    /// Windows, interroge l'API de profil OS et ignore un override de
-    /// process) : même mécanisme que `EncryptionKey::default_key_file_path`
-    /// (`basemyai-core`), pour que les deux résolutions `~/.basemyai/...`
-    /// restent isolables par test/sandbox (`env_clear` + `HOME`/`USERPROFILE`).
     #[must_use]
     pub(crate) fn file_path() -> Option<PathBuf> {
-        home_dir().map(|h| h.join(".basemyai").join("config.toml"))
+        basemyai::ConfigDefaults::file_path()
     }
 
     /// Résout le chemin du conteneur `.bmai` : flag explicite, sinon config/env.
@@ -111,34 +94,6 @@ impl CliConfig {
         write_raw_table(&path, current)?;
         Ok(path)
     }
-}
-
-/// Même stratégie que `basemyai_core`'s `key::home_dir` : `USERPROFILE` sur
-/// Windows, `HOME` ailleurs — un override de process (test, sandbox) est
-/// toujours respecté, contrairement au crate `dirs`.
-fn home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
-}
-
-fn load_file_config() -> Result<Option<FileConfig>, String> {
-    let Some(path) = CliConfig::file_path() else {
-        return Ok(None);
-    };
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("reading {}: {e}", path.display())),
-    };
-    toml::from_str(&raw)
-        .map(Some)
-        .map_err(|e| format!("parsing {}: {e}", path.display()))
 }
 
 /// Lit la section `[cli]` brute pour `set`/`unset`. Contrairement à `load()`

@@ -18,7 +18,10 @@ use basemyai_core::EncryptionKey;
 use basemyai_core::{CandleEmbedder, Device};
 
 use crate::errors::to_napi;
-use crate::types::{AgentStats, Entity, MemoryEventPayload, MemoryOpenOptions, Record};
+use crate::types::{
+    AgentStats, ContextBundle, ContextOptions, ConversationTurn, Entity, MemoryEventPayload, MemoryOpenOptions, Record,
+    parse_profile, parse_render_format, parse_source_policy,
+};
 
 /// Mémoire d'un agent (tenant). Ouverte par une fabrique asynchrone, puis
 /// interrogée par `remember`/`recall`/... (toutes des `Promise`).
@@ -47,6 +50,18 @@ impl Memory {
         let inner = Arc::clone(&self.inner);
         let layer = MemoryLayer::from_table(layer.as_deref().unwrap_or("semantic")).map_err(to_napi)?;
         inner.remember(&text, layer).await.map_err(to_napi)
+    }
+
+    /// Ingère une conversation brute : chaque tour devient un souvenir
+    /// épisodique (`"{role}: {content}"`), en un seul batch. Aucune extraction
+    /// de faits ici — c'est la consolidation (tâche de fond) qui promeut plus
+    /// tard des faits durables en couche `semantic` à partir de ces épisodes.
+    /// Résout vers les UUID créés, dans l'ordre des tours.
+    #[napi]
+    pub async fn observe(&self, turns: Vec<ConversationTurn>) -> Result<Vec<String>> {
+        let inner = Arc::clone(&self.inner);
+        let turns: Vec<basemyai::ConversationTurn> = turns.into_iter().map(ConversationTurn::into).collect();
+        inner.observe(&turns).await.map_err(to_napi)
     }
 
     /// Recall temporel sémantique : résout vers un tableau de `Record`.
@@ -99,6 +114,41 @@ impl Memory {
             .await
             .map_err(to_napi)?;
         Ok(records.into_iter().map(Record::from_hybrid).collect())
+    }
+
+    /// Compile un recall hybride en contexte Markdown borné et traçable.
+    #[napi(js_name = "compileContext")]
+    pub async fn compile_context(&self, options: ContextOptions) -> Result<ContextBundle> {
+        let ContextOptions {
+            query,
+            token_budget,
+            candidate_limit,
+            include_procedural,
+            source_policy,
+            profile,
+            render_format,
+            explain,
+        } = options;
+        let source_policy = parse_source_policy(source_policy.as_deref().unwrap_or("exclude_imported"))
+            .map_err(|message| Error::new(Status::InvalidArg, message))?;
+        let profile = parse_profile(profile.as_deref().unwrap_or("balanced"))
+            .map_err(|message| Error::new(Status::InvalidArg, message))?;
+        let render_format = parse_render_format(render_format.as_deref().unwrap_or("markdown"))
+            .map_err(|message| Error::new(Status::InvalidArg, message))?;
+        let mut request = basemyai::ContextRequest::new(&query, token_budget as usize)
+            .candidate_limit(candidate_limit.unwrap_or(64) as usize)
+            .source_policy(source_policy)
+            .profile(profile)
+            .render_format(render_format);
+        if include_procedural.unwrap_or(false) {
+            request = request.include_procedural();
+        }
+        if explain.unwrap_or(false) {
+            request = request.explain();
+        }
+        let inner = Arc::clone(&self.inner);
+        let bundle = inner.compile_context(request).await.map_err(to_napi)?;
+        Ok(ContextBundle::from(bundle))
     }
 
     /// Invalide (soft-delete) un souvenir par son id.
@@ -241,35 +291,138 @@ impl Drop for WatchHandle {
     }
 }
 
+/// Parse l'option `device` du binding Node vers le [`Device`] agnostique du
+/// core. `None` (`"auto"`) laisse la résolution au provisioning/détection
+/// matérielle, à l'image de `basemyai-py`'s `parse_device`.
+#[cfg(feature = "embed")]
+fn parse_device(value: &str) -> Result<Option<Device>> {
+    match value {
+        "auto" => Ok(None),
+        "cpu" => Ok(Some(Device::Cpu)),
+        "metal" => Ok(Some(Device::Metal)),
+        "cuda" => Ok(Some(Device::Cuda(0))),
+        s if s.starts_with("cuda:") => {
+            let index = s
+                .strip_prefix("cuda:")
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .ok_or_else(|| {
+                    Error::new(
+                        Status::InvalidArg,
+                        "device must be one of: auto, cpu, metal, cuda, cuda:<index>",
+                    )
+                })?;
+            Ok(Some(Device::Cuda(index)))
+        }
+        _ => Err(Error::new(
+            Status::InvalidArg,
+            "device must be one of: auto, cpu, metal, cuda, cuda:<index>",
+        )),
+    }
+}
+
 #[cfg(feature = "embed")]
 async fn open_production(options: MemoryOpenOptions) -> Result<Memory> {
     let MemoryOpenOptions {
         path,
         agent_id,
         encryption_key,
+        credential_mode,
         model_path,
         allow_model_download,
+        device,
     } = options;
 
+    // `path`/`agentId` omis : retombe sur `~/.basemyai/config.toml` /
+    // `BASEMYAI_DB_PATH` / `BASEMYAI_AGENT` (même résolution que la CLI), puis
+    // sur un défaut intégré (`./basemyai.bmai`, agent `"default"`) — un
+    // premier `Memory.open({})` doit fonctionner sans étape préalable.
+    let defaults = basemyai::ConfigDefaults::load();
+    let path = defaults
+        .resolve_open_path(path.map(PathBuf::from))
+        .display()
+        .to_string();
+    let agent_id = defaults.resolve_open_agent(agent_id);
+
     let agent = basemyai::AgentId::new(agent_id).ok_or_else(|| to_napi(basemyai::MemoryError::MissingAgent))?;
-    let (model_dir, device) = if let Some(model_path) = model_path {
-        (PathBuf::from(model_path), Device::Cpu)
+    let parsed_device = parse_device(device.as_deref().unwrap_or("auto"))?;
+    let (model_dir, resolved_device) = if let Some(model_path) = model_path {
+        let resolved = parsed_device.unwrap_or_else(|| basemyai::detect_hardware().device);
+        (PathBuf::from(model_path), resolved)
     } else {
         let provision = basemyai::provision(allow_model_download.unwrap_or(false))
             .await
             .map_err(to_napi)?;
-        (provision.model_path, provision.device)
+        (provision.model_path, parsed_device.unwrap_or(provision.device))
     };
-    let embedder = CandleEmbedder::load(&model_dir, device)
+    let embedder = CandleEmbedder::load(&model_dir, resolved_device)
         .map_err(basemyai::MemoryError::from)
         .map_err(to_napi)?;
     let db_path = PathBuf::from(path);
-    let key = EncryptionKey::resolve(encryption_key.as_deref())
-        .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
+    let key = resolve_encryption_key(encryption_key, credential_mode.as_deref())?;
     let mem = basemyai::Memory::open_native(db_path, &key, Box::new(embedder), agent)
         .await
         .map_err(to_napi)?;
     Ok(Memory { inner: Arc::new(mem) })
+}
+
+/// Résout la clé de chiffrement. Sans credential explicite et sans source
+/// configurée nulle part (env, fichier), **génère et persiste** une clé dans
+/// `~/.basemyai/key` plutôt que d'échouer ([`EncryptionKey::resolve_or_generate`])
+/// — générer une clé est une opération locale hors-ligne, contrairement au
+/// téléchargement de modèle (ADR-010) qui lui reste soumis à consentement
+/// explicite. Imprime un avis sur stderr quand une clé vient d'être créée :
+/// c'est la seule copie, sa perte rend les données existantes irrécupérables.
+#[cfg(feature = "embed")]
+fn resolve_encryption_key(encryption_key: Option<String>, credential_mode: Option<&str>) -> Result<EncryptionKey> {
+    match encryption_key {
+        Some(material) => match credential_mode.unwrap_or("raw") {
+            "raw" | "raw-key" | "raw_key" => Ok(EncryptionKey::raw(material)),
+            "passphrase" => Ok(EncryptionKey::passphrase(material)),
+            other => Err(Error::new(
+                Status::InvalidArg,
+                format!("credential_mode must be 'raw' or 'passphrase', got {other:?}"),
+            )),
+        },
+        None => {
+            let (key, generated_at) = EncryptionKey::resolve_or_generate(None)
+                .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
+            if let Some(path) = generated_at {
+                eprintln!(
+                    "basemyai: generated a new encryption key at {} — back this file up, it cannot be recovered if lost",
+                    path.display()
+                );
+            }
+            Ok(key)
+        }
+    }
+}
+
+#[cfg(all(test, feature = "embed"))]
+mod credential_tests {
+    use basemyai_core::EncryptionKeyMode;
+
+    use super::resolve_encryption_key;
+
+    #[test]
+    fn explicit_credentials_use_the_per_call_mode() {
+        assert_eq!(
+            resolve_encryption_key(Some("secret".to_string()), Some("raw"))
+                .expect("raw credential")
+                .mode(),
+            EncryptionKeyMode::RawKey
+        );
+        assert_eq!(
+            resolve_encryption_key(Some("secret".to_string()), Some("passphrase"))
+                .expect("passphrase credential")
+                .mode(),
+            EncryptionKeyMode::Passphrase
+        );
+    }
+
+    #[test]
+    fn explicit_credentials_reject_unknown_modes() {
+        assert!(resolve_encryption_key(Some("secret".to_string()), Some("automatic")).is_err());
+    }
 }
 
 #[cfg(not(feature = "embed"))]

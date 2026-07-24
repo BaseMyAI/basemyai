@@ -23,6 +23,7 @@ jobs:
         target:
           - key_roundtrip
           - wal_decode
+          - wal_epoch_decode
           - wal_envelope_decode
           - vector_node_decode
           - vector_node_decode_structured
@@ -37,7 +38,10 @@ jobs:
           - sst_bloom_filter_decode
           - sst_footer_decode
           - store_meta_decode
+          - sst_manifest_decode
+          - generation_meta_decode
           - crypto_meta_decode
+          - crypto_meta_decode_structured
           - encrypted_sst_block_decode
           - fts_docterms_decode
           - fts_postings_decode
@@ -46,9 +50,9 @@ jobs:
           - memory_record_decode
           - memory_vecmap_decode
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked

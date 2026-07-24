@@ -169,6 +169,7 @@ mod tests {
                     label: label.to_string(),
                     valid_from: 0,
                     valid_until,
+                    source: crate::idx::graph::source::GraphSource::User,
                 },
             );
         }
@@ -184,6 +185,7 @@ mod tests {
                         weight: 1.0,
                         valid_from: 0,
                         valid_until: None,
+                        source: crate::idx::graph::source::GraphSource::User,
                     },
                 ));
         }

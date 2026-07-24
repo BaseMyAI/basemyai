@@ -102,14 +102,18 @@ for results (zero crashes across all 24).
 - **`store_meta_decode`** (N8.2, ADR-039 §7) — raw arbitrary bytes into
   `format::store_meta::decode`. Fixed-length, small structural surface like
   `vector_meta_decode`. **Executed** — zero crashes.
-- **`crypto_meta_decode`** / **`wal_envelope_decode`** /
+- **`crypto_meta_decode`** / **`crypto_meta_decode_structured`** /
+  **`wal_envelope_decode`** /
   **`encrypted_sst_block_decode`** (N11 §8.4) — the three encryption-at-rest
   decoders (ADR-030/ADR-039 §3): `crypto.meta` key-wrap, the per-record WAL
   envelope, and the per-section `EncryptedSstBlock` envelope. Their real
   decoders (`format::crypto::decode_{crypto_meta,wal_envelope,
   encrypted_sst_block}`) stay `pub(crate)` — their return types
   (`CryptoMeta`/`Nonce`/`WalEnvelopeRef`) are deliberately crate-private, so
-  these targets go through thin `pub fn fuzz_decode_*` shims added
+  `crypto_meta_decode_structured` recomputes the trailing CRC-32 after
+  independently fuzzing the version, generation, wrapped length and KDF body, so v1
+  compatibility plus v2's unknown-KDF and malformed-Argon2id paths are
+  covered beyond the checksum gate. These targets go through thin `pub fn fuzz_decode_*` shims added
   specifically for this (`format/crypto.rs`) rather than widening the
   crate's public API. **Executed** — zero crashes.
 - **`fts_docterms_decode`** (N11 §8.4) — raw arbitrary bytes into
@@ -138,12 +142,14 @@ for results (zero crashes across all 24).
   (ADR-027 §2/§4). `agent_len`/`id_len` are the wire-controlled fields at
   risk. **Executed** — zero crashes.
 
-All 24 targets (the nine new ones from this session plus the 15 pre-existing)
-were run for real under WSL/Kali on 2026-07-12 — `cargo fuzz run <target> --
+All 24 targets present on 2026-07-12 (the nine new ones from that session
+plus the 15 pre-existing) were run for real under WSL/Kali on 2026-07-12 — `cargo fuzz run <target> --
 -max_total_time=30` each, from a few million to tens of millions of
 executions per target depending on corpus size. **Zero crashes, zero panics,
-zero timeouts across all 24**, `exit=0` confirmed for every one. Every
-decoder in this crate now has an executed fuzz target, closing the gap
+zero timeouts across those 24**, `exit=0` confirmed for every one. The new
+`crypto_meta_decode_structured` target still needs its first Linux/macOS/WSL
+run; it extends the existing executed raw decoder with post-checksum v2
+coverage. Every decoder in this crate has a fuzz target, closing the gap
 `docs/PLAN-NATIVE-ENGINE.md` §8.4 called out.
 
 ## Known finding (historical, in code deleted by ADR-039/N8.5)

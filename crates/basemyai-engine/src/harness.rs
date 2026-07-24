@@ -20,6 +20,9 @@ pub const VALUE_LEN: usize = 64;
 /// management.
 pub const CRYPTO_KEY: &[u8] = b"crash-harness-encryption-key";
 
+/// Replacement credential used by the full-rotation crash harness.
+pub const ROTATED_CRYPTO_KEY: &[u8] = b"crash-harness-rotated-encryption-key";
+
 /// Number of keys per batch used by the batch-atomicity crash-consistency
 /// harness (`src/bin/crash_writer.rs` batch mode + `tests/crash_consistency.rs`).
 /// Batches are always `[k * BATCH_SIZE, k * BATCH_SIZE + BATCH_SIZE - 1]` for
@@ -55,6 +58,50 @@ pub fn expected_value(counter: u64) -> Vec<u8> {
     }
     v.truncate(VALUE_LEN);
     v
+}
+
+/// Number of "race slot" keys used by the compaction-overlapping-key crash
+/// harness (`crash_writer` mode `compact-race` — DUR-LSM-01 regression,
+/// BaseMyAI adversarial audit remediation, 2026-07-22). Small and fixed:
+/// each slot is repeatedly rewritten by a write landing between
+/// `Engine::compact_prepare` and `Engine::compact_commit`, so the harness
+/// exercises the exact interleaving that caused DUR-LSM-01 (a compaction
+/// merging a slot's *pre-race* value racing a concurrent write to that same,
+/// already-in-the-merge's-input slot), under a real forced kill — not merely
+/// generating write volume the way `filler` keys below do.
+pub const RACE_SLOTS: u64 = 4;
+
+/// Key for race slot `slot` (`< RACE_SLOTS`) — a `race/`-prefixed keyspace
+/// distinct from [`encode_key`]'s raw big-endian counters, so the two can
+/// never collide on the same physical key.
+#[must_use]
+pub fn race_key(slot: u64) -> Vec<u8> {
+    let mut key = b"race/".to_vec();
+    key.extend_from_slice(&slot.to_be_bytes());
+    key
+}
+
+/// Key for a disposable "filler" write used only to push the live SST count
+/// past `compaction_sst_threshold` so `Engine::compact_prepare` has a job to
+/// stage — its content is never independently verified, only its existence
+/// as a flush trigger. `ring` bounds the keyspace to 64 keys (harness-
+/// internal only) so repeated process restarts across a kill-loop don't grow
+/// the store unboundedly with content nobody checks.
+#[must_use]
+pub fn race_filler_key(ring: u64) -> Vec<u8> {
+    let mut key = b"race/filler/".to_vec();
+    key.extend_from_slice(&(ring % 64).to_be_bytes());
+    key
+}
+
+/// The value a race slot holds once `epoch` rewrites of it have landed —
+/// big-endian, so the writer can decode a slot's *current* epoch directly
+/// from `Engine::get` at process start (including after a kill mid-cycle),
+/// with no separate resume bookkeeping needed beyond what's already durable
+/// in the store itself.
+#[must_use]
+pub fn race_epoch_value(epoch: u64) -> Vec<u8> {
+    epoch.to_be_bytes().to_vec()
 }
 
 /// Vector dimension used by the vector-index crash-consistency mode

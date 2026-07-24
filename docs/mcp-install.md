@@ -4,11 +4,13 @@
 via le **Model Context Protocol**. Il fonctionne avec tout hôte MCP : Claude Code,
 Claude Desktop, Cursor, Windsurf, ChatGPT Desktop, Codex…
 
-Une fois branché, l'agent dispose de 8 outils : `remember`, `recall`,
-`recall_hybrid`, `recall_graph`, `invalidate`, `stats`, **`consolidate`** et
-**`consolidate_apply`**. La consolidation (épisodes → faits + graphe) suit une
-**politique à niveaux** (ADR-018) qui marche partout, **sans serveur LLM ni clé** :
-voir §6.
+Une fois branché, l'agent dispose de 9 outils : `remember`, `recall`,
+`recall_hybrid`, `recall_graph`, **`compile_context`**, `invalidate`, `stats`,
+**`consolidate`** et **`consolidate_apply`**. `compile_context` compile un
+recall hybride en contexte borné, tracé et prêt pour un prompt — déterministe,
+sans LLM (Context Engine, R1.8). La consolidation (épisodes → faits + graphe)
+suit une **politique à niveaux** (ADR-018) qui marche partout, **sans serveur
+LLM ni clé** : voir §6.
 
 ---
 
@@ -96,7 +98,9 @@ Ajoutez à la config MCP de l'hôte (ex. `claude_desktop_config.json`) :
 
 Après `basemyai config key generate`, la passphrase est lue depuis
 `%USERPROFILE%\\.basemyai\\key`. Sinon, définissez `BASEMYAI_DB_KEY` dans
-`env` (voir [key-resolution.md](security/key-resolution.md)).
+`env` (voir [key-resolution.md](security/key-resolution.md)). Ajoutez
+`BASEMYAI_DB_KEY_MODE=passphrase` pour un store Argon2id ; laissez la variable
+absente pour ouvrir un store historique `raw-key`.
 
 Retirez `BASEMYAI_FETCH` après le premier lancement réussi.
 

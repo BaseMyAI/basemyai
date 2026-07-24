@@ -1,0 +1,226 @@
+{
+  "comparison_version": 1,
+  "dataset": "recall-core.jsonl",
+  "dataset_fingerprint": "fnv1a64:bca133f8726b6383",
+  "baseline_failed_cases": 0,
+  "current_failed_cases": 0,
+  "metrics": [
+    {
+      "name": "retrieval.vector.hit_at_k",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.vector.recall_at_k",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.vector.precision_at_k",
+      "baseline": 0.6666666666666666,
+      "current": 0.6666666666666666,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.vector.mrr",
+      "baseline": 0.75,
+      "current": 0.75,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.vector.ndcg_at_k",
+      "baseline": 0.6255750175201935,
+      "current": 0.6255750175201935,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.vector.exact_id_hit_rate",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.hybrid.hit_at_k",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.hybrid.recall_at_k",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.hybrid.precision_at_k",
+      "baseline": 0.4484848484848485,
+      "current": 0.4484848484848485,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.hybrid.mrr",
+      "baseline": 0.9545454545454546,
+      "current": 0.9545454545454546,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.hybrid.ndcg_at_k",
+      "baseline": 0.9501850774872784,
+      "current": 0.9501850774872784,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.hybrid.exact_id_hit_rate",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.graph.hit_at_k",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.graph.recall_at_k",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.graph.precision_at_k",
+      "baseline": 0.4,
+      "current": 0.4,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.graph.mrr",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.graph.ndcg_at_k",
+      "baseline": 0.8339912323981488,
+      "current": 0.8339912323981488,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "retrieval.graph.exact_id_hit_rate",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "bundle.must_include_coverage",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "bundle.forbidden_inclusion_rate",
+      "baseline": 0.0,
+      "current": 0.0,
+      "delta": 0.0,
+      "better": "lower",
+      "regression": false
+    },
+    {
+      "name": "bundle.budget_compliance_rate",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "bundle.duplicate_token_ratio",
+      "baseline": 0.1057628724561292,
+      "current": 0.1057628724561292,
+      "delta": 0.0,
+      "better": "lower",
+      "regression": false
+    },
+    {
+      "name": "bundle.provenance_coverage",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "bundle.stale_fact_rate",
+      "baseline": 0.0,
+      "current": 0.0,
+      "delta": 0.0,
+      "better": "lower",
+      "regression": false
+    },
+    {
+      "name": "bundle.source_filtered_leakage_rate",
+      "baseline": 0.0,
+      "current": 0.0,
+      "delta": 0.0,
+      "better": "lower",
+      "regression": false
+    },
+    {
+      "name": "bundle.procedure_coverage",
+      "baseline": 1.0,
+      "current": 1.0,
+      "delta": 0.0,
+      "better": "higher",
+      "regression": false
+    },
+    {
+      "name": "bundle.unreported_conflicts",
+      "baseline": 0.0,
+      "current": 0.0,
+      "delta": 0.0,
+      "better": "lower",
+      "regression": false
+    }
+  ],
+  "regressions": 0
+}

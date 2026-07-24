@@ -5,6 +5,7 @@ Construit la mémoire via ``open_in_memory`` (embedder déterministe, base
 coroutine asyncio pilotée par le runtime tokio interne.
 """
 
+import json
 import os
 
 import pytest
@@ -42,6 +43,47 @@ async def test_recall_hybrid_surfaces_exact_term():
 
     hits = await mem.recall_hybrid("ACME-42", k=5)
     assert any("ACME-42" in h.text for h in hits)
+
+
+@pytest.mark.asyncio
+async def test_compile_context_returns_bounded_typed_bundle():
+    mem = await basemyai.Memory.open_in_memory("agent-context")
+    memory_id = await mem.remember("BaseMyAI stores local agent memory.", layer="semantic")
+
+    bundle = await mem.compile_context("local agent memory", token_budget=128, explain=True)
+
+    assert bundle.estimated_tokens <= 128
+    assert "BaseMyAI stores local agent memory." in bundle.rendered
+    assert any(citation.memory_id == memory_id for citation in bundle.citations)
+    assert bundle.sections[0].kind == "current_facts"
+    assert bundle.sections[0].items[0].valid_from > 0
+    assert bundle.sections[0].items[0].role == "fact"
+    assert bundle.sections[0].items[0].inclusion_reason != "unknown"
+    assert len(bundle.sections[0].items[0].retrieval_contributions) > 0
+    # Defaults when profile/render_format are omitted (R1.6/R1.7).
+    assert bundle.profile == "balanced"
+    assert bundle.render_format == "markdown"
+    # explain=True requests a detailed trace, bounded but non-empty here.
+    assert bundle.trace.level == "detailed"
+    assert bundle.trace.summary.included_items > 0
+    assert len(bundle.trace.events) > 0
+
+
+@pytest.mark.asyncio
+async def test_compile_context_honors_profile_and_render_format():
+    mem = await basemyai.Memory.open_in_memory("agent-context-profile")
+    await mem.remember("call the deploy script before merging", layer="semantic")
+
+    text_bundle = await mem.compile_context(
+        "deploy script", token_budget=256, profile="coding", render_format="text"
+    )
+    assert text_bundle.profile == "coding"
+    assert text_bundle.render_format == "text"
+    assert "#" not in text_bundle.rendered
+
+    json_bundle = await mem.compile_context("deploy script", token_budget=256, render_format="json")
+    assert json_bundle.render_format == "json"
+    json.loads(json_bundle.rendered)
 
 
 @pytest.mark.asyncio
@@ -207,6 +249,8 @@ def test_exports_and_typing_marker_present():
     assert hasattr(basemyai.Memory, "recall_by_layer")
     assert hasattr(basemyai.Memory, "add_graph_entity")
     assert hasattr(basemyai.Memory, "add_graph_edge")
+    assert hasattr(basemyai.Memory, "compile_context")
+    assert "ContextBundle" in basemyai.__all__
     package_dir = Path(basemyai.__path__[0])
     assert (package_dir / "__init__.pyi").is_file()
     assert (package_dir / "py.typed").is_file()

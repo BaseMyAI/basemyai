@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
-//! Serveur MCP : pool multi-agent + les cinq outils mémoire.
+//! Serveur MCP : pool multi-agent + les outils mémoire (voir `INSTRUCTIONS`
+//! ci-dessous pour la liste à jour — ne pas répéter un compte ici, il dérive).
 //!
 //! Une [`Memory`] est scellée par un `agent_id` (ADR-006) ; le serveur en
 //! maintient une par agent dans un pool `Arc<RwLock<HashMap<..>>>`, ouverte à la
@@ -34,9 +35,9 @@ use crate::error::McpError;
 use crate::provider::MemoryProvider;
 use crate::sampling::SamplingBackend;
 use crate::tools::{
-    self, ConsolidateApplyParams, ConsolidateParams, ConsolidateResult, EntityItem, InvalidateParams, InvalidateResult,
-    RecallGraphParams, RecallGraphResult, RecallItem, RecallParams, RecallResult, RememberParams, RememberResult,
-    StatsParams, StatsResult, WatchParams, WatchResult,
+    self, CompileContextParams, CompileContextResult, ConsolidateApplyParams, ConsolidateParams, ConsolidateResult,
+    EntityItem, InvalidateParams, InvalidateResult, RecallGraphParams, RecallGraphResult, RecallItem, RecallParams,
+    RecallResult, RememberParams, RememberResult, StatsParams, StatsResult, WatchParams, WatchResult,
 };
 
 /// Nom du "logger" MCP porté par chaque notification `notifications/message`
@@ -160,6 +161,28 @@ impl McpServer {
             .collect();
         let (entities, truncated) = tools::truncate_to_fit(entities, self.config.max_result_bytes);
         Ok(RecallGraphResult { entities, truncated })
+    }
+
+    async fn compile_context_impl(&self, p: CompileContextParams) -> Result<CompileContextResult, McpError> {
+        tools::validate_agent_id(&p.agent_id)?;
+        tools::validate_query(&p.query)?;
+        let source_policy = tools::parse_source_policy(&p.source_policy).map_err(McpError::Validation)?;
+        let profile = tools::parse_profile(&p.profile).map_err(McpError::Validation)?;
+        let render_format = tools::parse_render_format(&p.render_format).map_err(McpError::Validation)?;
+        let mem = self.memory_for(&p.agent_id).await?;
+        let mut request = basemyai::ContextRequest::new(&p.query, p.token_budget)
+            .candidate_limit(p.candidate_limit)
+            .source_policy(source_policy)
+            .profile(profile)
+            .render_format(render_format);
+        if p.include_procedural {
+            request = request.include_procedural();
+        }
+        if p.explain {
+            request = request.explain();
+        }
+        let bundle = mem.compile_context(request).await?;
+        Ok(CompileContextResult::from(bundle))
     }
 
     async fn invalidate_impl(&self, p: InvalidateParams) -> Result<InvalidateResult, McpError> {
@@ -381,6 +404,22 @@ impl McpServer {
         Ok(Json(out?))
     }
 
+    /// Compile un recall hybride en contexte borné et traçable, sans LLM.
+    #[tool(
+        description = "Compile a hybrid recall into a bounded, cited context ready for a model prompt — deterministic, no LLM in the loop. Prefer this over raw recall when you need a token-budgeted, ranked, deduplicated context rather than a plain list of memories.",
+        annotations(title = "Compile context", read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn compile_context(
+        &self,
+        Parameters(p): Parameters<CompileContextParams>,
+    ) -> Result<Json<CompileContextResult>, ErrorData> {
+        let t0 = Instant::now();
+        let agent_id = p.agent_id.clone();
+        let out = self.compile_context_impl(p).await;
+        emit_audit("compile_context", &agent_id, outcome(&out), elapsed_ms(t0));
+        Ok(Json(out?))
+    }
+
     /// Invalide (soft-delete) un souvenir.
     #[tool(
         description = "Invalidate (soft-delete) a memory by id; it stops appearing in future recalls.",
@@ -496,7 +535,8 @@ impl McpServer {
 const INSTRUCTIONS: &str = "\
 BaseMyAI — moteur de mémoire local pour agents IA (100% local, chiffré au repos).\n\
 Outils : remember (mémorise), recall (sémantique), recall_hybrid (vecteur+BM25 fusionnés),\n\
-recall_graph (graphe entités), invalidate (soft-delete), stats (compteurs par couche),\n\
+recall_graph (graphe entités), compile_context (contexte borné et tracé, prêt pour un prompt),\n\
+invalidate (soft-delete), stats (compteurs par couche),\n\
 consolidate (distille les épisodes en faits+graphe), consolidate_apply (persiste une extraction),\n\
 watch (démarre le relais temps réel des changements mémoire en notifications/message).\n\
 Consolidation (ADR-018) : consolidate tente un LLM côté serveur (sampling si supporté, sinon LLM local) ;\n\
