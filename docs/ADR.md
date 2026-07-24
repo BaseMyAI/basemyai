@@ -51,5 +51,5 @@ Chaque ADR vit dans son propre fichier sous [`docs/adr/`](adr/). Cette page n'es
 | [ADR-041](adr/ADR-041-native-maintenance-indexes.md) | Index d'importance, index temporel (`Engine::scan_range`) et maintenance bornée (N10) | ✅ Accepted |
 | [ADR-042](adr/ADR-042-passphrase-kdf-zeroization-full-rotation.md) | Passphrase KDF (Argon2id), zeroization des secrets et rotation complète de la DEK (N12) | ✅ Accepted |
 | [ADR-043](adr/ADR-043-native-version-set-snapshots-and-concurrent-compaction.md) | Version set immuable, snapshots de lecture et compaction concurrente (N13) | 🟡 Proposed |
-| [ADR-044](adr/ADR-044-wal-v2-anti-replay.md) | Format WAL v2 anti-rejeu : `wal_epoch` + offset de position, AAD liée à store/épisode/position (CRYPTO-1) | 🟡 Proposed |
-| [ADR-045](adr/ADR-045-graph-provenance.md) | Provenance et niveau de confiance pour le graphe (`GraphSource`), filtrage au recall (AGENT-MEM-1) | 🟡 Proposed |
+| [ADR-044](adr/ADR-044-wal-v2-anti-replay.md) | Format WAL v2 anti-rejeu : `wal_epoch` + offset de position, AAD liée à store/épisode/position (CRYPTO-1) | 🟢 Accepted |
+| [ADR-045](adr/ADR-045-graph-provenance.md) | Provenance et niveau de confiance pour le graphe (`GraphSource`), filtrage au recall (AGENT-MEM-1) | 🟢 Accepted |

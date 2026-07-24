@@ -1,5 +1,49 @@
 # BaseMyAI — Implementation Status Matrix
 
+**Mise à jour 2026-07-23** — clôture de la remédiation de l'audit de sécurité
+adversarial du 2026-07-22 (`docs/audits/2026-07-engine-architecture-safety-audit.md`
+et les findings CRYPTO-1/CRYPTO-2/GC-RETRY-P2/AGENT-MEM-1 hors de ce document) :
+
+- **ADR-044 (WAL v2 anti-rejeu, CRYPTO-1) : ✅ implémenté, `Accepted`.**
+  `WalEpoch:1`/`WalRecord:3`/`WalEnvelope:2` en place, `format.lock` à jour.
+  Un écart par rapport à l'ordre spécifié dans l'ADR a été nécessaire et
+  documenté (§« Amendement du 2026-07-23 ») : la campagne de kill-loop réelle
+  (`cargo xtask test-crash-consistency`) a trouvé que « publier l'épisode
+  avant de tronquer » rend un store définitivement inouvrable après un crash
+  dans cette fenêtre ; l'ordre inversé (tronquer puis publier) corrige ce
+  P0 de durabilité au prix d'une fenêtre de sécurité résiduelle, plus étroite
+  que CRYPTO-1 mais non nulle — voir l'ADR pour le détail et le suivi proposé
+  (segment WAL par épisode). Tests : 18 scénarios adversariaux unitaires dans
+  `store::wal`, 2 tests à frontière exacte ajoutés dans
+  `tests/crash/failpoints.rs`, fuzz target `wal_epoch_decode` ajoutée (compile
+  proprement en nightly ; non exécutable dans cet environnement Windows —
+  libFuzzer ne linke pas nativement, limitation déjà documentée par
+  `xtask engine-fuzz`, tourne réellement dans `fuzz.yml` sur ubuntu-latest).
+- **ADR-045 (provenance du graphe, AGENT-MEM-1) : ✅ implémenté, `Accepted`.**
+  `GraphSource` (`GraphEntity:2`/`GraphEdge:2`), propagé par
+  `Graph::add_entity_with_source`/`add_edge_with_source`
+  (`Consolidation` pour `apply_extraction`, `Import` forcé pour
+  `import_rows`), `recall_graph_filtered` exclut `GraphSource::Import` par
+  défaut (`include_imported: bool`, jamais `true` implicitement). Écart de
+  layering documenté dans l'ADR : `GraphSource` est un nouvel enum défini
+  dans `basemyai-engine` (pas littéralement `basemyai::TrustLevel` — la
+  dépendance ne peut pas remonter cette direction, ADR-001) mais c'est le
+  même type Rust utilisé aux deux couches, pas une taxonomie dupliquée.
+  Testé par `crates/basemyai/tests/memory/graph_provenance.rs` (3 scénarios :
+  exclusion recall + provenance User, idempotence de réimport, propagation
+  Consolidation).
+- Les 9 autres findings de l'audit adversarial 2026-07-22 (ACL Windows
+  CRYPTO-2, LRU registry, troncature tokenizer, retries GC GC-RETRY-P2,
+  redaction MCP, workflows CI SHA-pinnés, compaction concurrente/ordre
+  canonique de versions/bornes SST ADR-043) étaient **déjà implémentés et
+  testés** sur `dev` avant cette session — vérifié ligne à ligne contre le
+  code réel, pas supposé depuis un résumé antérieur.
+- `cargo xtask ci` (fmt+clippy+format_lock, matrice complète workspace) et
+  `cargo xtask test-crash-consistency` (20 cycles kill/reopen réels, tous
+  scénarios) verts. `cargo deny check` vert (`cargo-audit` indisponible dans
+  cet environnement — `cargo deny`'s advisories check couvre la même base
+  RustSec).
+
 **Mise à jour 2026-07-19** (les entrées ci-dessous datées 2026-07-17 décrivent
 un working tree non committé qui a depuis été committé — lire cette entrée
 en premier, le reste du fichier garde l'historique tel quel) :
