@@ -295,7 +295,7 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
             } => {
                 let agent = resolve(None);
                 store
-                    .graph_upsert_entity(&agent, id, kind, label, *validity)
+                    .graph_upsert_entity(&agent, id, kind, label, *validity, basemyai_engine::GraphSource::User)
                     .await
                     .unwrap_or_else(|e| {
                         panic!(
@@ -313,7 +313,15 @@ pub(crate) async fn run_scenario<S: MemoryStore>(store: &S, scenario: &Scenario)
             } => {
                 let agent = resolve(None);
                 store
-                    .graph_upsert_edge(&agent, src, relation, dst, *weight, *now)
+                    .graph_upsert_edge(
+                        &agent,
+                        src,
+                        relation,
+                        dst,
+                        *weight,
+                        *now,
+                        basemyai_engine::GraphSource::User,
+                    )
                     .await
                     .unwrap_or_else(|e| {
                         panic!(

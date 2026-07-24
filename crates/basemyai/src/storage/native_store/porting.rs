@@ -165,6 +165,12 @@ impl NativeMemoryStore {
                             label: e.label,
                             valid_from: e.valid_from,
                             valid_until: e.valid_until,
+                            // ADR-045 (AGENT-MEM-1) : toujours `Import`,
+                            // jamais lu depuis la ligne importée — même
+                            // discipline anti-spoof qu'ADR-036 pour les
+                            // souvenirs. `NativeImportEntity` n'a d'ailleurs
+                            // aucun champ `source` à lire.
+                            source: basemyai_engine::GraphSource::Import,
                         },
                     )
                     .map_err(storage)?;
@@ -192,6 +198,9 @@ impl NativeMemoryStore {
                             weight: e.weight,
                             valid_from: e.valid_from,
                             valid_until: e.valid_until,
+                            // ADR-045 (AGENT-MEM-1): always `Import`, same
+                            // anti-spoof discipline as the entity above.
+                            source: basemyai_engine::GraphSource::Import,
                         },
                     )
                     .map_err(storage)?;

@@ -304,6 +304,7 @@ impl MemoryStore for NativeMemoryStore {
         k: usize,
         now: i64,
         include_procedural: bool,
+        include_imported: bool,
     ) -> Result<Vec<Record>> {
         let (agent, query) = (agent.clone(), query.to_vec());
         // Même découpage lecture/écriture que `recall_vector` (N5.5).
@@ -311,13 +312,18 @@ impl MemoryStore for NativeMemoryStore {
         let found = self
             .with_inner_read(move |inner| {
                 // Les labels des entités valides de l'agent (comme l'EXISTS
-                // original, seule `valid_until` gate la visibilité d'une entité).
+                // original, seule `valid_until` gate la visibilité d'une entité)
+                // — et, par défaut, jamais celles réimportées (ADR-045,
+                // AGENT-MEM-1) : un label empoisonné via un export forgé
+                // réimporté ne doit pas influencer silencieusement le
+                // classement, sauf demande explicite (`include_imported`).
                 let labels: Vec<String> = inner
                     .graph
                     .entities(&inner.engine, agent2.as_str())
                     .map_err(storage)?
                     .into_iter()
                     .filter(|(_, e)| e.valid_until.is_none_or(|until| until > now))
+                    .filter(|(_, e)| include_imported || e.source != basemyai_engine::GraphSource::Import)
                     .map(|(_, e)| e.label)
                     .collect();
                 // Oversample large puis filtre « le contenu mentionne un
@@ -582,6 +588,7 @@ impl MemoryStore for NativeMemoryStore {
         kind: &str,
         label: &str,
         validity: Validity,
+        source: basemyai_engine::GraphSource,
     ) -> Result<()> {
         let (agent, id) = (agent.clone(), id.to_string());
         let entity = basemyai_engine::GraphEntity {
@@ -589,6 +596,7 @@ impl MemoryStore for NativeMemoryStore {
             label: label.to_string(),
             valid_from: validity.valid_from,
             valid_until: validity.valid_until,
+            source,
         };
         self.with_inner(move |inner| {
             let NativeInner { engine, graph, .. } = &mut *inner;
@@ -609,11 +617,14 @@ impl MemoryStore for NativeMemoryStore {
         dst: &str,
         weight: f64,
         now: i64,
+        source: basemyai_engine::GraphSource,
     ) -> Result<()> {
         let (agent, src, relation, dst) = (agent.clone(), src.to_string(), relation.to_string(), dst.to_string());
         self.with_inner(move |inner| {
             let NativeInner { engine, graph, .. } = &mut *inner;
             // Parité upsert arête : seul le poids est mis à jour si l'arête existe.
+            // `source` de l'arête existante est préservée (ADR-045) — ne
+            // s'applique qu'à une création.
             let meta = match graph
                 .edge_meta(engine, agent.as_str(), &src, &relation, &dst)
                 .map_err(storage)?
@@ -623,6 +634,7 @@ impl MemoryStore for NativeMemoryStore {
                     weight,
                     valid_from: now,
                     valid_until: None,
+                    source,
                 },
             };
             graph

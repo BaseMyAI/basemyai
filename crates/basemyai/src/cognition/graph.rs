@@ -50,6 +50,8 @@ impl Graph {
     }
 
     /// Insère ou met à jour une entité (nœud), valide dès maintenant.
+    /// Provenance `User` (ADR-045) — écriture explicite de l'appelant, jamais
+    /// la consolidation LLM (voir [`Self::add_entity_with_source`]).
     ///
     /// # Errors
     /// [`MemoryError::Core`](crate::MemoryError::Core) en cas d'échec SQL.
@@ -58,24 +60,63 @@ impl Graph {
     }
 
     /// Insère ou met à jour une entité avec une fenêtre de validité explicite.
+    /// Provenance `User` — voir [`Self::add_entity_with_source`] pour une
+    /// provenance explicite (consolidation, import).
     ///
     /// # Errors
     /// [`MemoryError::Core`](crate::MemoryError::Core) en cas d'échec SQL.
     pub async fn add_entity_with(&self, id: &str, kind: &str, label: &str, validity: Validity) -> Result<()> {
+        self.add_entity_with_source(id, kind, label, validity, basemyai_engine::GraphSource::User)
+            .await
+    }
+
+    /// Insère ou met à jour une entité avec une provenance explicite
+    /// (ADR-045, AGENT-MEM-1) — jamais défaultée silencieusement par ce
+    /// module vers `Consolidation`/`Import` : l'appelant (le pipeline de
+    /// consolidation, un futur import direct) la déclare toujours.
+    ///
+    /// # Errors
+    /// [`MemoryError::Core`](crate::MemoryError::Core) en cas d'échec SQL.
+    pub async fn add_entity_with_source(
+        &self,
+        id: &str,
+        kind: &str,
+        label: &str,
+        validity: Validity,
+        source: basemyai_engine::GraphSource,
+    ) -> Result<()> {
         self.engine
-            .graph_upsert_entity(&self.agent, id, kind, label, validity)
+            .graph_upsert_entity(&self.agent, id, kind, label, validity, source)
             .await
     }
 
     /// Crée (ou met à jour le poids d') une relation orientée `src → dst`,
-    /// valide dès maintenant.
+    /// valide dès maintenant. Provenance `User` — voir
+    /// [`Self::add_edge_with_source`] pour une provenance explicite.
     ///
     /// # Errors
     /// [`MemoryError::Core`](crate::MemoryError::Core) en cas d'échec SQL.
     pub async fn add_edge(&self, src: &str, relation: &str, dst: &str, weight: f64) -> Result<()> {
+        self.add_edge_with_source(src, relation, dst, weight, basemyai_engine::GraphSource::User)
+            .await
+    }
+
+    /// Crée (ou met à jour le poids d') une relation orientée avec une
+    /// provenance explicite (ADR-045, AGENT-MEM-1).
+    ///
+    /// # Errors
+    /// [`MemoryError::Core`](crate::MemoryError::Core) en cas d'échec SQL.
+    pub async fn add_edge_with_source(
+        &self,
+        src: &str,
+        relation: &str,
+        dst: &str,
+        weight: f64,
+        source: basemyai_engine::GraphSource,
+    ) -> Result<()> {
         let now = now_unix();
         self.engine
-            .graph_upsert_edge(&self.agent, src, relation, dst, weight, now)
+            .graph_upsert_edge(&self.agent, src, relation, dst, weight, now, source)
             .await
     }
 

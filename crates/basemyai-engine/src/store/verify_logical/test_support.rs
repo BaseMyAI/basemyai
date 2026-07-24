@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use crate::idx::fts::PersistentFts;
-use crate::idx::graph::{GraphEdgeMeta, GraphEntity, PersistentGraph};
+use crate::idx::graph::{GraphEdgeMeta, GraphEntity, GraphSource, PersistentGraph};
 use crate::idx::memory::{NewMemoryRecord, PersistentMemoryIndex};
 use crate::idx::vector::{PersistentVectorIndex, VectorIndexParams};
 use crate::store::verify::{IssueKind, VerifyMode, VerifyReport, verify_store};
@@ -92,6 +92,7 @@ pub(super) fn build_composed_store() -> tempfile::TempDir {
                     label: id.to_string(),
                     valid_from: 0,
                     valid_until: None,
+                    source: GraphSource::User,
                 },
             )
             .expect("upsert entity");
@@ -107,6 +108,7 @@ pub(super) fn build_composed_store() -> tempfile::TempDir {
                 weight: 1.0,
                 valid_from: 0,
                 valid_until: None,
+                source: GraphSource::User,
             },
         )
         .expect("upsert edge");

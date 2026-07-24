@@ -114,6 +114,10 @@ name = "provenance_trust"
 path = "tests/memory/provenance_trust.rs"
 
 [[test]]
+name = "graph_provenance"
+path = "tests/memory/graph_provenance.rs"
+
+[[test]]
 name = "retrieval"
 path = "tests/memory/retrieval.rs"
 

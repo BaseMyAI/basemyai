@@ -50,6 +50,7 @@ mod tests {
                         weight: 1.0,
                         valid_from: 0,
                         valid_until: None,
+                        source: crate::idx::graph::GraphSource::User,
                     },
                 )
                 .expect("upsert dangling edge");

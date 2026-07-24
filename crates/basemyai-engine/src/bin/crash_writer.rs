@@ -265,6 +265,7 @@ fn graph_entity(id: u64) -> basemyai_engine::GraphEntity {
         label: graph_entity_label(id),
         valid_from: 0,
         valid_until: None,
+        source: basemyai_engine::GraphSource::User,
     }
 }
 
@@ -297,6 +298,7 @@ fn run_graph_mode(engine: &mut Engine, log: &mut File, confirm_log_path: &str) -
                     weight: 1.0,
                     valid_from: 0,
                     valid_until: None,
+                    source: basemyai_engine::GraphSource::User,
                 };
                 if let Err(e) = graph.upsert_edge(engine, GRAPH_AGENT, &src.to_string(), "next", &dst.to_string(), meta)
                 {

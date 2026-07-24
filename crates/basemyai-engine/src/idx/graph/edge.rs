@@ -22,15 +22,23 @@
 //! has_valid_until:  u8    0 or 1; any other value is rejected on decode
 //! valid_until:      i64   meaningful only when has_valid_until == 1
 //!                         (encoded as 0 otherwise)
-//! crc32:            u32   over every byte above (magic..valid_until)
+//! source:           u8    GraphSource tag (ADR-045 §1/§4) — same encoding
+//!                         as `GraphEntity:2`'s `source` field
+//! crc32:            u32   over every byte above (magic..source)
 //! ```
+//!
+//! `source` bumped this format 1 -> 2 (ADR-045, AGENT-MEM-1 remediation) —
+//! see `entity`'s module doc for the same rationale (additive field, hard
+//! version bump, no silent reinterpretation).
 
 use crate::error::{EngineError, Result};
 use crate::format::FormatSpec;
 use crate::format::checksum::crc32;
+use crate::idx::graph::source::GraphSource;
 
 pub const GRAPH_EDGE_MAGIC: u32 = 0x4745_4447; // b"GEDG" (LE bytes "GDEG")
-pub const GRAPH_EDGE_VERSION: u16 = 1;
+/// Bumped 1 -> 2 to add `source` (ADR-045, AGENT-MEM-1).
+pub const GRAPH_EDGE_VERSION: u16 = 2;
 
 /// Canonical wire-format spec hashed into `format.lock` (see
 /// [`crate::format::lock`]). Field list and order must mirror the byte
@@ -47,13 +55,14 @@ pub fn spec() -> FormatSpec {
             ("valid_from", "i64"),
             ("has_valid_until", "u8"),
             ("valid_until", "i64"),
+            ("source", "u8"),
             ("crc32", "u32"),
         ],
     }
 }
 
 /// Total encoded size: fixed-size record (no variable-length payload).
-const RECORD_LEN: usize = 4 + 2 + 8 + 8 + 1 + 8 + 4;
+const RECORD_LEN: usize = 4 + 2 + 8 + 8 + 1 + 8 + 1 + 4;
 const CRC_LEN: usize = 4;
 
 /// A decoded graph-edge record, owned. `src`/`relation`/`dst`/`agent` are
@@ -64,6 +73,9 @@ pub struct GraphEdgeMeta {
     pub valid_from: i64,
     /// `None` == valid indefinitely (no expiry).
     pub valid_until: Option<i64>,
+    /// Where this edge came from (ADR-045) — propagated by every writer,
+    /// never defaulted silently to `Consolidation`/`Import`.
+    pub source: GraphSource,
 }
 
 /// Encodes one edge record. Infallible: every field is already fixed-width.
@@ -80,6 +92,7 @@ pub fn encode(edge: &GraphEdgeMeta) -> Vec<u8> {
     };
     buf.push(has_valid_until);
     buf.extend_from_slice(&valid_until.to_le_bytes());
+    buf.push(edge.source.tag());
     let crc = crc32(&buf);
     buf.extend_from_slice(&crc.to_le_bytes());
     buf
@@ -128,11 +141,13 @@ pub fn decode(buf: &[u8]) -> Result<GraphEdgeMeta> {
         )));
     }
     let valid_until_raw = i64::from_le_bytes(buf[23..31].try_into().expect("slice is exactly 8 bytes"));
+    let source = GraphSource::from_tag(buf[31], corrupt)?;
 
     Ok(GraphEdgeMeta {
         weight,
         valid_from,
         valid_until: (has_valid_until == 1).then_some(valid_until_raw),
+        source,
     })
 }
 
@@ -145,7 +160,33 @@ mod tests {
             weight: 1.5,
             valid_from: 1000,
             valid_until: None,
+            source: GraphSource::User,
         }
+    }
+
+    #[test]
+    fn roundtrips_every_source_variant() {
+        for source in [
+            GraphSource::User,
+            GraphSource::Consolidation,
+            GraphSource::Import,
+            GraphSource::Inferred,
+        ] {
+            let edge = GraphEdgeMeta { source, ..sample() };
+            let bytes = encode(&edge);
+            assert_eq!(decode(&bytes).expect("decode ok"), edge);
+        }
+    }
+
+    #[test]
+    fn unrecognized_source_tag_is_corrupt_error() {
+        let mut bytes = encode(&sample());
+        bytes[31] = 0xFF;
+        let crc_at = RECORD_LEN - CRC_LEN;
+        let crc = crc32(&bytes[..crc_at]);
+        bytes[crc_at..].copy_from_slice(&crc.to_le_bytes());
+        let err = decode(&bytes).expect_err("unrecognized source tag must be rejected");
+        assert!(matches!(err, EngineError::CorruptGraphEdge { .. }));
     }
 
     #[test]

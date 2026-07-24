@@ -1,9 +1,7 @@
 # ADR-045 — Provenance et niveau de confiance pour le graphe (AGENT-MEM-1)
 
-**Statut** : 🟡 Proposed — conçu et spécifié ci-dessous, **implémentation non
-commencée**. Voir « Pourquoi ce correctif n'est pas encore implémenté » en
-fin de document.
-**Date** : 2026-07-23
+**Statut** : 🟢 Accepted — implémenté et testé.
+**Date** : 2026-07-23 (implémenté et clos le 2026-07-23)
 **Relation aux ADR existants** : étend au graphe (`idx::graph`, N4) la
 discipline de provenance qu'ADR-036 (`TrustLevel`, provenance publique,
 anti-spoofing import) a déjà posée pour les souvenirs. N'amende ni ADR-027
@@ -130,25 +128,41 @@ automatique d'un store existant tant qu'aucun besoin réel n'est démontré.
   confiance à ce contenu pour influencer une décision ? »), une seconde
   taxonomie parallèle serait une source de divergence future sans bénéfice.
 
-## Pourquoi ce correctif n'est pas encore implémenté
+## Amendement du 2026-07-23 — implémentation et écart de layering
 
-Même arbitrage qu'ADR-044 (§ »Pourquoi ce correctif n'est pas encore
-implémenté ») : un bump de format sur une structure aussi centrale que le
-graphe mérite son propre cycle de tests (roundtrip, compatibilité de
-version, migration explicite) plutôt qu'une implémentation pressée en fin
-de session de remédiation. Sévérité du finding sous-jacent (Medium — pas de
-fuite cross-agent, impact borné au classement du recall au sein d'un même
-agent) inférieure à celle des correctifs déjà livrés (DUR-LSM-01 P0,
-CRYPTO-1 High), justifiant cet ordre de priorité.
+Implémenté le 2026-07-23. Un écart par rapport au texte original de la
+Décision : `GraphSource` n'est **pas** `basemyai::memory::trust::TrustLevel`
+réutilisé tel quel — c'est structurellement impossible sans violer
+l'invariant « `basemyai-core`/`basemyai-engine` agnostiques, jamais de
+dépendance vers `basemyai` » (`CLAUDE.md`, ADR-001) : `TrustLevel` vit dans
+`basemyai`, tandis que `GraphEntity`/`GraphEdgeMeta` (les types qu'il faut
+taguer) vivent dans `basemyai-engine`, une couche plus basse dont
+`basemyai` dépend, jamais l'inverse. `GraphSource` est donc un nouvel enum
+défini dans `basemyai-engine::idx::graph::source`, réexporté à la racine du
+crate, avec la même forme à quatre variantes (`User`/`Consolidation`/
+`Import`/`Inferred`) — et c'est le **même type Rust** que `basemyai` importe
+et utilise directement (`basemyai_engine::GraphSource`), pas une seconde
+taxonomie parallèle : l'intention de la Décision (« une seule taxonomie, pas
+deux ») est respectée, seule la couche qui la définit diffère de ce que le
+texte original supposait.
 
-## Critères de sortie (avant de passer ce statut à Accepted)
+## Critères de sortie
 
-- [ ] `GraphSource` implémenté, `format.lock` mis à jour.
-- [ ] `Graph::add_entity`/`add_edge`/`apply_extraction`/`import_rows` propagent
-  `source` correctement — test couvrant chaque producteur.
-- [ ] `recall_graph_filtered` exclut `GraphSource::Import` par défaut — test
-  de régression reproduisant le scénario AGENT-MEM-1 (label empoisonné via
-  import, absent du classement par défaut).
-- [ ] Réimport d'un export JSONL contenant une entité prétendant
-  `source=User` est re-tagué `Import` — test anti-spoof, même discipline
-  qu'ADR-036 pour les souvenirs.
+- [x] `GraphSource` implémenté (`basemyai-engine::idx::graph::source`,
+  réexporté), `format.lock` mis à jour (`GraphEntity:2`, `GraphEdge:2`).
+- [x] `Graph::add_entity`/`add_edge` gagnent des jumeaux
+  `add_entity_with_source`/`add_edge_with_source` (les originaux restent
+  `GraphSource::User` par défaut, jamais silencieusement `Consolidation`/
+  `Import`) ; `apply_extraction` utilise les jumeaux avec `Consolidation` ;
+  `import_rows` force toujours `Import`. Testé par producteur dans
+  `crates/basemyai/tests/memory/graph_provenance.rs`.
+- [x] `recall_graph_filtered` gagne un paramètre `include_imported: bool`
+  (jamais `true` par défaut) et exclut `GraphSource::Import` du filtre de
+  labels — test de régression reproduisant le scénario AGENT-MEM-1 exact
+  (`imported_entity_label_is_excluded_from_default_recall_but_a_user_entity_is_not`).
+- [x] Réimport d'un export JSONL est toujours re-tagué `Import` — anti-spoof
+  structurel : le format JSONL `Entity`/`Edge` n'a jamais eu de champ
+  `source` à falsifier en premier lieu (contrairement à `Memory`, où ADR-036
+  a dû gérer un vrai champ falsifiable). Testé par
+  `reimporting_an_existing_entity_id_is_skipped_not_overwritten` (idempotence)
+  et le scénario ci-dessus (exclusion effective).

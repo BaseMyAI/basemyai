@@ -76,7 +76,7 @@ pub(crate) use fail_point;
 pub use crypto::Argon2idProfile;
 pub use error::{EngineError, Result};
 pub use idx::fts::{FtsStats, PersistentFts};
-pub use idx::graph::{GraphEdgeMeta, GraphEntity, PersistentGraph, RamGraph, Reached};
+pub use idx::graph::{GraphEdgeMeta, GraphEntity, GraphSource, PersistentGraph, RamGraph, Reached};
 pub use idx::memory::{ForgetBatchOptions, MemoryRecord, NewMemoryRecord, PersistentMemoryIndex, VecMapEntry};
 pub use idx::vector::{PersistentVectorIndex, VectorIndex, VectorIndexParams};
 pub use key::Key;

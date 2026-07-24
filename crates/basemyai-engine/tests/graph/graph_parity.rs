@@ -12,7 +12,7 @@
 //! 1:1, not reinvented, and verified equal on both flavors" checkable rather
 //! than just asserted in prose.
 
-use basemyai_engine::idx::graph::{GraphEdgeMeta, GraphEntity, Reached};
+use basemyai_engine::idx::graph::{GraphEdgeMeta, GraphEntity, GraphSource, Reached};
 use basemyai_engine::{Engine, PersistentGraph, RamGraph};
 use tempfile::tempdir;
 
@@ -51,6 +51,7 @@ impl Backend for RamGraph {
                 label: label.to_string(),
                 valid_from,
                 valid_until,
+                source: GraphSource::User,
             },
         );
     }
@@ -65,6 +66,7 @@ impl Backend for RamGraph {
                 weight,
                 valid_from: now,
                 valid_until: None,
+                source: GraphSource::User,
             },
         );
     }
@@ -118,6 +120,7 @@ impl Backend for PersistentBackend {
                     label: label.to_string(),
                     valid_from,
                     valid_until,
+                    source: GraphSource::User,
                 },
             )
             .expect("upsert_entity");
@@ -134,6 +137,7 @@ impl Backend for PersistentBackend {
                     weight,
                     valid_from: now,
                     valid_until: None,
+                    source: GraphSource::User,
                 },
             )
             .expect("upsert_edge");

@@ -24,17 +24,27 @@
 //! has_valid_until:  u8    0 or 1; any other value is rejected on decode
 //! valid_until:      i64   meaningful only when has_valid_until == 1
 //!                         (encoded as 0 otherwise)
+//! source:           u8    GraphSource tag (ADR-045 §1/§4) — 0=User,
+//!                         1=Consolidation, 2=Import, 3=Inferred; any other
+//!                         value is rejected on decode
 //! kind:             [u8; kind_len]   UTF-8
 //! label:            [u8; label_len]  UTF-8
 //! crc32:            u32   over every byte above (magic..label)
 //! ```
+//!
+//! `source` bumped this format 1 -> 2 (ADR-045, AGENT-MEM-1 remediation) —
+//! an additive fixed-size field, but a version bump rather than silently
+//! reinterpreted per this workspace's pre-1.0/native-only posture (no
+//! published store to migrate, same posture as ADR-044 §7).
 
 use crate::error::{EngineError, Result};
 use crate::format::FormatSpec;
 use crate::format::checksum::crc32;
+use crate::idx::graph::source::GraphSource;
 
 pub const GRAPH_ENTITY_MAGIC: u32 = 0x4745_4E54; // b"GENT" (LE bytes "TNEG")
-pub const GRAPH_ENTITY_VERSION: u16 = 1;
+/// Bumped 1 -> 2 to add `source` (ADR-045, AGENT-MEM-1).
+pub const GRAPH_ENTITY_VERSION: u16 = 2;
 
 /// Canonical wire-format spec hashed into `format.lock` (see
 /// [`crate::format::lock`]). Field list and order must mirror the byte
@@ -52,6 +62,7 @@ pub fn spec() -> FormatSpec {
             ("valid_from", "i64"),
             ("has_valid_until", "u8"),
             ("valid_until", "i64"),
+            ("source", "u8"),
             ("kind", "bytes[kind_len]"),
             ("label", "bytes[label_len]"),
             ("crc32", "u32"),
@@ -60,7 +71,7 @@ pub fn spec() -> FormatSpec {
 }
 
 /// Fixed-size portion of a block, before the variable-length `kind`/`label`.
-const HEADER_LEN: usize = 4 + 2 + 2 + 4 + 8 + 1 + 8;
+const HEADER_LEN: usize = 4 + 2 + 2 + 4 + 8 + 1 + 8 + 1;
 const CRC_LEN: usize = 4;
 
 /// A decoded graph-entity block, owned. `agent`/`id` are not part of this
@@ -73,6 +84,9 @@ pub struct GraphEntity {
     /// `None` == valid indefinitely (no expiry), matching
     /// `basemyai::temporal::Validity::valid_until`'s convention.
     pub valid_until: Option<i64>,
+    /// Where this entity came from (ADR-045) — propagated by every writer,
+    /// never defaulted silently to `Consolidation`/`Import`.
+    pub source: GraphSource,
 }
 
 /// Encodes one entity block.
@@ -104,6 +118,7 @@ pub fn encode(entity: &GraphEntity) -> Result<Vec<u8>> {
     };
     buf.push(has_valid_until);
     buf.extend_from_slice(&valid_until.to_le_bytes());
+    buf.push(entity.source.tag());
     buf.extend_from_slice(entity.kind.as_bytes());
     buf.extend_from_slice(entity.label.as_bytes());
     let crc = crc32(&buf);
@@ -153,6 +168,7 @@ pub fn decode(buf: &[u8]) -> Result<GraphEntity> {
         )));
     }
     let valid_until_raw = i64::from_le_bytes(buf[21..29].try_into().expect("slice is exactly 8 bytes"));
+    let source = GraphSource::from_tag(buf[29], corrupt)?;
 
     let expected_len = HEADER_LEN + kind_len + label_len + CRC_LEN;
     if buf.len() != expected_len {
@@ -175,6 +191,7 @@ pub fn decode(buf: &[u8]) -> Result<GraphEntity> {
         label,
         valid_from,
         valid_until: (has_valid_until == 1).then_some(valid_until_raw),
+        source,
     })
 }
 
@@ -188,6 +205,7 @@ mod tests {
             label: "Alice".to_string(),
             valid_from: 1000,
             valid_until: None,
+            source: GraphSource::User,
         }
     }
 
@@ -211,12 +229,38 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_every_source_variant() {
+        for source in [
+            GraphSource::User,
+            GraphSource::Consolidation,
+            GraphSource::Import,
+            GraphSource::Inferred,
+        ] {
+            let entity = GraphEntity { source, ..sample() };
+            let bytes = encode(&entity).expect("encode ok");
+            assert_eq!(decode(&bytes).expect("decode ok"), entity);
+        }
+    }
+
+    #[test]
+    fn unrecognized_source_tag_is_corrupt_error() {
+        let mut bytes = encode(&sample()).expect("encode ok");
+        bytes[29] = 0xFF;
+        let crc_at = bytes.len() - CRC_LEN;
+        let crc = crc32(&bytes[..crc_at]);
+        bytes[crc_at..].copy_from_slice(&crc.to_le_bytes());
+        let err = decode(&bytes).expect_err("unrecognized source tag must be rejected");
+        assert!(matches!(err, EngineError::CorruptGraphEntity { .. }));
+    }
+
+    #[test]
     fn roundtrips_empty_kind_and_label() {
         let entity = GraphEntity {
             kind: String::new(),
             label: String::new(),
             valid_from: 0,
             valid_until: None,
+            source: GraphSource::User,
         };
         let bytes = encode(&entity).expect("encode ok");
         assert_eq!(decode(&bytes).expect("decode ok"), entity);

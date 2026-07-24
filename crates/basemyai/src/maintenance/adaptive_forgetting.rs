@@ -742,6 +742,7 @@ mod tests {
                 _k: usize,
                 _now: i64,
                 _include_procedural: bool,
+                _include_imported: bool,
             ) -> Result<Vec<Record>> {
                 unimplemented!()
             }
@@ -784,6 +785,7 @@ mod tests {
                 _kind: &str,
                 _label: &str,
                 _validity: Validity,
+                _source: basemyai_engine::GraphSource,
             ) -> Result<()> {
                 unimplemented!()
             }
@@ -795,6 +797,7 @@ mod tests {
                 _dst: &str,
                 _weight: f64,
                 _now: i64,
+                _source: basemyai_engine::GraphSource,
             ) -> Result<()> {
                 unimplemented!()
             }

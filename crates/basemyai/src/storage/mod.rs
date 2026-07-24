@@ -162,6 +162,14 @@ pub trait MemoryStore: Send + Sync {
     ) -> Result<Vec<Record>>;
 
     /// KNN vectoriel filtré aux souvenirs mentionnant une entité du graphe.
+    ///
+    /// `include_imported` (ADR-045, AGENT-MEM-1) : par défaut (`false`), les
+    /// entités `GraphSource::Import` sont exclues du filtre de labels utilisé
+    /// pour influencer le classement — un label empoisonné via un export
+    /// forgé réimporté n'influence donc pas silencieusement le recall d'un
+    /// agent. Un appelant qui a explicitement besoin d'inclure le contenu
+    /// importé (ex. un outil d'administration) passe `true`.
+    #[allow(clippy::too_many_arguments)]
     async fn recall_graph_filtered(
         &self,
         agent: &AgentId,
@@ -169,6 +177,7 @@ pub trait MemoryStore: Send + Sync {
         k: usize,
         now: i64,
         include_procedural: bool,
+        include_imported: bool,
     ) -> Result<Vec<Record>>;
 
     /// Classement vectoriel (ids seuls), sans hydratation ni `last_access` —
@@ -222,6 +231,11 @@ pub trait MemoryStore: Send + Sync {
     async fn agent_stats(&self, agent: &AgentId, now: i64) -> Result<AgentStats>;
 
     /// Upsert idempotent d'une entité du graphe.
+    ///
+    /// `source` (ADR-045, AGENT-MEM-1) : provenance à attacher à l'entité —
+    /// jamais défaultée silencieusement par ce trait vers `Consolidation`/
+    /// `Import`, l'appelant la déclare toujours explicitement.
+    #[allow(clippy::too_many_arguments)]
     async fn graph_upsert_entity(
         &self,
         agent: &AgentId,
@@ -229,9 +243,15 @@ pub trait MemoryStore: Send + Sync {
         kind: &str,
         label: &str,
         validity: Validity,
+        source: basemyai_engine::GraphSource,
     ) -> Result<()>;
 
-    /// Upsert idempotent d'une relation orientée du graphe.
+    /// Upsert idempotent d'une relation orientée du graphe. Parité avec
+    /// l'UPSERT libSQL original : si l'arête existe déjà, seul `weight` est
+    /// mis à jour — `source` de l'arête existante est préservée (jamais
+    /// réécrite silencieusement par un second appel), `source` ne s'applique
+    /// qu'à une arête nouvellement créée.
+    #[allow(clippy::too_many_arguments)]
     async fn graph_upsert_edge(
         &self,
         agent: &AgentId,
@@ -240,6 +260,7 @@ pub trait MemoryStore: Send + Sync {
         dst: &str,
         weight: f64,
         now: i64,
+        source: basemyai_engine::GraphSource,
     ) -> Result<()>;
 
     /// Traversée multi-sauts du graphe depuis `start`, bornée à `max_depth`.

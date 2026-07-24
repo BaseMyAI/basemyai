@@ -797,7 +797,17 @@ impl Memory {
         let qvec = self.embedder.embed(query)?;
         let now = now_unix();
         self.engine
-            .recall_graph_filtered(&self.agent, &qvec, k, now, RecallOptions::default().include_procedural)
+            .recall_graph_filtered(
+                &self.agent,
+                &qvec,
+                k,
+                now,
+                RecallOptions::default().include_procedural,
+                // ADR-045: never include imported entity labels in the
+                // default recall path — an explicit admin surface can opt
+                // in later if a real need arises.
+                false,
+            )
             .await
     }
 

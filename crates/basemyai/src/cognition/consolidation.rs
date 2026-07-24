@@ -216,11 +216,32 @@ pub async fn apply_extraction(memory: &Memory, extraction: &Extraction) -> Resul
     validate_extraction_bounds(extraction)?;
     // Graphe : upserts idempotents (ON CONFLICT) — relancer ne duplique pas.
     let graph = memory.graph();
+    // ADR-045 (AGENT-MEM-1) : provenance explicite `Consolidation` — cette
+    // fonction peuple le graphe depuis une extraction LLM sur un épisode
+    // potentiellement adversarial, jamais `User` (la valeur par défaut des
+    // écritures directes de `Graph::add_entity`/`add_edge`).
+    let now = now_unix();
     for e in &extraction.entities {
-        graph.add_entity(&e.id, &e.kind, &e.label).await?;
+        graph
+            .add_entity_with_source(
+                &e.id,
+                &e.kind,
+                &e.label,
+                Validity::since(now),
+                basemyai_engine::GraphSource::Consolidation,
+            )
+            .await?;
     }
     for r in &extraction.relations {
-        graph.add_edge(&r.src, &r.relation, &r.dst, 1.0).await?;
+        graph
+            .add_edge_with_source(
+                &r.src,
+                &r.relation,
+                &r.dst,
+                1.0,
+                basemyai_engine::GraphSource::Consolidation,
+            )
+            .await?;
     }
 
     let mut report = ConsolidationReport {
